@@ -19,4 +19,14 @@ describe("AgentConfigurator", () => {
 
     expect(resolved).toBeInstanceOf(NullAgent);
   });
+
+  test("getFallback exposes the same NullAgent instance resolve() falls back to", () => {
+    const configurator = new AgentConfigurator();
+
+    const fallback = configurator.getFallback();
+    const resolved = configurator.resolve("some-unregistered-kind");
+
+    expect(fallback).toBeInstanceOf(NullAgent);
+    expect(fallback).toBe(resolved);
+  });
 });

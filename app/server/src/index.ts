@@ -1,11 +1,18 @@
 import cors from "@fastify/cors";
-import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
+import { AgentConfigurator, AgentManager, HermesAgent } from "@aios/agents";
 import { buildApp } from "./app.js";
 
 const configurator = new AgentConfigurator();
-configurator.register("fake", new FakeAgent());
+const hermesAgent = new HermesAgent();
+configurator.register("hermes", hermesAgent);
 
-const manager = new AgentManager(configurator, "fake");
+// checkHealth() alone would always report optimistic-healthy on this first
+// call (see HermesAgent's cached-health design) -- warm it up with a real,
+// awaited check first so AgentManager's fallback-on-unhealthy logic can
+// actually see reality on a cold start, not just the optimistic default.
+await hermesAgent.warmUpHealth();
+
+const manager = new AgentManager(configurator, "hermes");
 
 const app = buildApp(manager);
 await app.register(cors, { origin: true });

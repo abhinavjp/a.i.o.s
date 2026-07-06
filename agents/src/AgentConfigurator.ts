@@ -12,4 +12,8 @@ export class AgentConfigurator {
   resolve(kind: string): AgentAbstraction {
     return this.strategies.get(kind) ?? this.fallback;
   }
+
+  getFallback(): AgentAbstraction {
+    return this.fallback;
+  }
 }

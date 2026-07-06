@@ -1,34 +1,31 @@
 import { describe, expect, test } from "vitest";
-import { FakeAgent } from "../src/strategies/FakeAgent.js";
+import { CustomAgent } from "../src/strategies/CustomAgent.js";
 
-describe("FakeAgent", () => {
-  test("reports itself as a fake agent that is healthy", () => {
-    const agent = new FakeAgent();
+describe("CustomAgent", () => {
+  test("reports itself as a custom agent that is healthy", () => {
+    const agent = new CustomAgent();
 
     expect(agent.getInfo()).toEqual({
-      id: "fake",
-      kind: "fake",
-      displayName: "Fake Agent"
+      id: "custom",
+      kind: "custom",
+      displayName: "Custom Agent"
     });
     expect(agent.checkHealth()).toEqual({ ok: true });
   });
 
   test("streams a deterministic task response then completes", async () => {
-    const agent = new FakeAgent();
+    const agent = new CustomAgent();
 
     const chunks: string[] = [];
     for await (const chunk of agent.runTask("do the thing", "session-1")) {
       chunks.push(chunk);
     }
 
-    expect(chunks).toEqual([
-      "Fake task received: do the thing",
-      "Fake task complete."
-    ]);
+    expect(chunks).toEqual(["Custom agent handled: do the thing"]);
   });
 
   test("does not orchestrate", () => {
-    const agent = new FakeAgent();
+    const agent = new CustomAgent();
 
     expect(agent.asOrchestrator()).toBeNull();
   });

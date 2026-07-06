@@ -8,7 +8,15 @@ export interface AgentInfo {
   displayName: string;
 }
 
+export type TaskStream = AsyncIterable<string>;
+
+export interface OrchestratorCapability {
+  readonly kind: string;
+}
+
 export interface AgentAbstraction {
   getInfo(): AgentInfo;
   checkHealth(): HealthStatus;
+  runTask(task: string, sessionKey: string): TaskStream;
+  asOrchestrator(): OrchestratorCapability | null;
 }
