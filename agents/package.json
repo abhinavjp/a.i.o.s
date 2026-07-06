@@ -1,0 +1,11 @@
+{
+  "name": "@aios/agents",
+  "private": true,
+  "type": "module",
+  "version": "0.0.0",
+  "main": "src/index.ts",
+  "types": "src/index.ts",
+  "dependencies": {
+    "@aios/contracts": "*"
+  }
+}
