@@ -65,6 +65,139 @@ describe("App", () => {
     expect(screen.getByText("healthy")).toBeTruthy();
   });
 
+  test("renders the Sarathi command center and explicit readiness gates", async () => {
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url === "/api/agents") {
+          return Promise.resolve({
+            ok: true,
+            json: async () => ({
+              agents: [
+                { id: "fake", kind: "fake", displayName: "Fake Agent", health: { ok: true } }
+              ]
+            })
+          });
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            runtime: { name: "Hermes", state: "unavailable", billingMode: "subscription-only" },
+            controls: { manualPaused: false },
+            discovery: { status: "blocked", reason: "GitLab adapter not configured" },
+            tickets: [
+              { id: "02", title: "Resume a task after restart", status: "complete" },
+              { id: "09", title: "Discover assigned MRs", status: "blocked" }
+            ],
+            specialists: [],
+            recentTasks: [],
+            groups: [],
+            reviewRounds: [],
+            actionBatches: [],
+            report: { merged: 0, blocked: 0, skipped: 0 }
+          })
+        });
+      })
+    );
+
+    render(<App />);
+
+    expect(await screen.findByText("Sarathi")).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "The work queue, without the reassembly." })).toBeTruthy();
+    expect(screen.getByText("Readiness gates")).toBeTruthy();
+    expect(screen.getByText("Discover assigned MRs")).toBeTruthy();
+    expect(screen.getByText("GitLab adapter not configured")).toBeTruthy();
+  });
+
+  test("creates a pending specialist and activates it only after approval", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (url === "/api/agents") {
+        return Promise.resolve({ ok: true, json: async () => ({ agents: [] }) });
+      }
+      if (url === "/api/sarathi/dashboard") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            runtime: {
+              name: "Hermes",
+              state: "unavailable",
+              billingMode: "subscription-only",
+              reason: "unavailable"
+            },
+            controls: { manualPaused: false, changedAt: null },
+            discovery: {
+              status: "blocked",
+              reason: "GitLab adapter not configured",
+              lastCheckedAt: null,
+              mergeRequests: []
+            },
+            tickets: [],
+            specialists: [
+              {
+                id: "sarathi",
+                name: "Sarathi",
+                role: "coordinator",
+                runtime: "unselected",
+                status: "active",
+                scope: "local project"
+              }
+            ],
+            recentTasks: [],
+            groups: [],
+            reviewRounds: [],
+            actionBatches: [],
+            report: { merged: 0, blocked: 0, skipped: 0 }
+          })
+        });
+      }
+      if (url === "/api/sarathi/specialists" && options?.method === "POST") {
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            specialist: {
+              id: "reviewer",
+              name: "Review specialist",
+              role: "reviewer",
+              runtime: "unselected",
+              status: "pending_approval",
+              scope: "project context required"
+            }
+          })
+        });
+      }
+      return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          specialist: {
+            id: "reviewer",
+            name: "Review specialist",
+            role: "reviewer",
+            runtime: "unselected",
+            status: "active",
+            scope: "project context required"
+          }
+        })
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Add specialist" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Review specialist" } });
+    fireEvent.change(screen.getByLabelText("Role"), { target: { value: "reviewer" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save pending specialist" }));
+
+    const approveButton = await screen.findByRole("button", { name: "Approve" });
+    expect(approveButton).toBeTruthy();
+    fireEvent.click(approveButton);
+
+    expect((await screen.findByRole("status")).textContent).toContain("Review specialist is active.");
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sarathi/specialists/reviewer/approve",
+      { method: "POST" }
+    );
+  });
+
   test("submitting a task POSTs then opens an EventSource to the stream URL", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
@@ -216,7 +349,7 @@ describe("App", () => {
       );
     });
 
-    expect(await screen.findByText(/blocked/i)).toBeTruthy();
+    expect(await screen.findByText(/Run status: blocked/i)).toBeTruthy();
   });
 
   test("reconnects to the persisted task without submitting it again", async () => {

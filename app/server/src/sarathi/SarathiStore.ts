@@ -1,0 +1,210 @@
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
+
+export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
+export type SpecialistStatus = "pending_approval" | "active";
+
+export interface SarathiTicket {
+  id: string;
+  title: string;
+  status: SarathiTicketStatus;
+  reason: string;
+}
+
+export interface Specialist {
+  id: string;
+  name: string;
+  role: string;
+  runtime: string;
+  status: SpecialistStatus;
+  scope: string;
+}
+
+export interface RuntimeStatus {
+  name: string;
+  state: "unavailable" | "unverified" | "ready";
+  billingMode: "subscription-only";
+  reason: string;
+}
+
+export interface DiscoveryState {
+  status: "blocked" | "ready";
+  reason: string;
+  lastCheckedAt: string | null;
+  mergeRequests: Array<{
+    id: string;
+    title: string;
+    project: string;
+    role: "assignee" | "reviewer";
+    coverage: "unknown" | "complete";
+  }>;
+}
+
+export interface SarathiDashboard {
+  runtime: RuntimeStatus;
+  controls: { manualPaused: boolean; changedAt: string | null };
+  discovery: DiscoveryState;
+  tickets: SarathiTicket[];
+  specialists: Specialist[];
+  recentTasks: Array<{
+    id: string;
+    title: string;
+    status: "completed" | "failed" | "blocked" | "unavailable";
+  }>;
+  groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
+  reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
+  actionBatches: Array<{
+    id: string;
+    label: string;
+    status: "needs_approval" | "approved" | "blocked";
+  }>;
+  report: { merged: number; blocked: number; skipped: number };
+}
+
+export interface SarathiStore {
+  snapshot(): SarathiDashboard;
+  setPaused(paused: boolean): SarathiDashboard;
+  checkDiscovery(): SarathiDashboard;
+  createSpecialist(input: { name: string; role: string; runtime: string }): Specialist;
+  approveSpecialist(id: string): Specialist | undefined;
+}
+
+export class FileSarathiStore implements SarathiStore {
+  private state: SarathiDashboard;
+
+  constructor(private readonly filePath: string) {
+    this.state = this.load();
+  }
+
+  snapshot(): SarathiDashboard {
+    return clone(this.state);
+  }
+
+  setPaused(paused: boolean): SarathiDashboard {
+    this.state.controls = {
+      manualPaused: paused,
+      changedAt: new Date().toISOString()
+    };
+    this.persist();
+    return this.snapshot();
+  }
+
+  checkDiscovery(): SarathiDashboard {
+    this.state.discovery = {
+      ...this.state.discovery,
+      status: "blocked",
+      reason: "GitLab adapter not configured; no external reads attempted.",
+      lastCheckedAt: new Date().toISOString()
+    };
+    this.persist();
+    return this.snapshot();
+  }
+
+  createSpecialist(input: { name: string; role: string; runtime: string }): Specialist {
+    const specialist: Specialist = {
+      id: randomUUID(),
+      name: input.name.trim(),
+      role: input.role.trim(),
+      runtime: input.runtime.trim() || "unselected",
+      status: "pending_approval",
+      scope: "project context required"
+    };
+    this.state.specialists.push(specialist);
+    this.persist();
+    return { ...specialist };
+  }
+
+  approveSpecialist(id: string): Specialist | undefined {
+    const specialist = this.state.specialists.find((candidate) => candidate.id === id);
+    if (!specialist) {
+      return undefined;
+    }
+    specialist.status = "active";
+    this.persist();
+    return { ...specialist };
+  }
+
+  private load(): SarathiDashboard {
+    if (!existsSync(this.filePath)) {
+      return defaultDashboard();
+    }
+    return JSON.parse(readFileSync(this.filePath, "utf8")) as SarathiDashboard;
+  }
+
+  private persist(): void {
+    mkdirSync(dirname(this.filePath), { recursive: true });
+    const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
+    writeFileSync(temporaryPath, JSON.stringify(this.state, null, 2));
+    renameSync(temporaryPath, this.filePath);
+  }
+}
+
+const TICKET_TITLES: ReadonlyArray<[string, string]> = [
+  ["01", "Close launch decisions"],
+  ["02", "Resume a task after restart"],
+  ["03", "Configure and chat with specialists"],
+  ["04", "Run through one subscription-backed runtime"],
+  ["05", "Load scoped context and recover knowledge"],
+  ["06", "Use and safely update skills"],
+  ["07", "Coordinate bounded delegated work"],
+  ["08", "Start at login and control pause"],
+  ["09", "Discover assigned MRs"],
+  ["10", "Group MRs and untangle Jira links"],
+  ["11", "Review a group into evidence-backed drafts"],
+  ["12", "Approve revision-bound action batches"],
+  ["13", "Publish and maintain inline findings"],
+  ["14", "Apply Jira assignment and severity policy"],
+  ["15", "Merge eligible groups and complete Jira"],
+  ["16", "Confirm Teams identity and send a notification"],
+  ["17", "Confirm team holidays"],
+  ["18", "Send bounded working-hour reminders"],
+  ["19", "Present consolidated delivery reports"],
+  ["20", "Verify and package the first release"]
+];
+
+function defaultDashboard(): SarathiDashboard {
+  return {
+    runtime: {
+      name: "Hermes",
+      state: "unavailable",
+      billingMode: "subscription-only",
+      reason: "Native runtime launch is not verified on this host."
+    },
+    controls: { manualPaused: false, changedAt: null },
+    discovery: {
+      status: "blocked",
+      reason: "GitLab adapter not configured; no external reads attempted.",
+      lastCheckedAt: null,
+      mergeRequests: []
+    },
+    tickets: TICKET_TITLES.map(([id, title]) => ({
+      id,
+      title,
+      status: id === "02" ? "complete" : "blocked",
+      reason:
+        id === "02"
+          ? "Durable task results and restart replay are implemented."
+          : "Blocked by unresolved policy, integration proof, or an earlier ticket."
+    })),
+    specialists: [
+      {
+        id: "sarathi",
+        name: "Sarathi",
+        role: "coordinator",
+        runtime: "unselected",
+        status: "active",
+        scope: "local project"
+      }
+    ],
+    recentTasks: [],
+    groups: [],
+    reviewRounds: [],
+    actionBatches: [],
+    report: { merged: 0, blocked: 0, skipped: 0 }
+  };
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
+}
