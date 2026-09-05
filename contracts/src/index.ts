@@ -20,3 +20,18 @@ export interface AgentAbstraction {
   runTask(task: string, sessionKey: string): TaskStream;
   asOrchestrator(): OrchestratorCapability | null;
 }
+
+export type TaskStatus =
+  | "queued"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "unavailable";
+
+export type TaskTerminalStatus = Exclude<TaskStatus, "queued" | "running">;
+
+export interface TaskOutcome {
+  status: TaskTerminalStatus;
+  message?: string;
+}

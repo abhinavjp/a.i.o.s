@@ -4,6 +4,7 @@ import { App } from "./App.js";
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
   vi.unstubAllGlobals();
 });
 
@@ -30,9 +31,9 @@ class FakeEventSource {
     this.onmessage?.({ data });
   }
 
-  emitDone() {
+  emitDone(data = "") {
     for (const listener of this.listeners["done"] ?? []) {
-      listener({ data: "" });
+      listener({ data });
     }
   }
 }
@@ -176,11 +177,70 @@ describe("App", () => {
     const source = FakeEventSource.instances[0]!;
 
     act(() => {
-      source.emitDone();
+      source.emitDone(JSON.stringify({ status: "completed" }));
     });
 
-    expect(await screen.findByText(/done/i)).toBeTruthy();
+    expect(await screen.findByText(/completed/i)).toBeTruthy();
     expect(source.close).toHaveBeenCalled();
+  });
+
+  test("renders a blocked terminal outcome from the task stream", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockImplementation((url: string) => {
+        if (url === "/api/agents") {
+          return stubAgentsFetch()();
+        }
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({ taskId: "task-blocked" })
+        });
+      })
+    );
+
+    render(<App />);
+    await screen.findByRole("textbox", { name: /task/i });
+    fireEvent.change(screen.getByRole("textbox", { name: /task/i }), {
+      target: { value: "needs approval" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: /run/i }));
+
+    await vi.waitFor(() => {
+      expect(FakeEventSource.instances).toHaveLength(1);
+    });
+    act(() => {
+      FakeEventSource.instances[0]?.emitDone(
+        JSON.stringify({ status: "blocked", message: "needs approval" })
+      );
+    });
+
+    expect(await screen.findByText(/blocked/i)).toBeTruthy();
+  });
+
+  test("reconnects to the persisted task without submitting it again", async () => {
+    FakeEventSource.instances = [];
+    localStorage.setItem("lastTaskId", "task-resume");
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const fetchMock = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ agents: [] })
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+
+    await vi.waitFor(() => {
+      expect(FakeEventSource.instances).toHaveLength(1);
+    });
+    expect(FakeEventSource.instances[0]?.url).toBe(
+      "/api/agents/active/tasks/task-resume/stream"
+    );
+    expect(fetchMock).not.toHaveBeenCalledWith(
+      "/api/agents/active/tasks",
+      expect.anything()
+    );
   });
 
   test("submitting a second task before the first stream's done closes the first EventSource and starts fresh output", async () => {

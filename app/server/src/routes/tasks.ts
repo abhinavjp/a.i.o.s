@@ -1,7 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentManager } from "@aios/agents";
+import type { TaskOutcome } from "@aios/contracts";
 import { TaskRunRegistry } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
+import type { TaskStore } from "../TaskStore.js";
 
 interface SubmitTaskBody {
   task: string;
@@ -11,8 +13,12 @@ interface StreamParams {
   taskId: string;
 }
 
-export function registerTaskRoutes(app: FastifyInstance, manager: AgentManager): void {
-  const registry = new TaskRunRegistry();
+export function registerTaskRoutes(
+  app: FastifyInstance,
+  manager: AgentManager,
+  store: TaskStore
+): void {
+  const registry = new TaskRunRegistry(store);
 
   app.post<{ Body: SubmitTaskBody }>("/api/agents/active/tasks", async (request, reply) => {
     const { task } = request.body;
@@ -24,6 +30,29 @@ export function registerTaskRoutes(app: FastifyInstance, manager: AgentManager):
     reply.code(202);
     return { taskId };
   });
+
+  app.get<{ Params: StreamParams }>(
+    "/api/agents/active/tasks/:taskId",
+    async (request, reply) => {
+      const { taskId } = request.params;
+
+      const record = registry.get(taskId);
+      if (!record) {
+        reply.code(404);
+        return { error: "Task not found" };
+      }
+
+      return {
+        taskId: record.taskId,
+        task: record.task,
+        status: record.status,
+        chunks: record.chunks,
+        outcome: record.outcome,
+        createdAt: record.createdAt,
+        updatedAt: record.updatedAt
+      };
+    }
+  );
 
   app.get<{ Params: StreamParams }>(
     "/api/agents/active/tasks/:taskId/stream",
@@ -47,8 +76,8 @@ export function registerTaskRoutes(app: FastifyInstance, manager: AgentManager):
           (chunk) => {
             reply.raw.write(`data: ${chunk}\n\n`);
           },
-          () => {
-            reply.raw.write("event: done\ndata: \n\n");
+          (outcome: TaskOutcome) => {
+            reply.raw.write(`event: done\ndata: ${JSON.stringify(outcome)}\n\n`);
             reply.raw.end();
             resolve();
           }
