@@ -87,6 +87,23 @@ describe("POST /api/agents/active/tasks", () => {
     });
   });
 
+  test.each([[], { unknown: 1 }])("rejects invalid route-policy container %j before runtime admission", async (routePolicy) => {
+    await withTaskStore(async (path) => {
+      const router = { run: vi.fn() };
+      const configurator = new AgentConfigurator();
+      configurator.register("fake", new FakeAgent());
+      const app = buildApp(new AgentManager(configurator, "fake"), { taskStore: new FileTaskStore(path), runtimeRouter: router });
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: { task: "reject invalid container", routePolicy }
+      });
+      expect(response.statusCode).toBe(400);
+      expect(router.run).not.toHaveBeenCalled();
+      await app.close();
+    });
+  });
+
   test("returns 202 with a taskId immediately", async () => {
     const configurator = new AgentConfigurator();
     configurator.register("fake", new FakeAgent());
