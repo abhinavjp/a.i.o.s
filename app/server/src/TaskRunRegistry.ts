@@ -1,27 +1,39 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAbstraction, TaskOutcome } from "@aios/contracts";
-import type { TaskStore } from "./TaskStore.js";
+import type { AgentAbstraction, RuntimeRouter, TaskOutcome } from "@aios/contracts";
+import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
+import {
+  DefaultExecutionPlanResolver,
+  type ExecutionPlanResolver
+} from "./sarathi/ExecutionPlanResolver.js";
+import type { StoredTask, TaskStore } from "./TaskStore.js";
 
 interface TaskListener {
   onChunk: (chunk: string) => void;
   onDone: (outcome: TaskOutcome) => void;
 }
 
+export interface TaskExecutionObserver {
+  record(task: StoredTask): void;
+}
+
 /**
- * Coordinates live listeners while the TaskStore owns task durability.
- *
- * `start` consumes the agent stream immediately and persists every chunk and
- * terminal outcome. `attach` replays persisted chunks before subscribing to
- * the live listener, so reconnects never execute the agent again.
+ * Coordinates live listeners while TaskStore owns canonical task, plan, and
+ * attempt durability. Router adapters only produce normalized events.
  */
 export class TaskRunRegistry {
   private readonly listeners = new Map<string, TaskListener>();
 
-  constructor(private readonly store: TaskStore) {}
+  constructor(
+    private readonly store: TaskStore,
+    private readonly runtimeRouter: RuntimeRouter = new AgentRuntimeRouter(),
+    private readonly planResolver: ExecutionPlanResolver = new DefaultExecutionPlanResolver(),
+    private readonly observer?: TaskExecutionObserver
+  ) {}
 
   start(agent: AgentAbstraction, task: string, sessionKey: string): string {
     const taskId = randomUUID();
     const now = new Date().toISOString();
+    const resolvedExecutionPlan = this.planResolver.resolve({ taskId, agent });
     this.store.create({
       taskId,
       task,
@@ -30,37 +42,23 @@ export class TaskRunRegistry {
       status: "running",
       outcome: null,
       createdAt: now,
-      updatedAt: now
-    });
-
-    void (async () => {
-      let health;
-      try {
-        health = agent.checkHealth();
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "agent health check failed";
-        this.finish(taskId, { status: "unavailable", message });
-        return;
-      }
-
-      if (!health.ok) {
-        this.store.appendChunk(taskId, health.reason);
-        this.finish(taskId, { status: "unavailable", message: health.reason });
-        return;
-      }
-
-      try {
-        for await (const chunk of agent.runTask(task, sessionKey)) {
-          this.store.appendChunk(taskId, chunk);
-          this.listeners.get(taskId)?.onChunk(chunk);
+      updatedAt: now,
+      resolvedExecutionPlan,
+      attempts: [
+        {
+          attemptId: randomUUID(),
+          route: { ...resolvedExecutionPlan.route },
+          status: "running",
+          outcome: null,
+          startedAt: now,
+          completedAt: null,
+          events: []
         }
-        this.finish(taskId, { status: "completed" });
-      } catch (error) {
-        const message = error instanceof Error ? error.message : "task failed";
-        this.finish(taskId, { status: "failed", message });
-      }
-    })();
+      ]
+    });
+    this.notify(taskId);
 
+    void this.execute({ taskId, task, sessionKey, plan: resolvedExecutionPlan, agent });
     return taskId;
   }
 
@@ -95,12 +93,44 @@ export class TaskRunRegistry {
     return true;
   }
 
+  private async execute(input: Parameters<RuntimeRouter["run"]>[0]): Promise<void> {
+    try {
+      for await (const event of this.runtimeRouter.run(input)) {
+        this.store.appendRuntimeEvent(input.taskId, event);
+        if (event.type === "progress") {
+          this.store.appendChunk(input.taskId, event.text);
+          this.listeners.get(input.taskId)?.onChunk(event.text);
+          this.notify(input.taskId);
+          continue;
+        }
+
+        this.finish(input.taskId, event.outcome);
+        return;
+      }
+      this.finish(input.taskId, {
+        status: "failed",
+        message: "runtime ended without a terminal outcome"
+      });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : "runtime execution failed";
+      this.finish(input.taskId, { status: "failed", message });
+    }
+  }
+
   private finish(taskId: string, outcome: TaskOutcome): void {
     this.store.complete(taskId, outcome);
+    this.notify(taskId);
     const listener = this.listeners.get(taskId);
     if (listener) {
       this.listeners.delete(taskId);
       listener.onDone(outcome);
+    }
+  }
+
+  private notify(taskId: string): void {
+    const task = this.store.get(taskId);
+    if (task) {
+      this.observer?.record(task);
     }
   }
 }

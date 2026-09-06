@@ -14,7 +14,7 @@ type Dashboard = {
   runtime: {
     name: string;
     state: "unavailable" | "unverified" | "ready";
-    billingMode: "subscription-only";
+    billingMode: "fake" | "subscription-only" | "api";
     reason: string;
   };
   controls: { manualPaused: boolean; changedAt: string | null };
@@ -47,7 +47,11 @@ type Dashboard = {
   recentTasks: Array<{
     id: string;
     title: string;
-    status: "completed" | "failed" | "blocked" | "unavailable";
+    status: "queued" | "running" | "completed" | "failed" | "blocked" | "unavailable";
+    runtime: string;
+    planId: string;
+    attemptId: string;
+    evidence: string | null;
   }>;
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
@@ -316,6 +320,8 @@ export function App() {
             <section className="panel review-panel" id="review"><div className="panel-heading"><div><span className="eyebrow">Review queue</span><h2>Assigned merge requests</h2></div><button className="text-button" type="button" onClick={checkNow} disabled={isRefreshing}>Check now <span>↗</span></button></div>{dashboard.discovery.status === "blocked" ? <div className="blocked-state"><div className="blocked-icon">!</div><div><strong>Discovery is waiting for a real adapter.</strong><p>{dashboard.discovery.reason}</p></div><span className="state-chip blocked">blocked</span></div> : dashboard.discovery.mergeRequests.length === 0 ? <div className="empty-state"><span>◌</span><p>No assigned merge requests in this check.</p></div> : <div className="mr-list">{dashboard.discovery.mergeRequests.map((mergeRequest) => <div className="mr-row" key={mergeRequest.id}><strong>{mergeRequest.title}</strong><span>{mergeRequest.project}</span><span>{mergeRequest.role}</span><span>{mergeRequest.coverage}</span></div>)}</div>}</section>
 
             <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div></form>{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
+
+            <section className="panel execution-panel" aria-label="Execution evidence"><div className="panel-heading"><div><span className="eyebrow">Durable execution</span><h2>Latest runtime evidence</h2></div></div>{dashboard.recentTasks.length === 0 ? <p className="panel-note subtle">No routed attempts recorded.</p> : <div className="gate-list">{dashboard.recentTasks.map((attempt) => <div className="gate-row" key={attempt.id}><span className="gate-index">{statusLabel(attempt.status)}</span><div><strong>{attempt.title}</strong><small>{attempt.runtime} · plan {attempt.planId} · attempt {attempt.attemptId}</small>{attempt.evidence && <small>{attempt.evidence}</small>}</div><span className="state-chip">{statusLabel(attempt.status)}</span></div>)}</div>}</section>
           </div>
 
           <aside className="side-column">

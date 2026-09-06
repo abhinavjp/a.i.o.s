@@ -1,8 +1,9 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentManager } from "@aios/agents";
-import type { TaskOutcome } from "@aios/contracts";
-import { TaskRunRegistry } from "../TaskRunRegistry.js";
+import type { RuntimeRouter, TaskOutcome } from "@aios/contracts";
+import { TaskRunRegistry, type TaskExecutionObserver } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
+import type { ExecutionPlanResolver } from "../sarathi/ExecutionPlanResolver.js";
 import type { TaskStore } from "../TaskStore.js";
 
 interface SubmitTaskBody {
@@ -13,12 +14,24 @@ interface StreamParams {
   taskId: string;
 }
 
+export interface TaskRouteOptions {
+  runtimeRouter?: RuntimeRouter;
+  planResolver?: ExecutionPlanResolver;
+  executionObserver?: TaskExecutionObserver;
+}
+
 export function registerTaskRoutes(
   app: FastifyInstance,
   manager: AgentManager,
-  store: TaskStore
+  store: TaskStore,
+  options: TaskRouteOptions = {}
 ): void {
-  const registry = new TaskRunRegistry(store);
+  const registry = new TaskRunRegistry(
+    store,
+    options.runtimeRouter,
+    options.planResolver,
+    options.executionObserver
+  );
 
   app.post<{ Body: SubmitTaskBody }>("/api/agents/active/tasks", async (request, reply) => {
     const { task } = request.body;
@@ -49,7 +62,9 @@ export function registerTaskRoutes(
         chunks: record.chunks,
         outcome: record.outcome,
         createdAt: record.createdAt,
-        updatedAt: record.updatedAt
+        updatedAt: record.updatedAt,
+        resolvedExecutionPlan: record.resolvedExecutionPlan,
+        attempts: record.attempts ?? []
       };
     }
   );

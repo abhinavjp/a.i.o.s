@@ -1,6 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import type { TaskStatus } from "@aios/contracts";
+import type { StoredTask } from "../TaskStore.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
 export type SpecialistStatus = "pending_approval" | "active";
@@ -24,7 +26,7 @@ export interface Specialist {
 export interface RuntimeStatus {
   name: string;
   state: "unavailable" | "unverified" | "ready";
-  billingMode: "subscription-only";
+  billingMode: "fake" | "subscription-only" | "api";
   reason: string;
 }
 
@@ -50,7 +52,11 @@ export interface SarathiDashboard {
   recentTasks: Array<{
     id: string;
     title: string;
-    status: "completed" | "failed" | "blocked" | "unavailable";
+    status: TaskStatus;
+    runtime: string;
+    planId: string;
+    attemptId: string;
+    evidence: string | null;
   }>;
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
@@ -66,6 +72,7 @@ export interface SarathiStore {
   snapshot(): SarathiDashboard;
   setPaused(paused: boolean): SarathiDashboard;
   checkDiscovery(): SarathiDashboard;
+  recordTask(task: StoredTask): SarathiDashboard;
   createSpecialist(input: { name: string; role: string; runtime: string }): Specialist;
   approveSpecialist(id: string): Specialist | undefined;
 }
@@ -96,6 +103,38 @@ export class FileSarathiStore implements SarathiStore {
       status: "blocked",
       reason: "GitLab adapter not configured; no external reads attempted.",
       lastCheckedAt: new Date().toISOString()
+    };
+    this.persist();
+    return this.snapshot();
+  }
+
+  recordTask(task: StoredTask): SarathiDashboard {
+    const plan = task.resolvedExecutionPlan;
+    const attempt = task.attempts?.at(-1);
+    if (!plan || !attempt) {
+      return this.snapshot();
+    }
+
+    const lastProgress = [...attempt.events].reverse().find((event) => event.type === "progress");
+    const evidence = lastProgress?.type === "progress" ? lastProgress.text : null;
+    const summary = {
+      id: task.taskId,
+      title: task.task,
+      status: task.status,
+      runtime: plan.route.runtime,
+      planId: plan.planId,
+      attemptId: attempt.attemptId,
+      evidence
+    };
+    this.state.recentTasks = [
+      summary,
+      ...this.state.recentTasks.filter((candidate) => candidate.id !== task.taskId)
+    ].slice(0, 10);
+    this.state.runtime = {
+      name: runtimeName(plan.route.runtime),
+      state: task.status === "unavailable" ? "unavailable" : "ready",
+      billingMode: plan.route.billingMode === "subscription" ? "subscription-only" : plan.route.billingMode,
+      reason: task.outcome?.message ?? `Attempt ${attempt.attemptId} is ${task.status}.`
     };
     this.persist();
     return this.snapshot();
@@ -207,4 +246,8 @@ function defaultDashboard(): SarathiDashboard {
 
 function clone<T>(value: T): T {
   return JSON.parse(JSON.stringify(value)) as T;
+}
+
+function runtimeName(runtime: string): string {
+  return runtime === "fake" ? "Fake runtime" : runtime;
 }

@@ -1,6 +1,6 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type {
   AgentAbstraction,
   AgentInfo,
@@ -9,9 +9,10 @@ import type {
   TaskStream
 } from "@aios/contracts";
 import { describe, expect, test, vi } from "vitest";
-import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
+import { AgentConfigurator, AgentManager, CustomAgent, FakeAgent } from "@aios/agents";
 import { buildApp } from "../src/app.js";
 import { FileTaskStore } from "../src/TaskStore.js";
+import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
@@ -71,6 +72,137 @@ describe("POST /api/agents/active/tasks", () => {
 });
 
 describe("GET /api/agents/active/tasks/:taskId/stream", () => {
+  test("records the active Agent Abstraction identity in the default compatibility plan", async () => {
+    await withTaskStore(async (path) => {
+      const configurator = new AgentConfigurator();
+      configurator.register("custom", new CustomAgent());
+      const app = buildApp(new AgentManager(configurator, "custom"), {
+        taskStore: new FileTaskStore(path)
+      });
+
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: { task: "record the active facade" }
+      });
+      const { taskId } = submitted.json();
+      await wait(10);
+
+      const task = await app.inject({
+        method: "GET",
+        url: `/api/agents/active/tasks/${taskId}`
+      });
+      expect(task.json().resolvedExecutionPlan.route).toMatchObject({
+        runtime: "agent-abstraction",
+        provider: "custom",
+        model: "custom"
+      });
+      await app.close();
+    });
+  });
+
+  test("persists an immutable routed plan and fake-runtime attempt through restart", async () => {
+    await withTaskStore(async (path) => {
+      const router = {
+        async *run() {
+          yield { type: "progress", text: "Fake router accepted the work." };
+          yield {
+            type: "terminal",
+            outcome: { status: "completed", message: "fake runtime completed" }
+          };
+        }
+      };
+      const sarathiPath = join(dirname(path), "sarathi.json");
+      const configurator = new AgentConfigurator();
+      configurator.register("fake", new FakeAgent());
+      const firstApp = buildApp(new AgentManager(configurator, "fake"), {
+        taskStore: new FileTaskStore(path),
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        runtimeRouter: router,
+        executionPlanResolver: {
+          resolve: ({ taskId }) => ({
+            planId: "fake-plan-v1",
+            taskId,
+            route: { runtime: "fake", provider: "test", model: "fake-v1", billingMode: "fake" },
+            configurationVersions: {
+              task: "task-default-v1",
+              workflow: "workflow-default-v1",
+              specialist: "specialist-default-v1",
+              global: "global-default-v1"
+            },
+            resolvedAt: "2026-09-06T00:00:00.000Z"
+          })
+        }
+      });
+
+      const submitted = await firstApp.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: { task: "route this through the fake runtime" }
+      });
+      const { taskId } = submitted.json();
+      await wait(10);
+
+      const task = await firstApp.inject({
+        method: "GET",
+        url: `/api/agents/active/tasks/${taskId}`
+      });
+      expect(task.json()).toMatchObject({
+        taskId,
+        status: "completed",
+        chunks: ["Fake router accepted the work."],
+        outcome: { status: "completed", message: "fake runtime completed" },
+        resolvedExecutionPlan: {
+          route: { runtime: "fake", provider: "test", model: "fake-v1" },
+          configurationVersions: {
+            task: "task-default-v1",
+            workflow: "workflow-default-v1",
+            specialist: "specialist-default-v1",
+            global: "global-default-v1"
+          }
+        },
+        attempts: [
+          {
+            status: "completed",
+            outcome: { status: "completed", message: "fake runtime completed" },
+            events: [
+              { type: "progress", text: "Fake router accepted the work." },
+              { type: "terminal", outcome: { status: "completed" } }
+            ]
+          }
+        ]
+      });
+
+      const dashboard = await firstApp.inject({ method: "GET", url: "/api/sarathi/dashboard" });
+      expect(dashboard.json()).toMatchObject({
+        runtime: { name: "Fake runtime", state: "ready", billingMode: "fake" },
+        recentTasks: [
+          {
+            id: taskId,
+            status: "completed",
+            runtime: "fake",
+            evidence: "Fake router accepted the work."
+          }
+        ]
+      });
+      await firstApp.close();
+
+      const restarted = buildApp(new AgentManager(configurator, "fake"), {
+        taskStore: new FileTaskStore(path),
+        sarathiStore: new FileSarathiStore(sarathiPath)
+      });
+      const recovered = await restarted.inject({
+        method: "GET",
+        url: `/api/agents/active/tasks/${taskId}`
+      });
+      expect(recovered.json()).toMatchObject({
+        resolvedExecutionPlan: task.json().resolvedExecutionPlan,
+        attempts: task.json().attempts
+      });
+      await restarted.close();
+    });
+  });
+
   test("streams buffered chunks then done for a task that already finished", async () => {
     const configurator = new AgentConfigurator();
     configurator.register("fake", new FakeAgent());

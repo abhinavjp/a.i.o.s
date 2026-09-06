@@ -1,6 +1,12 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskOutcome, TaskStatus } from "@aios/contracts";
+import type {
+  NormalizedRuntimeEvent,
+  ResolvedExecutionPlan,
+  RuntimeAttempt,
+  TaskOutcome,
+  TaskStatus
+} from "@aios/contracts";
 
 export interface StoredTask {
   taskId: string;
@@ -11,12 +17,15 @@ export interface StoredTask {
   outcome: TaskOutcome | null;
   createdAt: string;
   updatedAt: string;
+  resolvedExecutionPlan?: ResolvedExecutionPlan;
+  attempts?: RuntimeAttempt[];
 }
 
 export interface TaskStore {
   get(taskId: string): StoredTask | undefined;
   create(task: StoredTask): void;
   appendChunk(taskId: string, chunk: string): void;
+  appendRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void;
   complete(taskId: string, outcome: TaskOutcome): void;
 }
 
@@ -50,10 +59,39 @@ export class FileTaskStore implements TaskStore {
     this.persist();
   }
 
+  appendRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void {
+    const record = this.require(taskId);
+    const attempt = record.attempts?.at(-1);
+    if (!attempt) {
+      throw new Error(`Task has no durable attempt: ${taskId}`);
+    }
+    record.attempts = [
+      ...(record.attempts ?? []).slice(0, -1),
+      {
+        ...attempt,
+        events: [...attempt.events, { ...event, observedAt: new Date().toISOString() }]
+      }
+    ];
+    record.updatedAt = new Date().toISOString();
+    this.persist();
+  }
+
   complete(taskId: string, outcome: TaskOutcome): void {
     const record = this.require(taskId);
     record.status = outcome.status;
     record.outcome = { ...outcome };
+    const attempt = record.attempts?.at(-1);
+    if (attempt) {
+      record.attempts = [
+        ...(record.attempts ?? []).slice(0, -1),
+        {
+          ...attempt,
+          status: outcome.status,
+          outcome: { ...outcome },
+          completedAt: new Date().toISOString()
+        }
+      ];
+    }
     record.updatedAt = new Date().toISOString();
     this.persist();
   }
@@ -75,6 +113,22 @@ export class FileTaskStore implements TaskStore {
         const now = new Date().toISOString();
         task.status = "unavailable";
         task.outcome = { status: "unavailable", message: INTERRUPTED_MESSAGE };
+        const attempt = task.attempts?.at(-1);
+        if (attempt) {
+          task.attempts = [
+            ...(task.attempts ?? []).slice(0, -1),
+            {
+              ...attempt,
+              status: "unavailable",
+              outcome: { ...task.outcome },
+              completedAt: now,
+              events: [
+                ...attempt.events,
+                { type: "terminal", outcome: { ...task.outcome }, observedAt: now }
+              ]
+            }
+          ];
+        }
         task.updatedAt = now;
         recovered = true;
       }
@@ -111,6 +165,23 @@ function cloneRecord(record: StoredTask): StoredTask {
     status: record.status,
     outcome: record.outcome ? { ...record.outcome } : null,
     createdAt: record.createdAt,
-    updatedAt: record.updatedAt
+    updatedAt: record.updatedAt,
+    resolvedExecutionPlan: record.resolvedExecutionPlan
+      ? {
+          ...record.resolvedExecutionPlan,
+          route: { ...record.resolvedExecutionPlan.route },
+          configurationVersions: { ...record.resolvedExecutionPlan.configurationVersions }
+        }
+      : undefined,
+    attempts: record.attempts?.map((attempt) => ({
+      ...attempt,
+      route: { ...attempt.route },
+      outcome: attempt.outcome ? { ...attempt.outcome } : null,
+      events: attempt.events.map((event) =>
+        event.type === "progress"
+          ? { ...event }
+          : { ...event, outcome: { ...event.outcome } }
+      )
+    }))
   };
 }

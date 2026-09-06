@@ -90,7 +90,17 @@ describe("App", () => {
               { id: "09", title: "Discover assigned MRs", status: "blocked" }
             ],
             specialists: [],
-            recentTasks: [],
+            recentTasks: [
+              {
+                id: "task-fake-1",
+                title: "route this through the fake runtime",
+                status: "completed",
+                runtime: "fake",
+                planId: "plan-fake-1",
+                attemptId: "attempt-fake-1",
+                evidence: "Fake router accepted the work."
+              }
+            ],
             groups: [],
             reviewRounds: [],
             actionBatches: [],
@@ -107,6 +117,7 @@ describe("App", () => {
     expect(screen.getByText("Readiness gates")).toBeTruthy();
     expect(screen.getByText("Discover assigned MRs")).toBeTruthy();
     expect(screen.getByText("GitLab adapter not configured")).toBeTruthy();
+    expect(screen.getByText("Fake router accepted the work.")).toBeTruthy();
   });
 
   test("creates a pending specialist and activates it only after approval", async () => {
