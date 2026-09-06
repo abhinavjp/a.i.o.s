@@ -186,6 +186,7 @@ export function App() {
       const outcome = parseTaskOutcome((event as MessageEvent<string>).data);
       eventSource.close();
       setStatus(outcome.status);
+      void refreshDashboard();
     });
   }
 
@@ -240,6 +241,7 @@ export function App() {
       return;
     }
     const { taskId } = next;
+    void refreshDashboard();
     openTaskStream(taskId);
   }
 

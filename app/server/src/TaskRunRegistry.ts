@@ -7,7 +7,7 @@ import {
   type ExecutionPlanResolver
 } from "./sarathi/ExecutionPlanResolver.js";
 import type { StoredTask, TaskStore } from "./TaskStore.js";
-import type { ExecutionPlanAdmissionValidator, FixedRouteSelector } from "./sarathi/RouteEligibility.js";
+import { IneligibleRouteError, type ExecutionPlanAdmissionValidator, type FixedRouteSelector } from "./sarathi/RouteEligibility.js";
 
 interface TaskListener {
   onChunk: (chunk: string) => void;
@@ -45,6 +45,7 @@ export class TaskRunRegistry {
     const resolvedPlan = this.planResolver.resolve({ taskId, agent, ...routing });
     const resolvedExecutionPlan = snapshotExecutionPlan(this.fixedRouteSelector?.select(resolvedPlan) ?? resolvedPlan);
     this.planAdmissionValidator?.validate(resolvedExecutionPlan);
+    this.assertSelectedAgentHealthy(agent, resolvedExecutionPlan);
     this.store.create({
       taskId,
       task,
@@ -142,6 +143,24 @@ export class TaskRunRegistry {
     const task = this.store.get(taskId);
     if (task) {
       this.observer?.record(task);
+    }
+  }
+
+  private assertSelectedAgentHealthy(agent: AgentAbstraction, plan: ResolvedExecutionPlan): void {
+    if (!plan.selection || plan.selection.authenticationMode === "fake" ||
+      (plan.route.runtime === "unmeasured" && plan.route.billingMode === "unmeasured")) {
+      return;
+    }
+    try {
+      const health = agent.checkHealth();
+      if (!health.ok) {
+        throw new IneligibleRouteError(health.reason);
+      }
+    } catch (error) {
+      if (error instanceof IneligibleRouteError) {
+        throw error;
+      }
+      throw new IneligibleRouteError(error instanceof Error ? error.message : "selected runtime health check failed");
     }
   }
 }

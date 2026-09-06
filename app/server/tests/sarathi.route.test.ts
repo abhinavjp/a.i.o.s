@@ -1,8 +1,10 @@
+import { existsSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
+import type { AgentAbstraction, AgentInfo, HealthStatus, TaskStream } from "@aios/contracts";
 import { buildApp } from "../src/app.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
@@ -22,7 +24,89 @@ function makeManager() {
   return new AgentManager(configurator, "fake");
 }
 
+class HealthChangingFakeAgent implements AgentAbstraction {
+  unhealthy = false;
+
+  getInfo(): AgentInfo {
+    return { id: "health-changing-fake", kind: "fake", displayName: "Health changing fake" };
+  }
+
+  checkHealth(): HealthStatus {
+    return this.unhealthy ? { ok: false, reason: "selected runtime is unhealthy" } : { ok: true };
+  }
+
+  runTask(): TaskStream {
+    return (async function* () { yield "unused"; })();
+  }
+
+  asOrchestrator() {
+    return null;
+  }
+}
+
 describe("Sarathi dashboard routes", () => {
+  test("rejects a catalog-qualified route when the selected agent becomes unhealthy before persistence", async () => {
+    await withStore(async (sarathiPath) => {
+      const agent = new HealthChangingFakeAgent();
+      const configurator = new AgentConfigurator();
+      configurator.register("fake", agent);
+      const manager = new AgentManager(configurator, "fake");
+      agent.unhealthy = true;
+      let runtimeRuns = 0;
+      const taskPath = join(dirname(sarathiPath), "tasks.json");
+      const app = buildApp(manager, {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(taskPath),
+        runtimeRouter: {
+          async *run() {
+            runtimeRuns += 1;
+            yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+          }
+        },
+        providerCatalogAdapters: [{
+          provider: "health-provider",
+          async discover() {
+            return {
+              authenticationMode: "none" as const,
+              provenance: "deterministic health catalog",
+              observedAt: "2026-09-06T13:00:00.000Z",
+              completeness: "complete" as const,
+              models: [{
+                model: "health-model",
+                enabled: true,
+                configured: true,
+                qualification: {
+                  health: "qualified" as const,
+                  streaming: "qualified" as const,
+                  structuredOutput: "qualified" as const,
+                  toolCalling: "qualified" as const
+                }
+              }]
+            };
+          }
+        }]
+      });
+      await app.inject({ method: "POST", url: "/api/sarathi/providers/health-provider/catalog/refresh" });
+
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: {
+          task: "must not persist unhealthy fixed selection",
+          routePolicy: {
+            primary: { runtime: "fake", provider: "health-provider", model: "health-model", billingMode: "fake" }
+          }
+        }
+      });
+
+      expect(submitted.statusCode).toBe(400);
+      expect(submitted.json().error).toBe("selected runtime is unhealthy");
+      expect(existsSync(taskPath)).toBe(false);
+      expect(runtimeRuns).toBe(0);
+      await app.close();
+    });
+  });
+
   test("runs an enabled qualified fixed route and records its requested and effective identities", async () => {
     await withStore(async (sarathiPath) => {
       let receivedPlan: unknown;

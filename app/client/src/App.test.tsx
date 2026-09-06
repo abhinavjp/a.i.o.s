@@ -367,6 +367,45 @@ describe("App", () => {
     ));
   });
 
+  test("refreshes fixed-route selection evidence after admission and terminal completion", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    let dashboardRequests = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/agents") return stubAgentsFetch()();
+      if (url === "/api/sarathi/dashboard") {
+        dashboardRequests += 1;
+        const selectionReason = dashboardRequests === 1 ? null : dashboardRequests === 2
+          ? "fixed route selected: enabled, healthy, configured, and capability-qualified."
+          : "fixed route completed with the admitted selection.";
+        return Promise.resolve({
+          ok: true,
+          json: async () => ({
+            runtime: { name: "Fake runtime", state: "ready", billingMode: "fake", reason: "ready" },
+            controls: { manualPaused: false }, routing: { policies: [] }, providerCatalogs: [],
+            discovery: { status: "blocked", reason: "blocked", lastCheckedAt: null, mergeRequests: [] },
+            tickets: [], specialists: [],
+            recentTasks: selectionReason ? [{
+              id: "task-selection", title: "show selected route", status: "completed", runtime: "fake",
+              planId: "plan-selection", attemptId: "attempt-selection", evidence: null, selectionReason
+            }] : [],
+            groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
+          })
+        });
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ taskId: "task-selection" }) });
+    }));
+
+    render(<App />);
+    fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "show selected route" } });
+    fireEvent.click(screen.getByRole("button", { name: /run/i }));
+
+    expect(await screen.findByText("fixed route selected: enabled, healthy, configured, and capability-qualified.")).toBeTruthy();
+    act(() => FakeEventSource.instances[0]?.emitDone(JSON.stringify({ status: "completed" })));
+    expect(await screen.findByText("fixed route completed with the admitted selection.")).toBeTruthy();
+    expect(dashboardRequests).toBe(3);
+  });
+
   test("explains a rejected route instead of opening a task stream", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
