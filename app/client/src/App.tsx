@@ -18,6 +18,7 @@ type Dashboard = {
     reason: string;
   };
   controls: { manualPaused: boolean; changedAt: string | null };
+  routing: { policies: Array<{ scope: "global" | "specialist" | "workflow" | "task"; id: string; version: string }> };
   discovery: {
     status: "blocked" | "ready";
     reason: string;
@@ -75,6 +76,7 @@ const DEFAULT_DASHBOARD: Dashboard = {
     reason: "Native runtime launch is not verified on this host."
   },
   controls: { manualPaused: false, changedAt: null },
+  routing: { policies: [] },
   discovery: {
     status: "blocked",
     reason: "GitLab adapter not configured; no external reads attempted.",
@@ -143,6 +145,8 @@ export function App() {
     runtime: "unselected"
   });
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
+  const [routeDraft, setRouteDraft] = useState({ scope: "global" as "global" | "specialist" | "workflow", id: "", primaryModel: "fake", fallbackModel: "", overridePrimary: true, overrideFallback: false });
+  const [routeMessage, setRouteMessage] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   function openTaskStream(taskId: string) {
@@ -268,6 +272,33 @@ export function App() {
     setSpecialistMessage(`${next.specialist.name} is active.`);
   }
 
+  async function saveRoutePolicy(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (routeDraft.scope !== "global" && !routeDraft.id.trim()) {
+      setRouteMessage("Name the specialist or workflow.");
+      return;
+    }
+    const route = (model: string) => ({ runtime: "fake", provider: "test", model, billingMode: "fake" });
+    const response = await fetch(
+      `/api/sarathi/routing/policies/${routeDraft.scope}${routeDraft.scope === "global" ? "" : `/${encodeURIComponent(routeDraft.id)}`}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(routeDraft.overridePrimary ? { primary: route(routeDraft.primaryModel) } : {}),
+          ...(routeDraft.overrideFallback ? { fallbacks: routeDraft.fallbackModel ? [route(routeDraft.fallbackModel)] : [] } : {})
+        })
+      }
+    );
+    if (!response.ok) {
+      setRouteMessage("Route policy was rejected.");
+      return;
+    }
+    const next = await response.json();
+    setDashboard((current) => ({ ...current, routing: next.routing }));
+    setRouteMessage(`Saved ${next.policy.version}; active tasks remain pinned.`);
+  }
+
   const blockedTickets = dashboard.tickets.filter((ticket) => ticket.status === "blocked");
   const activeAgent = agents[0];
   const todayLabel = formatToday();
@@ -328,6 +359,8 @@ export function App() {
             <section className="panel gates-panel"><div className="panel-heading"><div><span className="eyebrow">Readiness gates</span><h2>What still needs proof</h2></div><span className="gate-count">{blockedTickets.length}</span></div><div className="gate-list">{blockedTickets.slice(0, 6).map((ticket) => <div className="gate-row" key={ticket.id}><span className="gate-index">{ticket.id}</span><div><strong>{ticket.title}</strong><small>{ticket.reason}</small></div><span className="state-chip blocked">blocked</span></div>)}</div>{blockedTickets.length > 6 && <p className="more-note">+ {blockedTickets.length - 6} more gates in the ticket map</p>}</section>
 
             <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Select after runtime proof</option><option value="fake">Fake test seam</option><option value="hermes">Hermes (unverified)</option></select></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className="state-chip ready">active</span>}</div>)}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
+
+            <section className="panel routing-panel"><div className="panel-heading"><div><span className="eyebrow">Routing policy</span><h2>New work only</h2></div></div><form className="specialist-form" onSubmit={saveRoutePolicy}><label htmlFor="route-scope">Scope<select id="route-scope" value={routeDraft.scope} onChange={(event) => setRouteDraft((draft) => ({ ...draft, scope: event.target.value as "global" | "specialist" | "workflow" }))}><option value="global">Global</option><option value="specialist">Specialist</option><option value="workflow">Workflow</option></select></label>{routeDraft.scope !== "global" && <label htmlFor="route-scope-id">Scope name<input id="route-scope-id" value={routeDraft.id} onChange={(event) => setRouteDraft((draft) => ({ ...draft, id: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overridePrimary} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override primary</label>{routeDraft.overridePrimary && <label htmlFor="route-primary">Primary model<input id="route-primary" value={routeDraft.primaryModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overrideFallback} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override fallback chain</label>{routeDraft.overrideFallback && <label htmlFor="route-fallback">Fallback model (blank clears)<input id="route-fallback" value={routeDraft.fallbackModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}<button className="specialist-submit" type="submit">Save route policy</button></form>{routeMessage && <p className="specialist-message" role="status">{routeMessage}</p>}<p className="panel-note subtle">Task overrides are recorded at admission. Later edits apply only to new tasks.</p></section>
 
             <section className="panel runtime-panel"><div className="panel-heading"><div><span className="eyebrow">Runtime</span><h2>Attributable, or stopped</h2></div></div><div className="runtime-card"><div className="runtime-card-top"><span className={`status-dot ${dashboard.runtime.state === "ready" ? "green" : "amber"}`} /><strong>{dashboard.runtime.name}</strong><span className="state-chip">{statusLabel(dashboard.runtime.state)}</span></div><p>{dashboard.runtime.reason}</p>{activeAgent ? <small className="agent-health"><strong>{activeAgent.displayName}</strong><span> · </span><span>{activeAgent.health.ok ? "healthy" : activeAgent.health.reason}</span></small> : <small>Agent health unavailable</small>}</div><div className="runtime-footnote">Billing mode: <strong>{dashboard.runtime.billingMode}</strong></div></section>
           </aside>

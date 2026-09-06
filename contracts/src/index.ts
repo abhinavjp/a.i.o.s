@@ -44,6 +44,14 @@ export interface ResolvedRoute {
   readonly billingMode: "fake" | "subscription" | "api" | "unmeasured";
 }
 
+/** Operator-editable policy fields; omitted fields inherit from lower precedence. */
+export interface RoutePolicyOverride {
+  readonly primary?: ResolvedRoute;
+  readonly fallbacks?: ReadonlyArray<ResolvedRoute>;
+}
+
+export type RoutePolicyScope = "global" | "specialist" | "workflow" | "task";
+
 /** Version identifiers of every configuration layer effective for one task. */
 export interface EffectiveConfigurationVersions {
   readonly task: string;
@@ -57,6 +65,7 @@ export interface ResolvedExecutionPlan {
   readonly planId: string;
   readonly taskId: string;
   readonly route: ResolvedRoute;
+  readonly fallbackRoutes: ReadonlyArray<ResolvedRoute>;
   readonly configurationVersions: EffectiveConfigurationVersions;
   readonly resolvedAt: string;
 }

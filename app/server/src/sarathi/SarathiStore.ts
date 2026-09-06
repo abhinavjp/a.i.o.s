@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { TaskStatus } from "@aios/contracts";
+import type { RoutePolicyOverride, RoutePolicyScope, TaskStatus } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
@@ -30,6 +30,13 @@ export interface RuntimeStatus {
   reason: string;
 }
 
+export interface RoutePolicyRecord {
+  scope: RoutePolicyScope;
+  id: string;
+  version: string;
+  policy: RoutePolicyOverride;
+}
+
 export interface DiscoveryState {
   status: "blocked" | "ready";
   reason: string;
@@ -45,6 +52,7 @@ export interface DiscoveryState {
 
 export interface SarathiDashboard {
   runtime: RuntimeStatus;
+  routing: { policies: RoutePolicyRecord[] };
   controls: { manualPaused: boolean; changedAt: string | null };
   discovery: DiscoveryState;
   tickets: SarathiTicket[];
@@ -75,6 +83,8 @@ export interface SarathiStore {
   recordTask(task: StoredTask): SarathiDashboard;
   createSpecialist(input: { name: string; role: string; runtime: string }): Specialist;
   approveSpecialist(id: string): Specialist | undefined;
+  getPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord;
+  setRoutePolicy(scope: "global" | "specialist" | "workflow", id: string | undefined, policy: RoutePolicyOverride): RoutePolicyRecord;
 }
 
 export class FileSarathiStore implements SarathiStore {
@@ -164,11 +174,38 @@ export class FileSarathiStore implements SarathiStore {
     return { ...specialist };
   }
 
+  getPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord {
+    const existing = this.state.routing.policies.find(
+      (policy) => policyKey(policy.scope, policy.id) === policyKey(scope, id)
+    );
+    return clone(existing ?? defaultPolicy(scope, id));
+  }
+
+  setRoutePolicy(
+    scope: "global" | "specialist" | "workflow",
+    id: string | undefined,
+    policy: RoutePolicyOverride
+  ): RoutePolicyRecord {
+    const current = this.getPolicy(scope, id);
+    const next: RoutePolicyRecord = {
+      scope,
+      id: scope === "global" ? "global" : id ?? "",
+      version: `${scope}-v${versionNumber(current.version) + 1}`,
+      policy: clonePolicy(policy)
+    };
+    this.state.routing.policies = [
+      ...this.state.routing.policies.filter((candidate) => policyKey(candidate.scope, candidate.id) !== policyKey(scope, id)),
+      next
+    ];
+    this.persist();
+    return clone(next);
+  }
+
   private load(): SarathiDashboard {
     if (!existsSync(this.filePath)) {
       return defaultDashboard();
     }
-    return JSON.parse(readFileSync(this.filePath, "utf8")) as SarathiDashboard;
+    return normalizeDashboard(JSON.parse(readFileSync(this.filePath, "utf8")) as SarathiDashboard);
   }
 
   private persist(): void {
@@ -210,6 +247,7 @@ function defaultDashboard(): SarathiDashboard {
       billingMode: "subscription-only",
       reason: "Native runtime launch is not verified on this host."
     },
+    routing: { policies: [defaultPolicy("global")] },
     controls: { manualPaused: false, changedAt: null },
     discovery: {
       status: "blocked",
@@ -241,6 +279,33 @@ function defaultDashboard(): SarathiDashboard {
     reviewRounds: [],
     actionBatches: [],
     report: { merged: 0, blocked: 0, skipped: 0 }
+  };
+}
+
+function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
+  state.routing ??= { policies: [defaultPolicy("global")] };
+  if (!state.routing.policies.some((policy) => policy.scope === "global")) {
+    state.routing.policies.push(defaultPolicy("global"));
+  }
+  return state;
+}
+
+function defaultPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord {
+  return { scope, id: scope === "global" ? "global" : id ?? "", version: `${scope}-default-v1`, policy: {} };
+}
+
+function policyKey(scope: RoutePolicyScope, id?: string): string {
+  return `${scope}:${scope === "global" ? "global" : id ?? ""}`;
+}
+
+function versionNumber(version: string): number {
+  return Number(/-v(\d+)$/.exec(version)?.[1] ?? 0);
+}
+
+function clonePolicy(policy: RoutePolicyOverride): RoutePolicyOverride {
+  return {
+    ...(policy.primary ? { primary: { ...policy.primary } } : {}),
+    ...(policy.fallbacks ? { fallbacks: policy.fallbacks.map((route) => ({ ...route })) } : {})
   };
 }
 

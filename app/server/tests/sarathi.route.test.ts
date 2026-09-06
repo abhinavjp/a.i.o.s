@@ -1,9 +1,10 @@
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
 import { buildApp } from "../src/app.js";
+import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 
 async function withStore<T>(run: (path: string) => Promise<T>): Promise<T> {
@@ -22,6 +23,87 @@ function makeManager() {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("resolves independently inherited route policies by precedence and pins admitted task plans", async () => {
+    await withStore(async (sarathiPath) => {
+      const taskPath = join(dirname(sarathiPath), "tasks.json");
+      let release: (() => void) | undefined;
+      const ready = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const router = {
+        async *run() {
+          await ready;
+          yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+        }
+      };
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(taskPath),
+        runtimeRouter: router
+      });
+
+      const route = (model: string) => ({ runtime: "fake", provider: "test", model, billingMode: "fake" });
+      await app.inject({
+        method: "PUT",
+        url: "/api/sarathi/routing/policies/global",
+        payload: { primary: route("global-primary"), fallbacks: [route("global-fallback")] }
+      });
+      await app.inject({
+        method: "PUT",
+        url: "/api/sarathi/routing/policies/specialist/reviewer",
+        payload: { fallbacks: [route("specialist-fallback")] }
+      });
+      await app.inject({
+        method: "PUT",
+        url: "/api/sarathi/routing/policies/workflow/review-flow",
+        payload: { primary: route("workflow-primary") }
+      });
+
+      const first = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: {
+          task: "first routing task",
+          specialistId: "reviewer",
+          workflowId: "review-flow",
+          routePolicy: { fallbacks: [route("task-fallback")] }
+        }
+      });
+      expect(first.statusCode).toBe(202);
+      const firstTask = await app.inject({ method: "GET", url: `/api/agents/active/tasks/${first.json().taskId}` });
+      expect(firstTask.json().resolvedExecutionPlan).toMatchObject({
+        route: route("workflow-primary"),
+        fallbackRoutes: [route("task-fallback")],
+        configurationVersions: {
+          task: expect.stringContaining("task"),
+          workflow: expect.stringContaining("workflow"),
+          specialist: expect.stringContaining("specialist"),
+          global: expect.stringContaining("global")
+        }
+      });
+
+      await app.inject({
+        method: "PUT",
+        url: "/api/sarathi/routing/policies/workflow/review-flow",
+        payload: { primary: route("workflow-primary-v2") }
+      });
+      const second = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: { task: "second routing task", specialistId: "reviewer", workflowId: "review-flow" }
+      });
+      const secondTask = await app.inject({ method: "GET", url: `/api/agents/active/tasks/${second.json().taskId}` });
+      expect(secondTask.json().resolvedExecutionPlan).toMatchObject({
+        route: route("workflow-primary-v2"),
+        fallbackRoutes: [route("specialist-fallback")]
+      });
+      expect(firstTask.json().resolvedExecutionPlan.route.model).toBe("workflow-primary");
+
+      release?.();
+      await app.close();
+    });
+  });
+
   test("returns the local workflow snapshot with explicit launch gates", async () => {
     await withStore(async (path) => {
       const app = buildApp(makeManager(), {

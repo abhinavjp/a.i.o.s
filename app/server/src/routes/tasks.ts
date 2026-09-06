@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentManager } from "@aios/agents";
-import type { RuntimeRouter, TaskOutcome } from "@aios/contracts";
+import type { RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
 import { TaskRunRegistry, type TaskExecutionObserver } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
 import type { ExecutionPlanResolver } from "../sarathi/ExecutionPlanResolver.js";
@@ -8,6 +8,9 @@ import type { TaskStore } from "../TaskStore.js";
 
 interface SubmitTaskBody {
   task: string;
+  specialistId?: string;
+  workflowId?: string;
+  routePolicy?: RoutePolicyOverride;
 }
 
 interface StreamParams {
@@ -38,7 +41,11 @@ export function registerTaskRoutes(
     const agent = manager.getActiveAgent();
     const sessionKey = computeSessionKey("default-operator", "default");
 
-    const taskId = registry.start(agent, task, sessionKey);
+    const taskId = registry.start(agent, task, sessionKey, {
+      specialistId: request.body.specialistId,
+      workflowId: request.body.workflowId,
+      taskPolicy: request.body.routePolicy
+    });
 
     reply.code(202);
     return { taskId };

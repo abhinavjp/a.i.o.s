@@ -5,7 +5,7 @@ import type { RuntimeRouter } from "@aios/contracts";
 import { registerAgentsRoute } from "./routes/agents.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerSarathiRoutes } from "./sarathi/routes.js";
-import type { ExecutionPlanResolver } from "./sarathi/ExecutionPlanResolver.js";
+import { LayeredExecutionPlanResolver, type ExecutionPlanResolver } from "./sarathi/ExecutionPlanResolver.js";
 import { FileTaskStore } from "./TaskStore.js";
 import type { TaskStore } from "./TaskStore.js";
 import { FileSarathiStore } from "./sarathi/SarathiStore.js";
@@ -26,7 +26,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
   registerTaskRoutes(app, manager, taskStore, {
     runtimeRouter: options.runtimeRouter,
-    planResolver: options.executionPlanResolver,
+    planResolver: options.executionPlanResolver ?? new LayeredExecutionPlanResolver(sarathiStore),
     executionObserver: { record: (task) => sarathiStore.recordTask(task) }
   });
   registerSarathiRoutes(app, sarathiStore);

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAbstraction, RuntimeRouter, TaskOutcome } from "@aios/contracts";
+import type { AgentAbstraction, RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
 import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import {
   DefaultExecutionPlanResolver,
@@ -31,10 +31,15 @@ export class TaskRunRegistry {
     private readonly observer?: TaskExecutionObserver
   ) {}
 
-  start(agent: AgentAbstraction, task: string, sessionKey: string): string {
+  start(
+    agent: AgentAbstraction,
+    task: string,
+    sessionKey: string,
+    routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride } = {}
+  ): string {
     const taskId = randomUUID();
     const now = new Date().toISOString();
-    const resolvedExecutionPlan = snapshotExecutionPlan(this.planResolver.resolve({ taskId, agent }));
+    const resolvedExecutionPlan = snapshotExecutionPlan(this.planResolver.resolve({ taskId, agent, ...routing }));
     this.store.create({
       taskId,
       task,

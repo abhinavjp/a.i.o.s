@@ -170,6 +170,7 @@ function cloneRecord(record: StoredTask): StoredTask {
       ? {
           ...record.resolvedExecutionPlan,
           route: { ...record.resolvedExecutionPlan.route },
+          fallbackRoutes: (record.resolvedExecutionPlan.fallbackRoutes ?? []).map((route) => ({ ...route })),
           configurationVersions: { ...record.resolvedExecutionPlan.configurationVersions }
         }
       : undefined,

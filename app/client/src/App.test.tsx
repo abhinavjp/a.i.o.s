@@ -209,6 +209,32 @@ describe("App", () => {
     );
   });
 
+  test("saves a global primary route from the command center", async () => {
+    const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (url === "/api/agents") return Promise.resolve({ ok: true, json: async () => ({ agents: [] }) });
+      if (url === "/api/sarathi/dashboard") return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          runtime: { name: "Fake runtime", state: "ready", billingMode: "fake", reason: "ready" },
+          controls: { manualPaused: false, changedAt: null },
+          discovery: { status: "blocked", reason: "blocked", lastCheckedAt: null, mergeRequests: [] },
+          routing: { policies: [] }, tickets: [], specialists: [], recentTasks: [], groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
+        })
+      });
+      return Promise.resolve({ ok: true, json: async () => ({ policy: { version: "global-v2" } }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    fireEvent.change(await screen.findByLabelText("Primary model"), { target: { value: "configured-fake" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save route policy" }));
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sarathi/routing/policies/global",
+      expect.objectContaining({ method: "PUT" })
+    ));
+  });
+
   test("submitting a task POSTs then opens an EventSource to the stream URL", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
