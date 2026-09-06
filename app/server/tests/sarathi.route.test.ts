@@ -23,6 +23,38 @@ function makeManager() {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("rejects an unknown provider and model before starting runtime work", async () => {
+    await withStore(async (sarathiPath) => {
+      let runtimeRuns = 0;
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(join(dirname(sarathiPath), "tasks.json")),
+        runtimeRouter: {
+          async *run() {
+            runtimeRuns += 1;
+            yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+          }
+        }
+      });
+
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: {
+          task: "must not run unknown provider",
+          routePolicy: {
+            primary: { runtime: "fake", provider: "unknown-provider", model: "unknown-model", billingMode: "fake" }
+          }
+        }
+      });
+
+      expect(submitted.statusCode).toBe(400);
+      expect(submitted.json().error).toContain("not in an observed provider catalog");
+      expect(runtimeRuns).toBe(0);
+      await app.close();
+    });
+  });
+
   test("rejects an unconfigured discovered route before starting runtime work", async () => {
     await withStore(async (sarathiPath) => {
       let runtimeRuns = 0;

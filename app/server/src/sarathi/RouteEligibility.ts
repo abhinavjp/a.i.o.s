@@ -18,9 +18,18 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
   }
 
   private validateRoute(route: ResolvedRoute): void {
+    if (route.billingMode === "unmeasured" || isExplicitFakeTestRoute(route)) {
+      return;
+    }
     const catalog = this.store.snapshot().providerCatalogs.find((candidate) => candidate.provider === route.provider);
+    if (!catalog) {
+      throw new IneligibleRouteError(`Route ${route.provider}:${route.model} is not in an observed provider catalog.`);
+    }
     const model = catalog?.models.find((candidate) => candidate.model === route.model);
-    if (!model || model.eligible) {
+    if (!model) {
+      throw new IneligibleRouteError(`Route ${route.provider}:${route.model} is not in the provider catalog.`);
+    }
+    if (model.eligible) {
       return;
     }
     if (!model.configured) {
@@ -32,4 +41,9 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
       `Route ${route.provider}:${route.model} qualification evidence for ${capability} is ${evidence}.`
     );
   }
+}
+
+/** Temporary, explicit compatibility for the local deterministic fake seam. */
+function isExplicitFakeTestRoute(route: ResolvedRoute): boolean {
+  return route.runtime === "fake" && route.billingMode === "fake" && (route.provider === "fake" || route.provider === "test");
 }
