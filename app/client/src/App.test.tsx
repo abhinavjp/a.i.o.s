@@ -85,6 +85,22 @@ describe("App", () => {
             runtime: { name: "Hermes", state: "unavailable", billingMode: "subscription-only" },
             controls: { manualPaused: false },
             discovery: { status: "blocked", reason: "GitLab adapter not configured" },
+            providerCatalogs: [{
+              provider: "fake-provider",
+              authenticationMode: "environment-reference",
+              provenance: "deterministic fake discovery",
+              observedAt: "2026-09-06T10:00:00.000Z",
+              completeness: "incomplete",
+              stale: true,
+              refreshError: "fake transport unavailable",
+              models: [{
+                id: "fake-provider:alpha",
+                model: "alpha",
+                configured: false,
+                eligible: false,
+                qualification: { health: "qualified", streaming: "qualified", structuredOutput: "unknown", toolCalling: "unknown" }
+              }]
+            }],
             tickets: [
               { id: "02", title: "Resume a task after restart", status: "complete" },
               { id: "09", title: "Discover assigned MRs", status: "blocked" }
@@ -118,6 +134,11 @@ describe("App", () => {
     expect(screen.getByText("Discover assigned MRs")).toBeTruthy();
     expect(screen.getByText("GitLab adapter not configured")).toBeTruthy();
     expect(screen.getByText("Fake router accepted the work.")).toBeTruthy();
+    expect(screen.getByText("Provider catalogs")).toBeTruthy();
+    expect(screen.getByText("fake-provider")).toBeTruthy();
+    expect(screen.getByText("stale")).toBeTruthy();
+    expect(screen.getByText("Refresh failed: fake transport unavailable")).toBeTruthy();
+    expect(screen.getByText("not configured · ineligible")).toBeTruthy();
   });
 
   test("creates a pending specialist and activates it only after approval", async () => {

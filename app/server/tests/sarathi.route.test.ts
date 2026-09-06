@@ -23,6 +23,179 @@ function makeManager() {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("exposes normalized fake provider catalog evidence and does not treat unknown qualification as executable", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        providerCatalogAdapters: [
+          {
+            provider: "fake-provider",
+            async discover() {
+              return {
+                authenticationMode: "environment-reference" as const,
+                provenance: "fake provider model API",
+                observedAt: "2026-09-06T10:00:00.000Z",
+                completeness: "incomplete" as const,
+                models: [
+                  {
+                    model: "alpha",
+                    configured: false,
+                    qualification: {
+                      health: "qualified" as const,
+                      streaming: "qualified" as const,
+                      structuredOutput: "unknown" as const,
+                      toolCalling: "unknown" as const
+                    }
+                  }
+                ]
+              };
+            }
+          }
+        ]
+      });
+
+      const refresh = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/providers/fake-provider/catalog/refresh"
+      });
+
+      expect(refresh.statusCode).toBe(200);
+      expect(refresh.json()).toMatchObject({
+        refresh: { status: "succeeded" },
+        catalog: {
+          provider: "fake-provider",
+          authenticationMode: "environment-reference",
+          provenance: "fake provider model API",
+          observedAt: "2026-09-06T10:00:00.000Z",
+          completeness: "incomplete",
+          stale: false,
+          models: [
+            {
+              id: "fake-provider:alpha",
+              model: "alpha",
+              configured: false,
+              qualification: { structuredOutput: "unknown", toolCalling: "unknown" },
+              eligible: false
+            }
+          ]
+        }
+      });
+
+      const dashboard = await app.inject({ method: "GET", url: "/api/sarathi/dashboard" });
+      expect(dashboard.json().providerCatalogs).toEqual([
+        expect.objectContaining({ provider: "fake-provider", completeness: "incomplete", stale: false })
+      ]);
+      await app.close();
+    });
+  });
+
+  test("requires configured and fully qualified evidence before a model is eligible", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        providerCatalogAdapters: [{
+          provider: "fake-provider",
+          async discover() {
+            return {
+              authenticationMode: "none" as const,
+              provenance: "deterministic qualification probe",
+              observedAt: "2026-09-06T10:01:00.000Z",
+              completeness: "complete" as const,
+              models: [
+                {
+                  model: "unknown-structured-output",
+                  configured: true,
+                  qualification: {
+                    health: "qualified" as const,
+                    streaming: "qualified" as const,
+                    structuredOutput: "unknown" as const,
+                    toolCalling: "qualified" as const
+                  }
+                },
+                {
+                  model: "qualified-model",
+                  configured: true,
+                  qualification: {
+                    health: "qualified" as const,
+                    streaming: "qualified" as const,
+                    structuredOutput: "qualified" as const,
+                    toolCalling: "qualified" as const
+                  }
+                }
+              ]
+            };
+          }
+        }]
+      });
+
+      const refresh = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/providers/fake-provider/catalog/refresh"
+      });
+
+      expect(refresh.statusCode).toBe(200);
+      expect(refresh.json().catalog.models).toEqual(expect.arrayContaining([
+        expect.objectContaining({ model: "unknown-structured-output", configured: true, eligible: false }),
+        expect.objectContaining({ model: "qualified-model", configured: true, eligible: true })
+      ]));
+      await app.close();
+    });
+  });
+
+  test("keeps the last successful catalog visibly stale when a refresh fails", async () => {
+    await withStore(async (path) => {
+      let failRefresh = false;
+      const adapter = {
+        provider: "fake-provider",
+        async discover() {
+          if (failRefresh) {
+            throw new Error("fake transport unavailable");
+          }
+          return {
+            authenticationMode: "none" as const,
+            provenance: "deterministic fake discovery",
+            observedAt: "2026-09-06T10:02:00.000Z",
+            completeness: "complete" as const,
+            models: [{
+              model: "last-known-model",
+              configured: true,
+              qualification: {
+                health: "qualified" as const,
+                streaming: "qualified" as const,
+                structuredOutput: "qualified" as const,
+                toolCalling: "qualified" as const
+              }
+            }]
+          };
+        }
+      };
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        providerCatalogAdapters: [adapter]
+      });
+
+      await app.inject({ method: "POST", url: "/api/sarathi/providers/fake-provider/catalog/refresh" });
+      failRefresh = true;
+      const failed = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/providers/fake-provider/catalog/refresh"
+      });
+
+      expect(failed.statusCode).toBe(200);
+      expect(failed.json()).toMatchObject({
+        refresh: { status: "failed" },
+        catalog: {
+          provider: "fake-provider",
+          observedAt: "2026-09-06T10:02:00.000Z",
+          stale: true,
+          refreshError: "fake transport unavailable",
+          models: [expect.objectContaining({ model: "last-known-model", eligible: true })]
+        }
+      });
+      await app.close();
+    });
+  });
+
   test("keeps immutable policy snapshots and history after edits and restart", async () => {
     await withStore(async (sarathiPath) => {
       const taskPath = join(dirname(sarathiPath), "tasks.json");

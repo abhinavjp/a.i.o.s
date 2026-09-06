@@ -110,3 +110,52 @@ export interface RoutedExecutionInput {
 export interface RuntimeRouter {
   run(input: RoutedExecutionInput): AsyncIterable<NormalizedRuntimeEvent>;
 }
+
+/** Authentication evidence for a provider catalog; no secret values are stored. */
+export type ProviderAuthenticationMode = "none" | "subscription" | "environment-reference" | "unmeasured";
+
+/** Evidence is explicit so unknown capability claims cannot make a route eligible. */
+export type QualificationEvidence = "qualified" | "unqualified" | "unknown";
+
+export interface ModelQualification {
+  readonly health: QualificationEvidence;
+  readonly streaming: QualificationEvidence;
+  readonly structuredOutput: QualificationEvidence;
+  readonly toolCalling: QualificationEvidence;
+}
+
+export interface DiscoveredProviderModel {
+  readonly model: string;
+  readonly configured: boolean;
+  readonly qualification: ModelQualification;
+}
+
+export interface ProviderCatalogDiscovery {
+  readonly authenticationMode: ProviderAuthenticationMode;
+  readonly provenance: string;
+  readonly observedAt: string;
+  readonly completeness: "complete" | "incomplete";
+  readonly models: ReadonlyArray<DiscoveredProviderModel>;
+}
+
+/** Injectable provider boundary; production adapters arrive in later tickets. */
+export interface ProviderCatalogAdapter {
+  readonly provider: string;
+  discover(): Promise<ProviderCatalogDiscovery>;
+}
+
+export interface ProviderCatalogModel extends DiscoveredProviderModel {
+  readonly id: string;
+  readonly eligible: boolean;
+}
+
+export interface ProviderCatalog {
+  readonly provider: string;
+  readonly authenticationMode: ProviderAuthenticationMode;
+  readonly provenance: string;
+  readonly observedAt: string;
+  readonly completeness: "complete" | "incomplete";
+  readonly stale: boolean;
+  readonly refreshError: string | null;
+  readonly models: ReadonlyArray<ProviderCatalogModel>;
+}

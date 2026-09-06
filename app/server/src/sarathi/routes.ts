@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { RoutePolicyOverride } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
 import { isRoutePolicyOverride } from "./RoutePolicy.js";
+import type { ProviderCatalogManager } from "./ProviderCatalog.js";
 
 interface PauseBody {
   paused: boolean;
@@ -22,10 +23,28 @@ interface PolicyParams {
   id?: string;
 }
 
-export function registerSarathiRoutes(app: FastifyInstance, store: SarathiStore): void {
+export function registerSarathiRoutes(
+  app: FastifyInstance,
+  store: SarathiStore,
+  providerCatalogManager?: ProviderCatalogManager
+): void {
   app.get("/api/sarathi/dashboard", async () => store.snapshot());
 
   app.get("/api/sarathi/routing/policies", async () => store.snapshot().routing);
+
+  app.get("/api/sarathi/providers/catalogs", async () => store.snapshot().providerCatalogs);
+
+  app.post<{ Params: { provider: string } }>(
+    "/api/sarathi/providers/:provider/catalog/refresh",
+    async (request, reply) => {
+      const refresh = await providerCatalogManager?.refresh(request.params.provider);
+      if (!refresh) {
+        reply.code(404);
+        return { error: "provider catalog adapter not configured" };
+      }
+      return { refresh: { status: refresh.status }, catalog: refresh.catalog };
+    }
+  );
 
   app.put<{ Params: PolicyParams; Body: RoutePolicyOverride }>(
     "/api/sarathi/routing/policies/:scope/:id?",

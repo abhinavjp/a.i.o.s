@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { RoutePolicyOverride, RoutePolicyScope, TaskStatus } from "@aios/contracts";
+import type { ProviderCatalog, RoutePolicyOverride, RoutePolicyScope, TaskStatus } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
@@ -53,6 +53,7 @@ export interface DiscoveryState {
 export interface SarathiDashboard {
   runtime: RuntimeStatus;
   routing: { policies: RoutePolicyRecord[] };
+  providerCatalogs: ProviderCatalog[];
   controls: { manualPaused: boolean; changedAt: string | null };
   discovery: DiscoveryState;
   tickets: SarathiTicket[];
@@ -85,6 +86,8 @@ export interface SarathiStore {
   approveSpecialist(id: string): Specialist | undefined;
   getPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord;
   setRoutePolicy(scope: "global" | "specialist" | "workflow", id: string | undefined, policy: RoutePolicyOverride): RoutePolicyRecord;
+  recordProviderCatalog(catalog: ProviderCatalog): SarathiDashboard;
+  markProviderCatalogStale(provider: string, refreshError: string): ProviderCatalog | null;
 }
 
 export class FileSarathiStore implements SarathiStore {
@@ -198,6 +201,28 @@ export class FileSarathiStore implements SarathiStore {
     return clone(next);
   }
 
+  recordProviderCatalog(catalog: ProviderCatalog): SarathiDashboard {
+    this.state.providerCatalogs = [
+      ...this.state.providerCatalogs.filter((candidate) => candidate.provider !== catalog.provider),
+      clone(catalog)
+    ];
+    this.persist();
+    return this.snapshot();
+  }
+
+  markProviderCatalogStale(provider: string, refreshError: string): ProviderCatalog | null {
+    const catalog = this.state.providerCatalogs.find((candidate) => candidate.provider === provider);
+    if (!catalog) {
+      return null;
+    }
+    const staleCatalog: ProviderCatalog = { ...catalog, stale: true, refreshError };
+    this.state.providerCatalogs = this.state.providerCatalogs.map((candidate) =>
+      candidate.provider === provider ? staleCatalog : candidate
+    );
+    this.persist();
+    return clone(staleCatalog);
+  }
+
   private load(): SarathiDashboard {
     if (!existsSync(this.filePath)) {
       return defaultDashboard();
@@ -245,6 +270,7 @@ function defaultDashboard(): SarathiDashboard {
       reason: "Native runtime launch is not verified on this host."
     },
     routing: { policies: [defaultPolicy("global")] },
+    providerCatalogs: [],
     controls: { manualPaused: false, changedAt: null },
     discovery: {
       status: "blocked",
@@ -281,6 +307,7 @@ function defaultDashboard(): SarathiDashboard {
 
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.routing ??= { policies: [defaultPolicy("global")] };
+  state.providerCatalogs ??= [];
   if (!state.routing.policies.some((policy) => policy.scope === "global")) {
     state.routing.policies.push(defaultPolicy("global"));
   }
