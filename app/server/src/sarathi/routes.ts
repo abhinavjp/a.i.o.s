@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
-import type { ResolvedRoute, RoutePolicyOverride } from "@aios/contracts";
+import type { RoutePolicyOverride } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
+import { isRoutePolicyOverride } from "./RoutePolicy.js";
 
 interface PauseBody {
   paused: boolean;
@@ -30,7 +31,7 @@ export function registerSarathiRoutes(app: FastifyInstance, store: SarathiStore)
     "/api/sarathi/routing/policies/:scope/:id?",
     async (request, reply) => {
       const { scope, id } = request.params;
-      if (!isPolicyScope(scope) || (scope === "global" ? Boolean(id) : !id?.trim()) || !isPolicy(request.body)) {
+      if (!isPolicyScope(scope) || (scope === "global" ? Boolean(id) : !id?.trim()) || !isRoutePolicyOverride(request.body)) {
         reply.code(400);
         return { error: "provide a global policy or a named specialist/workflow policy with valid routes" };
       }
@@ -81,18 +82,4 @@ export function registerSarathiRoutes(app: FastifyInstance, store: SarathiStore)
 
 function isPolicyScope(value: string): value is PolicyParams["scope"] {
   return value === "global" || value === "specialist" || value === "workflow";
-}
-
-function isPolicy(value: unknown): value is RoutePolicyOverride {
-  if (!value || typeof value !== "object") return false;
-  const policy = value as RoutePolicyOverride;
-  return (policy.primary === undefined || isRoute(policy.primary)) &&
-    (policy.fallbacks === undefined || (Array.isArray(policy.fallbacks) && policy.fallbacks.every(isRoute)));
-}
-
-function isRoute(value: unknown): value is ResolvedRoute {
-  if (!value || typeof value !== "object") return false;
-  const route = value as ResolvedRoute;
-  return typeof route.runtime === "string" && typeof route.provider === "string" &&
-    typeof route.model === "string" && ["fake", "subscription", "api", "unmeasured"].includes(route.billingMode);
 }

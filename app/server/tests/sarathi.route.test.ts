@@ -23,6 +23,41 @@ function makeManager() {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("keeps immutable policy snapshots and history after edits and restart", async () => {
+    await withStore(async (sarathiPath) => {
+      const taskPath = join(dirname(sarathiPath), "tasks.json");
+      const route = (model: string) => ({ runtime: "fake", provider: "test", model, billingMode: "fake" });
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(taskPath)
+      });
+      await app.inject({ method: "PUT", url: "/api/sarathi/routing/policies/global", payload: { primary: route("global-v1") } });
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: { task: "snapshot config", routePolicy: { fallbacks: [route("task-v1")] } }
+      });
+      await app.inject({ method: "PUT", url: "/api/sarathi/routing/policies/global", payload: { primary: route("global-v2") } });
+
+      const restarted = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(taskPath)
+      });
+      const task = await restarted.inject({ method: "GET", url: `/api/agents/active/tasks/${submitted.json().taskId}` });
+      expect(task.json().resolvedExecutionPlan.configurationSnapshots).toMatchObject({
+        global: { policy: { primary: route("global-v1") } },
+        task: { policy: { fallbacks: [route("task-v1")] } }
+      });
+      const dashboard = await restarted.inject({ method: "GET", url: "/api/sarathi/dashboard" });
+      expect(dashboard.json().routing.policies).toEqual(expect.arrayContaining([
+        expect.objectContaining({ version: "global-v2", policy: { primary: route("global-v1") } }),
+        expect.objectContaining({ version: "global-v3", policy: { primary: route("global-v2") } })
+      ]));
+      await app.close();
+      await restarted.close();
+    });
+  });
+
   test("resolves independently inherited route policies by precedence and pins admitted task plans", async () => {
     await withStore(async (sarathiPath) => {
       const taskPath = join(dirname(sarathiPath), "tasks.json");

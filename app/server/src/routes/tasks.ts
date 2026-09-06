@@ -4,6 +4,7 @@ import type { RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/cont
 import { TaskRunRegistry, type TaskExecutionObserver } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
 import type { ExecutionPlanResolver } from "../sarathi/ExecutionPlanResolver.js";
+import { isRoutePolicyOverride } from "../sarathi/RoutePolicy.js";
 import type { TaskStore } from "../TaskStore.js";
 
 interface SubmitTaskBody {
@@ -38,6 +39,10 @@ export function registerTaskRoutes(
 
   app.post<{ Body: SubmitTaskBody }>("/api/agents/active/tasks", async (request, reply) => {
     const { task } = request.body;
+    if (request.body.routePolicy !== undefined && !isRoutePolicyOverride(request.body.routePolicy)) {
+      reply.code(400);
+      return { error: "routePolicy must contain valid primary and fallback routes" };
+    }
     const agent = manager.getActiveAgent();
     const sessionKey = computeSessionKey("default-operator", "default");
 

@@ -50,6 +50,12 @@ export interface RoutePolicyOverride {
   readonly fallbacks?: ReadonlyArray<ResolvedRoute>;
 }
 
+/** Immutable policy evidence retained with a resolved execution plan. */
+export interface RoutePolicySnapshot {
+  readonly version: string;
+  readonly policy: RoutePolicyOverride;
+}
+
 export type RoutePolicyScope = "global" | "specialist" | "workflow" | "task";
 
 /** Version identifiers of every configuration layer effective for one task. */
@@ -67,6 +73,12 @@ export interface ResolvedExecutionPlan {
   readonly route: ResolvedRoute;
   readonly fallbackRoutes: ReadonlyArray<ResolvedRoute>;
   readonly configurationVersions: EffectiveConfigurationVersions;
+  readonly configurationSnapshots: {
+    readonly task: RoutePolicySnapshot;
+    readonly workflow: RoutePolicySnapshot;
+    readonly specialist: RoutePolicySnapshot;
+    readonly global: RoutePolicySnapshot;
+  };
   readonly resolvedAt: string;
 }
 

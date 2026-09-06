@@ -135,6 +135,7 @@ export function App() {
   const [agents, setAgents] = useState<AgentListItem[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>(DEFAULT_DASHBOARD);
   const [task, setTask] = useState("");
+  const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
   const [status, setStatus] = useState<RunStatus>("idle");
   const [output, setOutput] = useState<string[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
@@ -201,7 +202,17 @@ export function App() {
     const response = await fetch("/api/agents/active/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task })
+      body: JSON.stringify({
+        task,
+        ...(taskRouting.specialistId.trim() ? { specialistId: taskRouting.specialistId.trim() } : {}),
+        ...(taskRouting.workflowId.trim() ? { workflowId: taskRouting.workflowId.trim() } : {}),
+        ...(taskRouting.overridePrimary || taskRouting.overrideFallback ? {
+          routePolicy: {
+            ...(taskRouting.overridePrimary ? { primary: { runtime: "fake", provider: "test", model: taskRouting.primaryModel, billingMode: "fake" } } : {}),
+            ...(taskRouting.overrideFallback ? { fallbacks: taskRouting.fallbackModel ? [{ runtime: "fake", provider: "test", model: taskRouting.fallbackModel, billingMode: "fake" }] : [] } : {})
+          }
+        } : {})
+      })
     });
     const { taskId } = await response.json();
     openTaskStream(taskId);
@@ -350,7 +361,7 @@ export function App() {
 
             <section className="panel review-panel" id="review"><div className="panel-heading"><div><span className="eyebrow">Review queue</span><h2>Assigned merge requests</h2></div><button className="text-button" type="button" onClick={checkNow} disabled={isRefreshing}>Check now <span>↗</span></button></div>{dashboard.discovery.status === "blocked" ? <div className="blocked-state"><div className="blocked-icon">!</div><div><strong>Discovery is waiting for a real adapter.</strong><p>{dashboard.discovery.reason}</p></div><span className="state-chip blocked">blocked</span></div> : dashboard.discovery.mergeRequests.length === 0 ? <div className="empty-state"><span>◌</span><p>No assigned merge requests in this check.</p></div> : <div className="mr-list">{dashboard.discovery.mergeRequests.map((mergeRequest) => <div className="mr-row" key={mergeRequest.id}><strong>{mergeRequest.title}</strong><span>{mergeRequest.project}</span><span>{mergeRequest.role}</span><span>{mergeRequest.coverage}</span></div>)}</div>}</section>
 
-            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div></form>{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
+            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div><div className="task-routing"><label htmlFor="task-specialist">Specialist ID<input id="task-specialist" value={taskRouting.specialistId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, specialistId: event.target.value }))} placeholder="optional specialist id" /></label><label htmlFor="task-workflow">Workflow ID<input id="task-workflow" value={taskRouting.workflowId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, workflowId: event.target.value }))} placeholder="optional workflow id" /></label><label><input type="checkbox" checked={taskRouting.overridePrimary} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override task primary</label>{taskRouting.overridePrimary && <label htmlFor="task-primary">Primary override model<input id="task-primary" value={taskRouting.primaryModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={taskRouting.overrideFallback} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override task fallback chain</label>{taskRouting.overrideFallback && <label htmlFor="task-fallback">Fallback override model (blank clears)<input id="task-fallback" value={taskRouting.fallbackModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}</div></form>{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
 
             <section className="panel execution-panel" aria-label="Execution evidence"><div className="panel-heading"><div><span className="eyebrow">Durable execution</span><h2>Latest runtime evidence</h2></div></div>{dashboard.recentTasks.length === 0 ? <p className="panel-note subtle">No routed attempts recorded.</p> : <div className="gate-list">{dashboard.recentTasks.map((attempt) => <div className="gate-row" key={attempt.id}><span className="gate-index">{statusLabel(attempt.status)}</span><div><strong>{attempt.title}</strong><small>{attempt.runtime} · plan {attempt.planId} · attempt {attempt.attemptId}</small>{attempt.evidence && <small>{attempt.evidence}</small>}</div><span className="state-chip">{statusLabel(attempt.status)}</span></div>)}</div>}</section>
           </div>

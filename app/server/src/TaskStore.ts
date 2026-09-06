@@ -171,7 +171,8 @@ function cloneRecord(record: StoredTask): StoredTask {
           ...record.resolvedExecutionPlan,
           route: { ...record.resolvedExecutionPlan.route },
           fallbackRoutes: (record.resolvedExecutionPlan.fallbackRoutes ?? []).map((route) => ({ ...route })),
-          configurationVersions: { ...record.resolvedExecutionPlan.configurationVersions }
+          configurationVersions: { ...record.resolvedExecutionPlan.configurationVersions },
+          configurationSnapshots: cloneConfigurationSnapshots(record.resolvedExecutionPlan.configurationSnapshots)
         }
       : undefined,
     attempts: record.attempts?.map((attempt) => ({
@@ -185,4 +186,21 @@ function cloneRecord(record: StoredTask): StoredTask {
       )
     }))
   };
+}
+
+function cloneConfigurationSnapshots(
+  snapshots: ResolvedExecutionPlan["configurationSnapshots"] | undefined
+): ResolvedExecutionPlan["configurationSnapshots"] {
+  const source = snapshots ?? {
+    task: { version: "task-legacy-v1", policy: {} }, workflow: { version: "workflow-legacy-v1", policy: {} },
+    specialist: { version: "specialist-legacy-v1", policy: {} }, global: { version: "global-legacy-v1", policy: {} }
+  };
+  const copy = (snapshot: (typeof source)["task"]) => ({
+    version: snapshot.version,
+    policy: {
+      ...(snapshot.policy.primary ? { primary: { ...snapshot.policy.primary } } : {}),
+      ...(snapshot.policy.fallbacks ? { fallbacks: snapshot.policy.fallbacks.map((route) => ({ ...route })) } : {})
+    }
+  });
+  return { task: copy(source.task), workflow: copy(source.workflow), specialist: copy(source.specialist), global: copy(source.global) };
 }

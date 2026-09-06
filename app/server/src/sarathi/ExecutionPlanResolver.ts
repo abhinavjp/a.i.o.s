@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAbstraction, ResolvedExecutionPlan, ResolvedRoute, RoutePolicyOverride } from "@aios/contracts";
+import type { AgentAbstraction, ResolvedExecutionPlan, ResolvedRoute, RoutePolicyOverride, RoutePolicySnapshot } from "@aios/contracts";
 
 export interface RoutePolicyConfiguration {
   getPolicy(scope: "global" | "specialist" | "workflow", id?: string): { version: string; policy: RoutePolicyOverride };
@@ -42,6 +42,12 @@ export class DefaultExecutionPlanResolver implements ExecutionPlanResolver {
         specialist: "specialist-default-v1",
         global: "global-default-v1"
       },
+      configurationSnapshots: {
+        task: { version: "task-default-v1", policy: {} },
+        workflow: { version: "workflow-default-v1", policy: {} },
+        specialist: { version: "specialist-default-v1", policy: {} },
+        global: { version: "global-default-v1", policy: {} }
+      },
       resolvedAt: new Date().toISOString()
     });
   }
@@ -55,6 +61,7 @@ export class LayeredExecutionPlanResolver implements ExecutionPlanResolver {
     const global = this.configuration.getPolicy("global");
     const specialist = this.configuration.getPolicy("specialist", input.specialistId);
     const workflow = this.configuration.getPolicy("workflow", input.workflowId);
+    const taskVersion = `task-${input.taskId}-v1`;
     const taskPolicy = input.taskPolicy ?? {};
     const fallbackRoute: ResolvedRoute = {
       runtime: input.agent.getInfo().kind === "fake" ? "fake" : "unmeasured",
@@ -71,10 +78,16 @@ export class LayeredExecutionPlanResolver implements ExecutionPlanResolver {
       route: { ...primary },
       fallbackRoutes: fallbacks.map((route) => ({ ...route })),
       configurationVersions: {
-        task: input.taskPolicy ? `task-inline-${randomUUID()}` : "task-inherited-v1",
+        task: taskVersion,
         workflow: workflow.version,
         specialist: specialist.version,
         global: global.version
+      },
+      configurationSnapshots: {
+        task: snapshotPolicy(taskVersion, taskPolicy),
+        workflow: snapshotPolicy(workflow.version, workflow.policy),
+        specialist: snapshotPolicy(specialist.version, specialist.policy),
+        global: snapshotPolicy(global.version, global.policy)
       },
       resolvedAt: new Date().toISOString()
     });
@@ -86,7 +99,8 @@ export function snapshotExecutionPlan(plan: ResolvedExecutionPlan): ResolvedExec
     ...plan,
     route: { ...plan.route },
     fallbackRoutes: (plan.fallbackRoutes ?? []).map((route) => ({ ...route })),
-    configurationVersions: { ...plan.configurationVersions }
+    configurationVersions: { ...plan.configurationVersions },
+    configurationSnapshots: snapshotConfiguration(plan.configurationSnapshots)
   });
 }
 
@@ -95,7 +109,44 @@ function freezePlan(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {
   for (const route of plan.fallbackRoutes ?? []) Object.freeze(route);
   Object.freeze(plan.fallbackRoutes);
   Object.freeze(plan.configurationVersions);
+  for (const snapshot of Object.values(plan.configurationSnapshots)) {
+    if (snapshot.policy.primary) Object.freeze(snapshot.policy.primary);
+    if (snapshot.policy.fallbacks) {
+      for (const route of snapshot.policy.fallbacks) Object.freeze(route);
+      Object.freeze(snapshot.policy.fallbacks);
+    }
+    Object.freeze(snapshot.policy);
+    Object.freeze(snapshot);
+  }
+  Object.freeze(plan.configurationSnapshots);
   return Object.freeze(plan);
+}
+
+function snapshotPolicy(version: string, policy: RoutePolicyOverride): RoutePolicySnapshot {
+  return {
+    version,
+    policy: {
+      ...(policy.primary ? { primary: { ...policy.primary } } : {}),
+      ...(policy.fallbacks ? { fallbacks: policy.fallbacks.map((route) => ({ ...route })) } : {})
+    }
+  };
+}
+
+function snapshotConfiguration(
+  snapshots: ResolvedExecutionPlan["configurationSnapshots"] | undefined
+): ResolvedExecutionPlan["configurationSnapshots"] {
+  const source = snapshots ?? {
+    task: { version: "task-legacy-v1", policy: {} },
+    workflow: { version: "workflow-legacy-v1", policy: {} },
+    specialist: { version: "specialist-legacy-v1", policy: {} },
+    global: { version: "global-legacy-v1", policy: {} }
+  };
+  return {
+    task: snapshotPolicy(source.task.version, source.task.policy),
+    workflow: snapshotPolicy(source.workflow.version, source.workflow.policy),
+    specialist: snapshotPolicy(source.specialist.version, source.specialist.policy),
+    global: snapshotPolicy(source.global.version, source.global.policy)
+  };
 }
 
 function lastDefined<T>(values: ReadonlyArray<T | undefined>): T | undefined {

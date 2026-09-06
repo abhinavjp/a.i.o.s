@@ -175,7 +175,7 @@ export class FileSarathiStore implements SarathiStore {
   }
 
   getPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord {
-    const existing = this.state.routing.policies.find(
+    const existing = [...this.state.routing.policies].reverse().find(
       (policy) => policyKey(policy.scope, policy.id) === policyKey(scope, id)
     );
     return clone(existing ?? defaultPolicy(scope, id));
@@ -193,10 +193,7 @@ export class FileSarathiStore implements SarathiStore {
       version: `${scope}-v${versionNumber(current.version) + 1}`,
       policy: clonePolicy(policy)
     };
-    this.state.routing.policies = [
-      ...this.state.routing.policies.filter((candidate) => policyKey(candidate.scope, candidate.id) !== policyKey(scope, id)),
-      next
-    ];
+    this.state.routing.policies = [...this.state.routing.policies, next];
     this.persist();
     return clone(next);
   }

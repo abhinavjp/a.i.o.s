@@ -276,6 +276,34 @@ describe("App", () => {
     );
   });
 
+  test("submitting a task includes selected specialist, workflow, and task route overrides", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/agents") return stubAgentsFetch()();
+      return Promise.resolve({ ok: true, json: async () => ({ taskId: "task-routing" }) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    fireEvent.change(await screen.findByLabelText("Specialist ID"), { target: { value: "reviewer" } });
+    fireEvent.change(screen.getByLabelText("Workflow ID"), { target: { value: "review-flow" } });
+    fireEvent.click(screen.getByLabelText("Override task primary"));
+    fireEvent.change(screen.getByLabelText("Primary override model"), { target: { value: "task-model" } });
+    fireEvent.change(screen.getByRole("textbox", { name: /task/i }), { target: { value: "routed task" } });
+    fireEvent.click(screen.getByRole("button", { name: /run/i }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/agents/active/tasks",
+      expect.objectContaining({
+        body: JSON.stringify({
+          task: "routed task",
+          specialistId: "reviewer",
+          workflowId: "review-flow",
+          routePolicy: { primary: { runtime: "fake", provider: "test", model: "task-model", billingMode: "fake" } }
+        })
+      })
+    ));
+  });
+
   test("renders message chunks in order as they arrive", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
