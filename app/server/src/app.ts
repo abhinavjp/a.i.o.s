@@ -11,6 +11,7 @@ import type { TaskStore } from "./TaskStore.js";
 import { FileSarathiStore } from "./sarathi/SarathiStore.js";
 import type { SarathiStore } from "./sarathi/SarathiStore.js";
 import { ProviderCatalogManager } from "./sarathi/ProviderCatalog.js";
+import { ProviderCatalogEligibilityValidator } from "./sarathi/RouteEligibility.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
@@ -27,10 +28,12 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const sarathiStore =
     options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
   const providerCatalogManager = new ProviderCatalogManager(options.providerCatalogAdapters ?? [], sarathiStore);
+  app.addHook("onReady", async () => providerCatalogManager.refreshAll());
   registerTaskRoutes(app, manager, taskStore, {
     runtimeRouter: options.runtimeRouter,
     planResolver: options.executionPlanResolver ?? new LayeredExecutionPlanResolver(sarathiStore),
-    executionObserver: { record: (task) => sarathiStore.recordTask(task) }
+    executionObserver: { record: (task) => sarathiStore.recordTask(task) },
+    planAdmissionValidator: new ProviderCatalogEligibilityValidator(sarathiStore)
   });
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager);
   return app;

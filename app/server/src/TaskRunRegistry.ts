@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAbstraction, RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
+import type { AgentAbstraction, ResolvedExecutionPlan, RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
 import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import {
   DefaultExecutionPlanResolver,
@@ -7,6 +7,7 @@ import {
   type ExecutionPlanResolver
 } from "./sarathi/ExecutionPlanResolver.js";
 import type { StoredTask, TaskStore } from "./TaskStore.js";
+import type { ExecutionPlanAdmissionValidator } from "./sarathi/RouteEligibility.js";
 
 interface TaskListener {
   onChunk: (chunk: string) => void;
@@ -28,7 +29,8 @@ export class TaskRunRegistry {
     private readonly store: TaskStore,
     private readonly runtimeRouter: RuntimeRouter = new AgentRuntimeRouter(),
     private readonly planResolver: ExecutionPlanResolver = new DefaultExecutionPlanResolver(),
-    private readonly observer?: TaskExecutionObserver
+    private readonly observer?: TaskExecutionObserver,
+    private readonly planAdmissionValidator?: ExecutionPlanAdmissionValidator
   ) {}
 
   start(
@@ -40,6 +42,7 @@ export class TaskRunRegistry {
     const taskId = randomUUID();
     const now = new Date().toISOString();
     const resolvedExecutionPlan = snapshotExecutionPlan(this.planResolver.resolve({ taskId, agent, ...routing }));
+    this.planAdmissionValidator?.validate(resolvedExecutionPlan);
     this.store.create({
       taskId,
       task,

@@ -261,6 +261,24 @@ export function App() {
     }
   }
 
+  async function refreshProviderCatalog(provider: string) {
+    setIsRefreshing(true);
+    try {
+      const response = await fetch(`/api/sarathi/providers/${encodeURIComponent(provider)}/catalog/refresh`, { method: "POST" });
+      const next = await response.json();
+      if (next.catalog) {
+        setDashboard((current) => ({
+          ...current,
+          providerCatalogs: current.providerCatalogs.map((catalog) =>
+            catalog.provider === provider ? next.catalog : catalog
+          )
+        }));
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
   async function handleCreateSpecialist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSpecialistMessage(null);
@@ -390,7 +408,7 @@ export function App() {
 
             <section className="panel routing-panel"><div className="panel-heading"><div><span className="eyebrow">Routing policy</span><h2>New work only</h2></div></div><form className="specialist-form" onSubmit={saveRoutePolicy}><label htmlFor="route-scope">Scope<select id="route-scope" value={routeDraft.scope} onChange={(event) => setRouteDraft((draft) => ({ ...draft, scope: event.target.value as "global" | "specialist" | "workflow" }))}><option value="global">Global</option><option value="specialist">Specialist</option><option value="workflow">Workflow</option></select></label>{routeDraft.scope !== "global" && <label htmlFor="route-scope-id">Scope name<input id="route-scope-id" value={routeDraft.id} onChange={(event) => setRouteDraft((draft) => ({ ...draft, id: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overridePrimary} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override primary</label>{routeDraft.overridePrimary && <label htmlFor="route-primary">Primary model<input id="route-primary" value={routeDraft.primaryModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overrideFallback} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override fallback chain</label>{routeDraft.overrideFallback && <label htmlFor="route-fallback">Fallback model (blank clears)<input id="route-fallback" value={routeDraft.fallbackModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}<button className="specialist-submit" type="submit">Save route policy</button></form>{routeMessage && <p className="specialist-message" role="status">{routeMessage}</p>}<p className="panel-note subtle">Task overrides are recorded at admission. Later edits apply only to new tasks.</p></section>
 
-            <section className="panel provider-catalog-panel"><div className="panel-heading"><div><span className="eyebrow">Provider catalogs</span><h2>Observed, not assumed</h2></div></div>{dashboard.providerCatalogs.length === 0 ? <p className="panel-note subtle">No provider catalog observed. Missing evidence is not eligibility.</p> : <div className="catalog-list">{dashboard.providerCatalogs.map((catalog) => <div className="catalog-row" key={catalog.provider}><div><strong>{catalog.provider}</strong><small>{catalog.authenticationMode} · {catalog.completeness} · observed {catalog.observedAt}</small><small>{catalog.provenance}</small>{catalog.refreshError && <small className="catalog-error">Refresh failed: {catalog.refreshError}</small>}</div><span className={`state-chip ${catalog.stale ? "blocked" : "ready"}`}>{catalog.stale ? "stale" : "current"}</span><ul>{catalog.models.map((model) => <li key={model.id}><strong>{model.model}</strong><span>{model.configured ? "configured" : "not configured"} · {model.eligible ? "eligible" : "ineligible"}</span><small>health {model.qualification.health}; stream {model.qualification.streaming}; structured {model.qualification.structuredOutput}; tools {model.qualification.toolCalling}</small></li>)}</ul></div>)}</div>}<p className="panel-note subtle">A discovered model must be configured and fully capability-qualified before it is eligible.</p></section>
+            <section className="panel provider-catalog-panel"><div className="panel-heading"><div><span className="eyebrow">Provider catalogs</span><h2>Observed, not assumed</h2></div></div>{dashboard.providerCatalogs.length === 0 ? <p className="panel-note subtle">No provider catalog observed. Missing evidence is not eligibility.</p> : <div className="catalog-list">{dashboard.providerCatalogs.map((catalog) => <div className="catalog-row" key={catalog.provider}><div><strong>{catalog.provider}</strong><small>{catalog.authenticationMode} · {catalog.completeness} · observed {catalog.observedAt}</small><small>{catalog.provenance}</small>{catalog.refreshError && <small className="catalog-error">Refresh failed: {catalog.refreshError}</small>}</div><div><button className="text-button" type="button" aria-label={`Refresh ${catalog.provider}`} onClick={() => refreshProviderCatalog(catalog.provider)} disabled={isRefreshing}>Refresh</button><span className={`state-chip ${catalog.stale ? "blocked" : "ready"}`}>{catalog.stale ? "stale" : "current"}</span></div><ul>{catalog.models.map((model) => <li key={model.id}><strong>{model.model}</strong><span>{model.configured ? "configured" : "not configured"} · {model.eligible ? "eligible" : "ineligible"}</span><small>health {model.qualification.health}; stream {model.qualification.streaming}; structured {model.qualification.structuredOutput}; tools {model.qualification.toolCalling}</small></li>)}</ul></div>)}</div>}<p className="panel-note subtle">A discovered model must be configured and fully capability-qualified before it is eligible.</p></section>
 
             <section className="panel runtime-panel"><div className="panel-heading"><div><span className="eyebrow">Runtime</span><h2>Attributable, or stopped</h2></div></div><div className="runtime-card"><div className="runtime-card-top"><span className={`status-dot ${dashboard.runtime.state === "ready" ? "green" : "amber"}`} /><strong>{dashboard.runtime.name}</strong><span className="state-chip">{statusLabel(dashboard.runtime.state)}</span></div><p>{dashboard.runtime.reason}</p>{activeAgent ? <small className="agent-health"><strong>{activeAgent.displayName}</strong><span> · </span><span>{activeAgent.health.ok ? "healthy" : activeAgent.health.reason}</span></small> : <small>Agent health unavailable</small>}</div><div className="runtime-footnote">Billing mode: <strong>{dashboard.runtime.billingMode}</strong></div></section>
           </aside>

@@ -34,6 +34,12 @@ export class ProviderCatalogManager {
       return { status: "failed", catalog: this.store.markProviderCatalogStale(provider, errorMessage(error)) };
     }
   }
+
+  async refreshAll(): Promise<void> {
+    for (const provider of this.adapters.keys()) {
+      await this.refresh(provider);
+    }
+  }
 }
 
 function errorMessage(error: unknown): string {

@@ -141,6 +141,47 @@ describe("App", () => {
     expect(screen.getByText("not configured · ineligible")).toBeTruthy();
   });
 
+  test("refreshes a provider catalog from the command center", async () => {
+    const catalog = {
+      provider: "fake-provider",
+      authenticationMode: "none",
+      provenance: "deterministic fake discovery",
+      observedAt: "2026-09-06T10:13:00.000Z",
+      completeness: "complete",
+      stale: true,
+      refreshError: "previous refresh failed",
+      models: []
+    };
+    const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
+      if (url === "/api/agents") return Promise.resolve({ ok: true, json: async () => ({ agents: [] }) });
+      if (url === "/api/sarathi/dashboard") return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          runtime: { name: "Fake runtime", state: "ready", billingMode: "fake", reason: "ready" },
+          controls: { manualPaused: false, changedAt: null },
+          routing: { policies: [] },
+          providerCatalogs: [catalog],
+          discovery: { status: "blocked", reason: "blocked", lastCheckedAt: null, mergeRequests: [] },
+          tickets: [], specialists: [], recentTasks: [], groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
+        })
+      });
+      if (url === "/api/sarathi/providers/fake-provider/catalog/refresh" && options?.method === "POST") {
+        return Promise.resolve({ ok: true, json: async () => ({ refresh: { status: "succeeded" }, catalog: { ...catalog, stale: false, refreshError: null } }) });
+      }
+      return Promise.resolve({ ok: false, json: async () => ({}) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Refresh fake-provider" }));
+
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sarathi/providers/fake-provider/catalog/refresh",
+      { method: "POST" }
+    ));
+    expect(await screen.findByText("current")).toBeTruthy();
+  });
+
   test("creates a pending specialist and activates it only after approval", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
       if (url === "/api/agents") {

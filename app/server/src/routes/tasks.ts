@@ -4,6 +4,7 @@ import type { RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/cont
 import { TaskRunRegistry, type TaskExecutionObserver } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
 import type { ExecutionPlanResolver } from "../sarathi/ExecutionPlanResolver.js";
+import { IneligibleRouteError, type ExecutionPlanAdmissionValidator } from "../sarathi/RouteEligibility.js";
 import { isRoutePolicyOverride } from "../sarathi/RoutePolicy.js";
 import type { TaskStore } from "../TaskStore.js";
 
@@ -22,6 +23,7 @@ export interface TaskRouteOptions {
   runtimeRouter?: RuntimeRouter;
   planResolver?: ExecutionPlanResolver;
   executionObserver?: TaskExecutionObserver;
+  planAdmissionValidator?: ExecutionPlanAdmissionValidator;
 }
 
 export function registerTaskRoutes(
@@ -34,7 +36,8 @@ export function registerTaskRoutes(
     store,
     options.runtimeRouter,
     options.planResolver,
-    options.executionObserver
+    options.executionObserver,
+    options.planAdmissionValidator
   );
 
   app.post<{ Body: SubmitTaskBody }>("/api/agents/active/tasks", async (request, reply) => {
@@ -46,11 +49,20 @@ export function registerTaskRoutes(
     const agent = manager.getActiveAgent();
     const sessionKey = computeSessionKey("default-operator", "default");
 
-    const taskId = registry.start(agent, task, sessionKey, {
-      specialistId: request.body.specialistId,
-      workflowId: request.body.workflowId,
-      taskPolicy: request.body.routePolicy
-    });
+    let taskId: string;
+    try {
+      taskId = registry.start(agent, task, sessionKey, {
+        specialistId: request.body.specialistId,
+        workflowId: request.body.workflowId,
+        taskPolicy: request.body.routePolicy
+      });
+    } catch (error) {
+      if (error instanceof IneligibleRouteError) {
+        reply.code(400);
+        return { error: error.message };
+      }
+      throw error;
+    }
 
     reply.code(202);
     return { taskId };

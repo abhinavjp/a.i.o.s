@@ -23,6 +23,144 @@ function makeManager() {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("rejects an unconfigured discovered route before starting runtime work", async () => {
+    await withStore(async (sarathiPath) => {
+      let runtimeRuns = 0;
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(join(dirname(sarathiPath), "tasks.json")),
+        runtimeRouter: {
+          async *run() {
+            runtimeRuns += 1;
+            yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+          }
+        },
+        providerCatalogAdapters: [{
+          provider: "fake-provider",
+          async discover() {
+            return {
+              authenticationMode: "none" as const,
+              provenance: "deterministic fake discovery",
+              observedAt: "2026-09-06T10:10:00.000Z",
+              completeness: "complete" as const,
+              models: [{
+                model: "unconfigured-model",
+                configured: false,
+                qualification: {
+                  health: "qualified" as const,
+                  streaming: "qualified" as const,
+                  structuredOutput: "qualified" as const,
+                  toolCalling: "qualified" as const
+                }
+              }]
+            };
+          }
+        }]
+      });
+      await app.inject({ method: "POST", url: "/api/sarathi/providers/fake-provider/catalog/refresh" });
+
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: {
+          task: "must not run",
+          routePolicy: {
+            primary: { runtime: "fake", provider: "fake-provider", model: "unconfigured-model", billingMode: "fake" }
+          }
+        }
+      });
+
+      expect(submitted.statusCode).toBe(400);
+      expect(submitted.json().error).toContain("not configured");
+      expect(runtimeRuns).toBe(0);
+      await app.close();
+    });
+  });
+
+  test("rejects unknown qualification evidence before starting runtime work", async () => {
+    await withStore(async (sarathiPath) => {
+      let runtimeRuns = 0;
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(join(dirname(sarathiPath), "tasks.json")),
+        runtimeRouter: {
+          async *run() {
+            runtimeRuns += 1;
+            yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+          }
+        },
+        providerCatalogAdapters: [{
+          provider: "fake-provider",
+          async discover() {
+            return {
+              authenticationMode: "none" as const,
+              provenance: "deterministic fake qualification",
+              observedAt: "2026-09-06T10:11:00.000Z",
+              completeness: "complete" as const,
+              models: [{
+                model: "unknown-model",
+                configured: true,
+                qualification: {
+                  health: "qualified" as const,
+                  streaming: "qualified" as const,
+                  structuredOutput: "unknown" as const,
+                  toolCalling: "qualified" as const
+                }
+              }]
+            };
+          }
+        }]
+      });
+      await app.inject({ method: "POST", url: "/api/sarathi/providers/fake-provider/catalog/refresh" });
+
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: {
+          task: "must not run unknown evidence",
+          routePolicy: {
+            primary: { runtime: "fake", provider: "fake-provider", model: "unknown-model", billingMode: "fake" }
+          }
+        }
+      });
+
+      expect(submitted.statusCode).toBe(400);
+      expect(submitted.json().error).toContain("structuredOutput is unknown");
+      expect(runtimeRuns).toBe(0);
+      await app.close();
+    });
+  });
+
+  test("refreshes injected provider catalogs during Fastify startup", async () => {
+    await withStore(async (path) => {
+      let discoveries = 0;
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        providerCatalogAdapters: [{
+          provider: "startup-provider",
+          async discover() {
+            discoveries += 1;
+            return {
+              authenticationMode: "none" as const,
+              provenance: "startup fake discovery",
+              observedAt: "2026-09-06T10:12:00.000Z",
+              completeness: "complete" as const,
+              models: []
+            };
+          }
+        }]
+      });
+
+      const dashboard = await app.inject({ method: "GET", url: "/api/sarathi/dashboard" });
+
+      expect(discoveries).toBe(1);
+      expect(dashboard.json().providerCatalogs).toEqual([
+        expect.objectContaining({ provider: "startup-provider", provenance: "startup fake discovery" })
+      ]);
+      await app.close();
+    });
+  });
+
   test("exposes normalized fake provider catalog evidence and does not treat unknown qualification as executable", async () => {
     await withStore(async (path) => {
       const app = buildApp(makeManager(), {
