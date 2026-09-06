@@ -18,7 +18,7 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
   }
 
   private validateRoute(route: ResolvedRoute): void {
-    if (route.billingMode === "unmeasured" || isExplicitFakeTestRoute(route)) {
+    if ((route.runtime === "unmeasured" && route.billingMode === "unmeasured") || isExplicitFakeTestRoute(route)) {
       return;
     }
     const catalog = this.store.snapshot().providerCatalogs.find((candidate) => candidate.provider === route.provider);
