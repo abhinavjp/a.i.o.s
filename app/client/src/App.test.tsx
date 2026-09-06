@@ -96,6 +96,7 @@ describe("App", () => {
               models: [{
                 id: "fake-provider:alpha",
                 model: "alpha",
+                enabled: false,
                 configured: false,
                 eligible: false,
                 qualification: { health: "qualified", streaming: "qualified", structuredOutput: "unknown", toolCalling: "unknown" }
@@ -138,7 +139,7 @@ describe("App", () => {
     expect(screen.getByText("fake-provider")).toBeTruthy();
     expect(screen.getByText("stale")).toBeTruthy();
     expect(screen.getByText("Refresh failed: fake transport unavailable")).toBeTruthy();
-    expect(screen.getByText("not configured · ineligible")).toBeTruthy();
+    expect(screen.getByText("not enabled · not configured · ineligible")).toBeTruthy();
   });
 
   test("refreshes a provider catalog from the command center", async () => {
@@ -364,6 +365,31 @@ describe("App", () => {
         })
       })
     ));
+  });
+
+  test("explains a rejected route instead of opening a task stream", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/agents") return stubAgentsFetch()();
+      if (url === "/api/sarathi/dashboard") return Promise.resolve({
+        ok: true,
+        json: async () => ({
+          runtime: { name: "Fake runtime", state: "ready", billingMode: "fake", reason: "ready" },
+          controls: { manualPaused: false }, routing: { policies: [] }, providerCatalogs: [],
+          discovery: { status: "blocked", reason: "blocked", lastCheckedAt: null, mergeRequests: [] },
+          tickets: [], specialists: [], recentTasks: [], groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
+        })
+      });
+      return Promise.resolve({ ok: false, json: async () => ({ error: "Route disabled-provider:disabled-model is not enabled." }) });
+    }));
+
+    render(<App />);
+    fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "route rejection" } });
+    fireEvent.click(screen.getByRole("button", { name: /run/i }));
+
+    expect(await screen.findByText("Route disabled-provider:disabled-model is not enabled.")).toBeTruthy();
+    expect(FakeEventSource.instances).toHaveLength(0);
   });
 
   test("renders message chunks in order as they arrive", async () => {

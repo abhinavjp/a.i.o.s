@@ -44,6 +44,15 @@ export interface ResolvedRoute {
   readonly billingMode: "fake" | "subscription" | "api" | "unmeasured";
 }
 
+/** Fixed-route evidence captured before runtime work begins. */
+export interface RouteSelection {
+  readonly requestedRoute: ResolvedRoute;
+  readonly effectiveRoute: ResolvedRoute;
+  readonly authenticationMode: ProviderAuthenticationMode | "fake";
+  readonly billingMode: ResolvedRoute["billingMode"];
+  readonly reason: string;
+}
+
 /** Operator-editable policy fields; omitted fields inherit from lower precedence. */
 export interface RoutePolicyOverride {
   readonly primary?: ResolvedRoute;
@@ -71,6 +80,7 @@ export interface ResolvedExecutionPlan {
   readonly planId: string;
   readonly taskId: string;
   readonly route: ResolvedRoute;
+  readonly selection?: RouteSelection;
   readonly fallbackRoutes: ReadonlyArray<ResolvedRoute>;
   readonly configurationVersions: EffectiveConfigurationVersions;
   readonly configurationSnapshots: {
@@ -91,6 +101,7 @@ export type NormalizedRuntimeEvent =
 export interface RuntimeAttempt {
   readonly attemptId: string;
   readonly route: ResolvedRoute;
+  readonly selection?: RouteSelection;
   readonly status: TaskStatus;
   readonly outcome: TaskOutcome | null;
   readonly startedAt: string;
@@ -126,6 +137,8 @@ export interface ModelQualification {
 
 export interface DiscoveredProviderModel {
   readonly model: string;
+  /** Omitted legacy discovery records inherit enabled from configured. */
+  readonly enabled?: boolean;
   readonly configured: boolean;
   readonly qualification: ModelQualification;
 }
@@ -146,6 +159,7 @@ export interface ProviderCatalogAdapter {
 
 export interface ProviderCatalogModel extends DiscoveredProviderModel {
   readonly id: string;
+  readonly enabled: boolean;
   readonly eligible: boolean;
 }
 

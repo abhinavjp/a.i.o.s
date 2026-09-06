@@ -4,7 +4,7 @@ import type { RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/cont
 import { TaskRunRegistry, type TaskExecutionObserver } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
 import type { ExecutionPlanResolver } from "../sarathi/ExecutionPlanResolver.js";
-import { IneligibleRouteError, type ExecutionPlanAdmissionValidator } from "../sarathi/RouteEligibility.js";
+import { IneligibleRouteError, type ExecutionPlanAdmissionValidator, type FixedRouteSelector } from "../sarathi/RouteEligibility.js";
 import { isRoutePolicyOverride } from "../sarathi/RoutePolicy.js";
 import type { TaskStore } from "../TaskStore.js";
 
@@ -24,6 +24,7 @@ export interface TaskRouteOptions {
   planResolver?: ExecutionPlanResolver;
   executionObserver?: TaskExecutionObserver;
   planAdmissionValidator?: ExecutionPlanAdmissionValidator;
+  fixedRouteSelector?: FixedRouteSelector;
 }
 
 export function registerTaskRoutes(
@@ -37,7 +38,8 @@ export function registerTaskRoutes(
     options.runtimeRouter,
     options.planResolver,
     options.executionObserver,
-    options.planAdmissionValidator
+    options.planAdmissionValidator,
+    options.fixedRouteSelector
   );
 
   app.post<{ Body: SubmitTaskBody }>("/api/agents/active/tasks", async (request, reply) => {

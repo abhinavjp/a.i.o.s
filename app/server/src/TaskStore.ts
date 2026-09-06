@@ -170,6 +170,13 @@ function cloneRecord(record: StoredTask): StoredTask {
       ? {
           ...record.resolvedExecutionPlan,
           route: { ...record.resolvedExecutionPlan.route },
+          ...(record.resolvedExecutionPlan.selection ? {
+            selection: {
+              ...record.resolvedExecutionPlan.selection,
+              requestedRoute: { ...record.resolvedExecutionPlan.selection.requestedRoute },
+              effectiveRoute: { ...record.resolvedExecutionPlan.selection.effectiveRoute }
+            }
+          } : {}),
           fallbackRoutes: (record.resolvedExecutionPlan.fallbackRoutes ?? []).map((route) => ({ ...route })),
           configurationVersions: { ...record.resolvedExecutionPlan.configurationVersions },
           configurationSnapshots: cloneConfigurationSnapshots(record.resolvedExecutionPlan.configurationSnapshots)
@@ -178,6 +185,13 @@ function cloneRecord(record: StoredTask): StoredTask {
     attempts: record.attempts?.map((attempt) => ({
       ...attempt,
       route: { ...attempt.route },
+      ...(attempt.selection ? {
+        selection: {
+          ...attempt.selection,
+          requestedRoute: { ...attempt.selection.requestedRoute },
+          effectiveRoute: { ...attempt.selection.effectiveRoute }
+        }
+      } : {}),
       outcome: attempt.outcome ? { ...attempt.outcome } : null,
       events: attempt.events.map((event) =>
         event.type === "progress"

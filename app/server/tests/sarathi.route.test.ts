@@ -23,6 +23,134 @@ function makeManager() {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("runs an enabled qualified fixed route and records its requested and effective identities", async () => {
+    await withStore(async (sarathiPath) => {
+      let receivedPlan: unknown;
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(join(dirname(sarathiPath), "tasks.json")),
+        runtimeRouter: {
+          async *run(input) {
+            receivedPlan = input.plan;
+            yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+          }
+        },
+        providerCatalogAdapters: [{
+          provider: "fixed-provider",
+          async discover() {
+            return {
+              authenticationMode: "environment-reference" as const,
+              provenance: "deterministic fixed-route catalog",
+              observedAt: "2026-09-06T12:00:00.000Z",
+              completeness: "complete" as const,
+              models: [{
+                model: "fixed-model",
+                enabled: true,
+                configured: true,
+                qualification: {
+                  health: "qualified" as const,
+                  streaming: "qualified" as const,
+                  structuredOutput: "qualified" as const,
+                  toolCalling: "qualified" as const
+                }
+              }]
+            };
+          }
+        }]
+      });
+      await app.inject({ method: "POST", url: "/api/sarathi/providers/fixed-provider/catalog/refresh" });
+
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: {
+          task: "run the fixed route",
+          routePolicy: {
+            primary: { runtime: "fake", provider: "fixed-provider", model: "fixed-model", billingMode: "fake" }
+          }
+        }
+      });
+
+      expect(submitted.statusCode).toBe(202);
+      const task = await app.inject({ method: "GET", url: `/api/agents/active/tasks/${submitted.json().taskId}` });
+      expect(task.json()).toMatchObject({
+        resolvedExecutionPlan: {
+          selection: {
+            requestedRoute: { runtime: "fake", provider: "fixed-provider", model: "fixed-model", billingMode: "fake" },
+            effectiveRoute: { runtime: "fake", provider: "fixed-provider", model: "fixed-model", billingMode: "fake" },
+            authenticationMode: "environment-reference",
+            billingMode: "fake",
+            reason: expect.stringContaining("fixed route")
+          }
+        },
+        attempts: [expect.objectContaining({
+          selection: expect.objectContaining({ authenticationMode: "environment-reference" })
+        })]
+      });
+      expect(receivedPlan).toMatchObject({ selection: { effectiveRoute: { provider: "fixed-provider", model: "fixed-model" } } });
+      const dashboard = await app.inject({ method: "GET", url: "/api/sarathi/dashboard" });
+      expect(dashboard.json().recentTasks[0]).toMatchObject({
+        selectionReason: expect.stringContaining("fixed route")
+      });
+      await app.close();
+    });
+  });
+
+  test("rejects a disabled fixed route before starting runtime work", async () => {
+    await withStore(async (sarathiPath) => {
+      let runtimeRuns = 0;
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(join(dirname(sarathiPath), "tasks.json")),
+        runtimeRouter: {
+          async *run() {
+            runtimeRuns += 1;
+            yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+          }
+        },
+        providerCatalogAdapters: [{
+          provider: "disabled-provider",
+          async discover() {
+            return {
+              authenticationMode: "none" as const,
+              provenance: "deterministic disabled-route catalog",
+              observedAt: "2026-09-06T12:01:00.000Z",
+              completeness: "complete" as const,
+              models: [{
+                model: "disabled-model",
+                enabled: false,
+                configured: true,
+                qualification: {
+                  health: "qualified" as const,
+                  streaming: "qualified" as const,
+                  structuredOutput: "qualified" as const,
+                  toolCalling: "qualified" as const
+                }
+              }]
+            };
+          }
+        }]
+      });
+      await app.inject({ method: "POST", url: "/api/sarathi/providers/disabled-provider/catalog/refresh" });
+
+      const submitted = await app.inject({
+        method: "POST",
+        url: "/api/agents/active/tasks",
+        payload: {
+          task: "must not run disabled route",
+          routePolicy: {
+            primary: { runtime: "fake", provider: "disabled-provider", model: "disabled-model", billingMode: "fake" }
+          }
+        }
+      });
+
+      expect(submitted.statusCode).toBe(400);
+      expect(submitted.json().error).toContain("not enabled");
+      expect(runtimeRuns).toBe(0);
+      await app.close();
+    });
+  });
+
   test("rejects an executable runtime with unmeasured billing before starting runtime work", async () => {
     await withStore(async (sarathiPath) => {
       let runtimeRuns = 0;

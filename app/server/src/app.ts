@@ -28,12 +28,14 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const sarathiStore =
     options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
   const providerCatalogManager = new ProviderCatalogManager(options.providerCatalogAdapters ?? [], sarathiStore);
+  const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore);
   app.addHook("onReady", async () => providerCatalogManager.refreshAll());
   registerTaskRoutes(app, manager, taskStore, {
     runtimeRouter: options.runtimeRouter,
     planResolver: options.executionPlanResolver ?? new LayeredExecutionPlanResolver(sarathiStore),
     executionObserver: { record: (task) => sarathiStore.recordTask(task) },
-    planAdmissionValidator: new ProviderCatalogEligibilityValidator(sarathiStore)
+    planAdmissionValidator: routeEligibility,
+    fixedRouteSelector: routeEligibility
   });
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager);
   return app;

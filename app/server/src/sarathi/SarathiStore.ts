@@ -66,6 +66,7 @@ export interface SarathiDashboard {
     planId: string;
     attemptId: string;
     evidence: string | null;
+    selectionReason: string | null;
   }>;
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
@@ -137,7 +138,8 @@ export class FileSarathiStore implements SarathiStore {
       runtime: plan.route.runtime,
       planId: plan.planId,
       attemptId: attempt.attemptId,
-      evidence
+      evidence,
+      selectionReason: attempt.selection?.reason ?? plan.selection?.reason ?? null
     };
     this.state.recentTasks = [
       summary,
@@ -307,7 +309,13 @@ function defaultDashboard(): SarathiDashboard {
 
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.routing ??= { policies: [defaultPolicy("global")] };
-  state.providerCatalogs ??= [];
+  state.providerCatalogs = (state.providerCatalogs ?? []).map((catalog) => ({
+    ...catalog,
+    models: catalog.models.map((model) => ({
+      ...model,
+      enabled: model.enabled ?? model.configured
+    }))
+  }));
   if (!state.routing.policies.some((policy) => policy.scope === "global")) {
     state.routing.policies.push(defaultPolicy("global"));
   }

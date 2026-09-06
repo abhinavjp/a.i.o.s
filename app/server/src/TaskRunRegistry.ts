@@ -7,7 +7,7 @@ import {
   type ExecutionPlanResolver
 } from "./sarathi/ExecutionPlanResolver.js";
 import type { StoredTask, TaskStore } from "./TaskStore.js";
-import type { ExecutionPlanAdmissionValidator } from "./sarathi/RouteEligibility.js";
+import type { ExecutionPlanAdmissionValidator, FixedRouteSelector } from "./sarathi/RouteEligibility.js";
 
 interface TaskListener {
   onChunk: (chunk: string) => void;
@@ -30,7 +30,8 @@ export class TaskRunRegistry {
     private readonly runtimeRouter: RuntimeRouter = new AgentRuntimeRouter(),
     private readonly planResolver: ExecutionPlanResolver = new DefaultExecutionPlanResolver(),
     private readonly observer?: TaskExecutionObserver,
-    private readonly planAdmissionValidator?: ExecutionPlanAdmissionValidator
+    private readonly planAdmissionValidator?: ExecutionPlanAdmissionValidator,
+    private readonly fixedRouteSelector?: FixedRouteSelector
   ) {}
 
   start(
@@ -41,7 +42,8 @@ export class TaskRunRegistry {
   ): string {
     const taskId = randomUUID();
     const now = new Date().toISOString();
-    const resolvedExecutionPlan = snapshotExecutionPlan(this.planResolver.resolve({ taskId, agent, ...routing }));
+    const resolvedPlan = this.planResolver.resolve({ taskId, agent, ...routing });
+    const resolvedExecutionPlan = snapshotExecutionPlan(this.fixedRouteSelector?.select(resolvedPlan) ?? resolvedPlan);
     this.planAdmissionValidator?.validate(resolvedExecutionPlan);
     this.store.create({
       taskId,
@@ -57,6 +59,7 @@ export class TaskRunRegistry {
         {
           attemptId: randomUUID(),
           route: { ...resolvedExecutionPlan.route },
+          ...(resolvedExecutionPlan.selection ? { selection: cloneSelection(resolvedExecutionPlan.selection) } : {}),
           status: "running",
           outcome: null,
           startedAt: now,
@@ -141,4 +144,14 @@ export class TaskRunRegistry {
       this.observer?.record(task);
     }
   }
+}
+
+function cloneSelection(selection: NonNullable<ResolvedExecutionPlan["selection"]>): NonNullable<ResolvedExecutionPlan["selection"]> {
+  return {
+    requestedRoute: { ...selection.requestedRoute },
+    effectiveRoute: { ...selection.effectiveRoute },
+    authenticationMode: selection.authenticationMode,
+    billingMode: selection.billingMode,
+    reason: selection.reason
+  };
 }

@@ -98,6 +98,13 @@ export function snapshotExecutionPlan(plan: ResolvedExecutionPlan): ResolvedExec
   return freezePlan({
     ...plan,
     route: { ...plan.route },
+    ...(plan.selection ? {
+      selection: {
+        ...plan.selection,
+        requestedRoute: { ...plan.selection.requestedRoute },
+        effectiveRoute: { ...plan.selection.effectiveRoute }
+      }
+    } : {}),
     fallbackRoutes: (plan.fallbackRoutes ?? []).map((route) => ({ ...route })),
     configurationVersions: { ...plan.configurationVersions },
     configurationSnapshots: snapshotConfiguration(plan.configurationSnapshots)
@@ -106,6 +113,11 @@ export function snapshotExecutionPlan(plan: ResolvedExecutionPlan): ResolvedExec
 
 function freezePlan(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {
   Object.freeze(plan.route);
+  if (plan.selection) {
+    Object.freeze(plan.selection.requestedRoute);
+    Object.freeze(plan.selection.effectiveRoute);
+    Object.freeze(plan.selection);
+  }
   for (const route of plan.fallbackRoutes ?? []) Object.freeze(route);
   Object.freeze(plan.fallbackRoutes);
   Object.freeze(plan.configurationVersions);

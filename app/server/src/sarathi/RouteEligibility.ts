@@ -1,14 +1,18 @@
-import type { ResolvedExecutionPlan, ResolvedRoute } from "@aios/contracts";
+import type { ResolvedExecutionPlan, ResolvedRoute, RouteSelection } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
 
 export interface ExecutionPlanAdmissionValidator {
   validate(plan: ResolvedExecutionPlan): void;
 }
 
+export interface FixedRouteSelector {
+  select(plan: ResolvedExecutionPlan): ResolvedExecutionPlan;
+}
+
 export class IneligibleRouteError extends Error {}
 
 /** Rejects known catalog entries that have not earned execution eligibility. */
-export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissionValidator {
+export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissionValidator, FixedRouteSelector {
   constructor(private readonly store: SarathiStore) {}
 
   validate(plan: ResolvedExecutionPlan): void {
@@ -17,9 +21,23 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
     }
   }
 
-  private validateRoute(route: ResolvedRoute): void {
+  select(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {
+    const authenticationMode = this.validateRoute(plan.route);
+    const selection: RouteSelection = {
+      requestedRoute: { ...plan.route },
+      effectiveRoute: { ...plan.route },
+      authenticationMode,
+      billingMode: plan.route.billingMode,
+      reason: isExplicitFakeTestRoute(plan.route)
+        ? "fixed route selected through the explicit deterministic fake test seam."
+        : "fixed route selected: enabled, healthy, configured, and capability-qualified."
+    };
+    return { ...plan, selection };
+  }
+
+  private validateRoute(route: ResolvedRoute): RouteSelection["authenticationMode"] {
     if ((route.runtime === "unmeasured" && route.billingMode === "unmeasured") || isExplicitFakeTestRoute(route)) {
-      return;
+      return route.runtime === "fake" ? "fake" : "unmeasured";
     }
     const catalog = this.store.snapshot().providerCatalogs.find((candidate) => candidate.provider === route.provider);
     if (!catalog) {
@@ -29,11 +47,14 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
     if (!model) {
       throw new IneligibleRouteError(`Route ${route.provider}:${route.model} is not in the provider catalog.`);
     }
-    if (model.eligible) {
-      return;
-    }
     if (!model.configured) {
       throw new IneligibleRouteError(`Route ${route.provider}:${route.model} is not configured.`);
+    }
+    if (!model.enabled) {
+      throw new IneligibleRouteError(`Route ${route.provider}:${route.model} is not enabled.`);
+    }
+    if (model.eligible) {
+      return catalog.authenticationMode;
     }
     const qualification = Object.entries(model.qualification).find(([, evidence]) => evidence !== "qualified");
     const [capability, evidence] = qualification ?? ["capability", "unknown"];

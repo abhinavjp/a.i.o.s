@@ -58,9 +58,11 @@ function normalizeCatalog(provider: string, discovery: ProviderCatalogDiscovery)
     models: discovery.models.map((model) => ({
       id: `${provider}:${model.model}`,
       model: model.model,
+      enabled: model.enabled ?? model.configured,
       configured: model.configured,
       qualification: { ...model.qualification },
-      eligible: model.configured && Object.values(model.qualification).every((evidence) => evidence === "qualified")
+      eligible: (model.enabled ?? model.configured) && model.configured &&
+        Object.values(model.qualification).every((evidence) => evidence === "qualified")
     }))
   };
 }
