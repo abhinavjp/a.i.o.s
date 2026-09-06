@@ -406,6 +406,52 @@ describe("App", () => {
     expect(dashboardRequests).toBe(3);
   });
 
+  test("keeps newer terminal selection evidence when an older admission refresh resolves late", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const pendingDashboardResponses: Array<(value: unknown) => void> = [];
+    let dashboardCalls = 0;
+    const snapshot = (selectionReason: string, status: "running" | "completed") => ({
+      runtime: { name: "Fake runtime", state: "ready", billingMode: "fake", reason: "ready" },
+      controls: { manualPaused: false }, routing: { policies: [] }, providerCatalogs: [],
+      discovery: { status: "blocked", reason: "blocked", lastCheckedAt: null, mergeRequests: [] },
+      tickets: [], specialists: [], recentTasks: [{
+        id: "task-race", title: "race selection", status, runtime: "fake",
+        planId: "plan-race", attemptId: "attempt-race", evidence: null, selectionReason
+      }],
+      groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
+    });
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/agents") return stubAgentsFetch()();
+      if (url === "/api/sarathi/dashboard") {
+        dashboardCalls += 1;
+        if (dashboardCalls === 1) return Promise.resolve({ ok: true, json: async () => snapshot("initial snapshot", "running") });
+        return new Promise((resolve) => pendingDashboardResponses.push(resolve));
+      }
+      return Promise.resolve({ ok: true, json: async () => ({ taskId: "task-race" }) });
+    }));
+
+    render(<App />);
+    fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "race selection" } });
+    fireEvent.click(screen.getByRole("button", { name: /run/i }));
+    await vi.waitFor(() => expect(pendingDashboardResponses).toHaveLength(1));
+    act(() => FakeEventSource.instances[0]?.emitDone(JSON.stringify({ status: "completed" })));
+    await vi.waitFor(() => expect(pendingDashboardResponses).toHaveLength(2));
+
+    await act(async () => {
+      pendingDashboardResponses[1]?.({ ok: true, json: async () => snapshot("terminal snapshot", "completed") });
+      await Promise.resolve();
+    });
+    expect(await screen.findByText("terminal snapshot")).toBeTruthy();
+
+    await act(async () => {
+      pendingDashboardResponses[0]?.({ ok: true, json: async () => snapshot("late admission snapshot", "running") });
+      await Promise.resolve();
+    });
+    expect(screen.getByText("terminal snapshot")).toBeTruthy();
+    expect(screen.queryByText("late admission snapshot")).toBeNull();
+  });
+
   test("explains a rejected route instead of opening a task stream", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);

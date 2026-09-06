@@ -168,6 +168,7 @@ export function App() {
   const [routeDraft, setRouteDraft] = useState({ scope: "global" as "global" | "specialist" | "workflow", id: "", primaryModel: "fake", fallbackModel: "", overridePrimary: true, overrideFallback: false });
   const [routeMessage, setRouteMessage] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const dashboardRefreshGeneration = useRef(0);
 
   function openTaskStream(taskId: string) {
     eventSourceRef.current?.close();
@@ -191,10 +192,12 @@ export function App() {
   }
 
   async function refreshDashboard() {
+    const generation = dashboardRefreshGeneration.current + 1;
+    dashboardRefreshGeneration.current = generation;
     try {
       const response = await fetch("/api/sarathi/dashboard");
       const next = (await response.json()) as Partial<Dashboard>;
-      if (Array.isArray(next.tickets) && next.runtime && next.discovery) {
+      if (generation === dashboardRefreshGeneration.current && Array.isArray(next.tickets) && next.runtime && next.discovery) {
         setDashboard({ ...DEFAULT_DASHBOARD, ...next, providerCatalogs: next.providerCatalogs ?? [] });
       }
     } catch {
