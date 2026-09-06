@@ -36,3 +36,18 @@
 
 - **session_key** — stable per-(operator + project) key; one persistent session each.
 - **Tracer bullet** — the thinnest end-to-end working slice through every layer.
+
+## Sarathi runtime routing
+
+- **Runtime** — the execution engine that runs an agentic task. Sarathi v1 runtimes are Codex CLI, Claude CLI, and the provider-neutral AI SDK tool loop.
+- **Provider** — the account or inference source used by a runtime. Providers include Ollama, a custom on-premises OpenAI-compatible endpoint, OpenAI API, Anthropic API, and OpenRouter.
+- **Model** — a provider-discovered model identity with normalized capabilities and an operator-editable tier.
+- **Route** — a runtime, provider, model policy, and credential reference considered as one executable choice.
+- **Route policy** — a fixed or automatic primary route plus an optional ordered fallback policy.
+- **Specialist** — a persistent configured agent responsibility with instructions, tools, and an optional route-policy override. A specialist is not a runtime or provider.
+- **Workflow override** — a route-policy override shared by tasks in one defined flow.
+- **Resolved execution plan** — the immutable route decision captured when a task starts. Later configuration changes affect only new tasks.
+- **Attempt** — one execution of a task through one resolved runtime and model route.
+- **Permission rule** — a deny, ask, or allow decision scoped by tool, operation, target, and lifetime.
+- **Approval** — an operator decision bound to an exact proposed action and its relevant context.
+- **Usage record** — attributable observed usage and cost data for an attempt. Unavailable values are recorded as unknown, never zero.
