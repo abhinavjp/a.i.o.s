@@ -41,7 +41,7 @@ export interface ResolvedRoute {
   readonly runtime: string;
   readonly provider: string;
   readonly model: string;
-  readonly billingMode: "fake" | "subscription" | "api";
+  readonly billingMode: "fake" | "subscription" | "api" | "unmeasured";
 }
 
 /** Version identifiers of every configuration layer effective for one task. */

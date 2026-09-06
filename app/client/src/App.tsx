@@ -14,7 +14,7 @@ type Dashboard = {
   runtime: {
     name: string;
     state: "unavailable" | "unverified" | "ready";
-    billingMode: "fake" | "subscription-only" | "api";
+    billingMode: "fake" | "subscription-only" | "api" | "unmeasured";
     reason: string;
   };
   controls: { manualPaused: boolean; changedAt: string | null };

@@ -24,9 +24,7 @@ export interface StoredTask {
 export interface TaskStore {
   get(taskId: string): StoredTask | undefined;
   create(task: StoredTask): void;
-  appendChunk(taskId: string, chunk: string): void;
-  appendRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void;
-  complete(taskId: string, outcome: TaskOutcome): void;
+  applyRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void;
 }
 
 const INTERRUPTED_MESSAGE = "task interrupted by backend restart";
@@ -52,47 +50,31 @@ export class FileTaskStore implements TaskStore {
     this.persist();
   }
 
-  appendChunk(taskId: string, chunk: string): void {
-    const record = this.require(taskId);
-    record.chunks.push(chunk);
-    record.updatedAt = new Date().toISOString();
-    this.persist();
-  }
-
-  appendRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void {
+  applyRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void {
     const record = this.require(taskId);
     const attempt = record.attempts?.at(-1);
     if (!attempt) {
       throw new Error(`Task has no durable attempt: ${taskId}`);
     }
+    const now = new Date().toISOString();
+    const observedEvent = { ...event, observedAt: now };
     record.attempts = [
       ...(record.attempts ?? []).slice(0, -1),
       {
         ...attempt,
-        events: [...attempt.events, { ...event, observedAt: new Date().toISOString() }]
+        status: event.type === "terminal" ? event.outcome.status : attempt.status,
+        outcome: event.type === "terminal" ? { ...event.outcome } : attempt.outcome,
+        completedAt: event.type === "terminal" ? now : attempt.completedAt,
+        events: [...attempt.events, observedEvent]
       }
     ];
-    record.updatedAt = new Date().toISOString();
-    this.persist();
-  }
-
-  complete(taskId: string, outcome: TaskOutcome): void {
-    const record = this.require(taskId);
-    record.status = outcome.status;
-    record.outcome = { ...outcome };
-    const attempt = record.attempts?.at(-1);
-    if (attempt) {
-      record.attempts = [
-        ...(record.attempts ?? []).slice(0, -1),
-        {
-          ...attempt,
-          status: outcome.status,
-          outcome: { ...outcome },
-          completedAt: new Date().toISOString()
-        }
-      ];
+    if (event.type === "progress") {
+      record.chunks.push(event.text);
+    } else {
+      record.status = event.outcome.status;
+      record.outcome = { ...event.outcome };
     }
-    record.updatedAt = new Date().toISOString();
+    record.updatedAt = now;
     this.persist();
   }
 
@@ -109,11 +91,29 @@ export class FileTaskStore implements TaskStore {
     let recovered = false;
     for (const value of parsed) {
       const task = cloneRecord(value as StoredTask);
-      if (task.status === "queued" || task.status === "running") {
+      const attempt = task.attempts?.at(-1);
+      const terminal = [...(attempt?.events ?? [])]
+        .reverse()
+        .find((event) => event.type === "terminal");
+      if ((task.status === "queued" || task.status === "running") && terminal?.type === "terminal") {
+        task.status = terminal.outcome.status;
+        task.outcome = { ...terminal.outcome };
+        if (attempt) {
+          task.attempts = [
+            ...(task.attempts ?? []).slice(0, -1),
+            {
+              ...attempt,
+              status: terminal.outcome.status,
+              outcome: { ...terminal.outcome },
+              completedAt: terminal.observedAt
+            }
+          ];
+        }
+        recovered = true;
+      } else if (task.status === "queued" || task.status === "running") {
         const now = new Date().toISOString();
         task.status = "unavailable";
         task.outcome = { status: "unavailable", message: INTERRUPTED_MESSAGE };
-        const attempt = task.attempts?.at(-1);
         if (attempt) {
           task.attempts = [
             ...(task.attempts ?? []).slice(0, -1),

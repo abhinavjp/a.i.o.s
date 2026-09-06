@@ -3,6 +3,7 @@ import type { AgentAbstraction, RuntimeRouter, TaskOutcome } from "@aios/contrac
 import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import {
   DefaultExecutionPlanResolver,
+  snapshotExecutionPlan,
   type ExecutionPlanResolver
 } from "./sarathi/ExecutionPlanResolver.js";
 import type { StoredTask, TaskStore } from "./TaskStore.js";
@@ -33,7 +34,7 @@ export class TaskRunRegistry {
   start(agent: AgentAbstraction, task: string, sessionKey: string): string {
     const taskId = randomUUID();
     const now = new Date().toISOString();
-    const resolvedExecutionPlan = this.planResolver.resolve({ taskId, agent });
+    const resolvedExecutionPlan = snapshotExecutionPlan(this.planResolver.resolve({ taskId, agent }));
     this.store.create({
       taskId,
       task,
@@ -96,9 +97,8 @@ export class TaskRunRegistry {
   private async execute(input: Parameters<RuntimeRouter["run"]>[0]): Promise<void> {
     try {
       for await (const event of this.runtimeRouter.run(input)) {
-        this.store.appendRuntimeEvent(input.taskId, event);
         if (event.type === "progress") {
-          this.store.appendChunk(input.taskId, event.text);
+          this.store.applyRuntimeEvent(input.taskId, event);
           this.listeners.get(input.taskId)?.onChunk(event.text);
           this.notify(input.taskId);
           continue;
@@ -118,7 +118,7 @@ export class TaskRunRegistry {
   }
 
   private finish(taskId: string, outcome: TaskOutcome): void {
-    this.store.complete(taskId, outcome);
+    this.store.applyRuntimeEvent(taskId, { type: "terminal", outcome });
     this.notify(taskId);
     const listener = this.listeners.get(taskId);
     if (listener) {

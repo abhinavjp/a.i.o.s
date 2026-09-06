@@ -14,10 +14,10 @@ export class DefaultExecutionPlanResolver implements ExecutionPlanResolver {
   resolve({ taskId, agent }: { taskId: string; agent: AgentAbstraction }): ResolvedExecutionPlan {
     const agentInfo = agent.getInfo();
     const route: ResolvedRoute = {
-      runtime: "agent-abstraction",
+      runtime: agentInfo.kind === "fake" ? "fake" : "unmeasured",
       provider: agentInfo.kind,
       model: agentInfo.id,
-      billingMode: "fake"
+      billingMode: agentInfo.kind === "fake" ? "fake" : "unmeasured"
     };
     return freezePlan({
       planId: randomUUID(),
@@ -32,6 +32,14 @@ export class DefaultExecutionPlanResolver implements ExecutionPlanResolver {
       resolvedAt: new Date().toISOString()
     });
   }
+}
+
+export function snapshotExecutionPlan(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {
+  return freezePlan({
+    ...plan,
+    route: { ...plan.route },
+    configurationVersions: { ...plan.configurationVersions }
+  });
 }
 
 function freezePlan(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {

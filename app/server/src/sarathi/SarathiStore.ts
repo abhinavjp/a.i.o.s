@@ -26,7 +26,7 @@ export interface Specialist {
 export interface RuntimeStatus {
   name: string;
   state: "unavailable" | "unverified" | "ready";
-  billingMode: "fake" | "subscription-only" | "api";
+  billingMode: "fake" | "subscription-only" | "api" | "unmeasured";
   reason: string;
 }
 
@@ -132,7 +132,7 @@ export class FileSarathiStore implements SarathiStore {
     ].slice(0, 10);
     this.state.runtime = {
       name: runtimeName(plan.route.runtime),
-      state: task.status === "unavailable" ? "unavailable" : "ready",
+      state: plan.route.billingMode === "unmeasured" ? "unverified" : task.status === "unavailable" ? "unavailable" : "ready",
       billingMode: plan.route.billingMode === "subscription" ? "subscription-only" : plan.route.billingMode,
       reason: task.outcome?.message ?? `Attempt ${attempt.attemptId} is ${task.status}.`
     };
@@ -249,5 +249,8 @@ function clone<T>(value: T): T {
 }
 
 function runtimeName(runtime: string): string {
-  return runtime === "fake" ? "Fake runtime" : runtime;
+  if (runtime === "fake") {
+    return "Fake runtime";
+  }
+  return runtime === "unmeasured" ? "Unmeasured runtime" : runtime;
 }

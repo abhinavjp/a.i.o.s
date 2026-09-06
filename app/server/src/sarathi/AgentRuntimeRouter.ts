@@ -6,6 +6,17 @@ import type { NormalizedRuntimeEvent, RuntimeRouter } from "@aios/contracts";
  */
 export class AgentRuntimeRouter implements RuntimeRouter {
   async *run(input: Parameters<RuntimeRouter["run"]>[0]): AsyncIterable<NormalizedRuntimeEvent> {
+    if (input.plan.route.runtime === "unmeasured") {
+      yield {
+        type: "terminal",
+        outcome: {
+          status: "unavailable",
+          message: `UNMEASURED: ${input.plan.route.provider}/${input.plan.route.model} has no qualified runtime.`
+        }
+      };
+      return;
+    }
+
     let health;
     try {
       health = input.agent.checkHealth();
