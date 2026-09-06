@@ -45,6 +45,216 @@ class HealthChangingFakeAgent implements AgentAbstraction {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("hard denies an injected Sarathi tool before any executor receives it", async () => {
+    await withStore(async (path) => {
+      const executed: string[] = [];
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: {
+          definitions: [{ tool: "repository", operations: ["read_file", "delete_file"] }],
+          async execute(intent) {
+            executed.push(`${intent.tool}:${intent.operation}:${intent.target}`);
+            return { output: "fake tool result" };
+          }
+        }
+      });
+
+      const rule = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/permissions/rules",
+        payload: { decision: "deny", tool: "repository", operation: "read_file", target: "secrets.txt", lifetime: "global" }
+      });
+      expect(rule.statusCode).toBe(201);
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/tools/execute",
+        payload: {
+          tool: "repository",
+          operation: "read_file",
+          target: "secrets.txt",
+          context: { projectId: "project-a", sessionKey: "session-a" }
+        }
+      });
+
+      expect(response.statusCode).toBe(403);
+      expect(response.json()).toMatchObject({ decision: { outcome: "denied", reason: "hard deny" } });
+      expect(executed).toEqual([]);
+      await app.close();
+    });
+  });
+
+  test("requires an exact context-bound approval for a scoped ask and invalidates changed context", async () => {
+    await withStore(async (path) => {
+      const executed: string[] = [];
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: {
+          definitions: [{ tool: "repository", operations: ["write_file"] }],
+          async execute(intent) {
+            executed.push(intent.target);
+            return { output: "fake write" };
+          }
+        }
+      });
+      const intent = {
+        tool: "repository",
+        operation: "write_file",
+        target: "reports/review.md",
+        context: { projectId: "project-a", sessionKey: "session-a", revision: "abc123" }
+      };
+      await app.inject({
+        method: "POST",
+        url: "/api/sarathi/permissions/rules",
+        payload: { decision: "ask", tool: "repository", operation: "write_file", target: "reports/review.md", lifetime: "project", context: { projectId: "project-a" } }
+      });
+
+      const pending = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent });
+      expect(pending.statusCode).toBe(409);
+      expect(pending.json().decision).toEqual({ outcome: "requires_approval", reason: "scoped ask" });
+
+      const approval = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/permissions/approvals",
+        payload: { intent, lifetime: "project" }
+      });
+      expect(approval.statusCode).toBe(201);
+
+      const approved = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent });
+      expect(approved.statusCode).toBe(200);
+      expect(approved.json()).toMatchObject({ decision: { outcome: "allowed", reason: "action-bound approval" }, output: "fake write" });
+
+      const changed = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/tools/execute",
+        payload: { ...intent, context: { ...intent.context, revision: "def456" } }
+      });
+      expect(changed.statusCode).toBe(409);
+      expect(changed.json().decision).toEqual({ outcome: "requires_approval", reason: "scoped ask" });
+      expect(executed).toEqual(["reports/review.md"]);
+      await app.close();
+    });
+  });
+
+  test("rejects a session or project permission rule without its binding context", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: { definitions: [], async execute() { return { output: "unused" }; } }
+      });
+
+      const missingSession = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/permissions/rules",
+        payload: { decision: "allow", tool: "repository", operation: "write_file", target: "report.md", lifetime: "session" }
+      });
+      const missingProject = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/permissions/rules",
+        payload: { decision: "allow", tool: "repository", operation: "write_file", target: "report.md", lifetime: "project", context: { sessionKey: "session-a" } }
+      });
+
+      expect(missingSession.statusCode).toBe(400);
+      expect(missingProject.statusCode).toBe(400);
+      await app.close();
+    });
+  });
+
+  test("fails closed to operator approval when the semantic classifier is unavailable", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: {
+          definitions: [{ tool: "workspace", operations: ["format_file"] }],
+          async execute() { return { output: "must not execute" }; }
+        },
+        permissionSemanticClassifier: {
+          async classify() { throw new Error("deterministic fake classifier offline"); }
+        }
+      });
+
+      const response = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/tools/execute",
+        payload: {
+          tool: "workspace",
+          operation: "format_file",
+          target: "notes.md",
+          context: { projectId: "project-a", sessionKey: "session-a" }
+        }
+      });
+
+      expect(response.statusCode).toBe(409);
+      expect(response.json().decision).toEqual({ outcome: "requires_approval", reason: "operator approval required" });
+      await app.close();
+    });
+  });
+
+  test("allows only unresolved low-risk semantic intents and never consequential messages", async () => {
+    await withStore(async (path) => {
+      const executed: string[] = [];
+      const classifierCalls: string[] = [];
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: {
+          definitions: [
+            { tool: "workspace", operations: ["read_file", "format_file"] },
+            { tool: "notifier", operations: ["send_message"] }
+          ],
+          async execute(intent) { executed.push(intent.operation); return { output: intent.operation }; }
+        },
+        permissionSemanticClassifier: {
+          async classify(intent) { classifierCalls.push(intent.operation); return "low-risk"; }
+        }
+      });
+      const context = { projectId: "project-a", sessionKey: "session-a" };
+
+      const read = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { tool: "workspace", operation: "read_file", target: "notes.md", context } });
+      const semantic = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { tool: "workspace", operation: "format_file", target: "notes.md", context } });
+      const message = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { tool: "notifier", operation: "send_message", target: "operator@example.test", context } });
+
+      expect(read.json().decision).toEqual({ outcome: "allowed", reason: "deterministic safe/read-only" });
+      expect(semantic.json().decision).toEqual({ outcome: "allowed", reason: "semantic low-risk" });
+      expect(message.statusCode).toBe(409);
+      expect(message.json().decision).toEqual({ outcome: "requires_approval", reason: "operator approval required" });
+      expect(classifierCalls).toEqual(["format_file"]);
+      expect(executed).toEqual(["read_file", "format_file"]);
+      await app.close();
+    });
+  });
+
+  test("mediates a runtime tool request through Sarathi instead of ambient tool authority", async () => {
+    await withStore(async (sarathiPath) => {
+      let runtimeToolResult: unknown;
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(sarathiPath),
+        taskStore: new FileTaskStore(join(dirname(sarathiPath), "tasks.json")),
+        permissionTools: {
+          definitions: [{ tool: "workspace", operations: ["read_file"] }],
+          async execute() { return { output: "Sarathi-controlled result" }; }
+        },
+        runtimeRouter: {
+          async *run(input) {
+            runtimeToolResult = await input.executeTool({
+              tool: "workspace",
+              operation: "read_file",
+              target: "notes.md",
+              context: { projectId: "project-a", sessionKey: input.sessionKey }
+            });
+            yield { type: "terminal" as const, outcome: { status: "completed" as const } };
+          }
+        }
+      });
+
+      const submitted = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "read local notes" } });
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(submitted.statusCode).toBe(202);
+      expect(runtimeToolResult).toMatchObject({ decision: { outcome: "allowed", reason: "deterministic safe/read-only" }, output: "Sarathi-controlled result" });
+      await app.close();
+    });
+  });
+
   test("rejects a catalog-qualified route when the selected agent becomes unhealthy before persistence", async () => {
     await withStore(async (sarathiPath) => {
       const agent = new HealthChangingFakeAgent();

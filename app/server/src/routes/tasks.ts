@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentManager } from "@aios/agents";
 import type { RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
-import { TaskRunRegistry, type TaskExecutionObserver } from "../TaskRunRegistry.js";
+import { TaskRunRegistry, type TaskExecutionObserver, type TaskToolMediator } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
 import type { ExecutionPlanResolver } from "../sarathi/ExecutionPlanResolver.js";
 import { IneligibleRouteError, type ExecutionPlanAdmissionValidator, type FixedRouteSelector } from "../sarathi/RouteEligibility.js";
@@ -25,6 +25,7 @@ export interface TaskRouteOptions {
   executionObserver?: TaskExecutionObserver;
   planAdmissionValidator?: ExecutionPlanAdmissionValidator;
   fixedRouteSelector?: FixedRouteSelector;
+  toolMediator?: TaskToolMediator;
 }
 
 export function registerTaskRoutes(
@@ -39,7 +40,8 @@ export function registerTaskRoutes(
     options.planResolver,
     options.executionObserver,
     options.planAdmissionValidator,
-    options.fixedRouteSelector
+    options.fixedRouteSelector,
+    options.toolMediator
   );
 
   app.post<{ Body: SubmitTaskBody }>("/api/agents/active/tasks", async (request, reply) => {

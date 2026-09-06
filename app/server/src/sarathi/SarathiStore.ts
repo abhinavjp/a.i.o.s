@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { ProviderCatalog, RoutePolicyOverride, RoutePolicyScope, TaskStatus } from "@aios/contracts";
+import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RoutePolicyOverride, RoutePolicyScope, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
@@ -53,6 +53,7 @@ export interface DiscoveryState {
 export interface SarathiDashboard {
   runtime: RuntimeStatus;
   routing: { policies: RoutePolicyRecord[] };
+  permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
   providerCatalogs: ProviderCatalog[];
   controls: { manualPaused: boolean; changedAt: string | null };
   discovery: DiscoveryState;
@@ -89,6 +90,10 @@ export interface SarathiStore {
   setRoutePolicy(scope: "global" | "specialist" | "workflow", id: string | undefined, policy: RoutePolicyOverride): RoutePolicyRecord;
   recordProviderCatalog(catalog: ProviderCatalog): SarathiDashboard;
   markProviderCatalogStale(provider: string, refreshError: string): ProviderCatalog | null;
+  addPermissionRule(rule: PermissionRule): PermissionRule;
+  addApproval(approval: ActionBoundApproval): ActionBoundApproval;
+  findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
+  consumeApproval(id: string): void;
 }
 
 export class FileSarathiStore implements SarathiStore {
@@ -225,6 +230,34 @@ export class FileSarathiStore implements SarathiStore {
     return clone(staleCatalog);
   }
 
+  addPermissionRule(rule: PermissionRule): PermissionRule {
+    this.state.permissions.rules.push(clone(rule));
+    this.persist();
+    return clone(rule);
+  }
+
+  addApproval(approval: ActionBoundApproval): ActionBoundApproval {
+    this.state.permissions.approvals.push(clone(approval));
+    this.persist();
+    return clone(approval);
+  }
+
+  findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined {
+    const approval = [...this.state.permissions.approvals].reverse().find((candidate) =>
+      candidate.remainingUses !== 0 && sameIntent(candidate.intent, intent)
+    );
+    return approval ? clone(approval) : undefined;
+  }
+
+  consumeApproval(id: string): void {
+    const approval = this.state.permissions.approvals.find((candidate) => candidate.id === id);
+    if (!approval || approval.remainingUses === null || approval.remainingUses === 0) return;
+    this.state.permissions.approvals = this.state.permissions.approvals.map((candidate) =>
+      candidate.id === id ? { ...candidate, remainingUses: candidate.remainingUses! - 1 } : candidate
+    );
+    this.persist();
+  }
+
   private load(): SarathiDashboard {
     if (!existsSync(this.filePath)) {
       return defaultDashboard();
@@ -272,6 +305,7 @@ function defaultDashboard(): SarathiDashboard {
       reason: "Native runtime launch is not verified on this host."
     },
     routing: { policies: [defaultPolicy("global")] },
+    permissions: { rules: [], approvals: [] },
     providerCatalogs: [],
     controls: { manualPaused: false, changedAt: null },
     discovery: {
@@ -309,6 +343,7 @@ function defaultDashboard(): SarathiDashboard {
 
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.routing ??= { policies: [defaultPolicy("global")] };
+  state.permissions ??= { rules: [], approvals: [] };
   state.providerCatalogs = (state.providerCatalogs ?? []).map((catalog) => ({
     ...catalog,
     models: catalog.models.map((model) => ({
@@ -350,4 +385,13 @@ function runtimeName(runtime: string): string {
     return "Fake runtime";
   }
   return runtime === "unmeasured" ? "Unmeasured runtime" : runtime;
+}
+
+function sameIntent(left: ToolIntent, right: ToolIntent): boolean {
+  return left.tool === right.tool && left.operation === right.operation && left.target === right.target &&
+    JSON.stringify(sorted(left.context)) === JSON.stringify(sorted(right.context));
+}
+
+function sorted(context: Readonly<Record<string, string>>): Record<string, string> {
+  return Object.fromEntries(Object.entries(context).sort(([left], [right]) => left.localeCompare(right)));
 }

@@ -115,6 +115,8 @@ export interface RoutedExecutionInput {
   readonly sessionKey: string;
   readonly plan: ResolvedExecutionPlan;
   readonly agent: AgentAbstraction;
+  /** The only tool capability runtime adapters receive. */
+  executeTool(intent: ToolIntent): Promise<ToolExecutionResult>;
 }
 
 /** Injectable seam for runtime adapters; it never owns task durability. */
@@ -172,4 +174,63 @@ export interface ProviderCatalog {
   readonly stale: boolean;
   readonly refreshError: string | null;
   readonly models: ReadonlyArray<ProviderCatalogModel>;
+}
+
+/** Sarathi-owned, named tool surface exposed to every runtime. */
+export interface ToolDefinition {
+  readonly tool: string;
+  readonly operations: ReadonlyArray<string>;
+}
+
+/** A runtime can request an intent, but never execute it directly. */
+export interface ToolIntent {
+  readonly tool: string;
+  readonly operation: string;
+  readonly target: string;
+  readonly context: Readonly<Record<string, string>>;
+}
+
+export type PermissionRuleDecision = "deny" | "ask" | "allow";
+export type ApprovalLifetime = "once" | "session" | "project" | "global";
+
+/** A narrow structured rule; raw commands are intentionally not representable. */
+export interface PermissionRule {
+  readonly id: string;
+  readonly decision: PermissionRuleDecision;
+  readonly tool: string;
+  readonly operation: string;
+  readonly target: string;
+  readonly lifetime: ApprovalLifetime;
+  readonly context: Readonly<Record<string, string>>;
+  readonly remainingUses: number | null;
+  readonly createdAt: string;
+}
+
+/** Operator authority is bound to the whole proposed intent and its context. */
+export interface ActionBoundApproval {
+  readonly id: string;
+  readonly intent: ToolIntent;
+  readonly lifetime: ApprovalLifetime;
+  readonly remainingUses: number | null;
+  readonly createdAt: string;
+}
+
+export type PermissionDecision =
+  | { readonly outcome: "allowed"; readonly reason: string }
+  | { readonly outcome: "denied"; readonly reason: string }
+  | { readonly outcome: "requires_approval"; readonly reason: string };
+
+export interface ToolExecutionResult {
+  readonly decision: PermissionDecision;
+  readonly output?: string;
+}
+
+export interface SarathiToolExecutor {
+  readonly definitions: ReadonlyArray<ToolDefinition>;
+  execute(intent: ToolIntent): Promise<{ readonly output: string }>;
+}
+
+/** Optional semantic classifier; it may only identify unresolved low-risk work. */
+export interface PermissionSemanticClassifier {
+  classify(intent: ToolIntent): Promise<"low-risk" | "requires-approval">;
 }

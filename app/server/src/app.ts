@@ -1,7 +1,7 @@
 import Fastify from "fastify";
 import { join } from "node:path";
 import type { AgentManager } from "@aios/agents";
-import type { ProviderCatalogAdapter, RuntimeRouter } from "@aios/contracts";
+import type { PermissionSemanticClassifier, ProviderCatalogAdapter, RuntimeRouter, SarathiToolExecutor } from "@aios/contracts";
 import { registerAgentsRoute } from "./routes/agents.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerSarathiRoutes } from "./sarathi/routes.js";
@@ -12,6 +12,7 @@ import { FileSarathiStore } from "./sarathi/SarathiStore.js";
 import type { SarathiStore } from "./sarathi/SarathiStore.js";
 import { ProviderCatalogManager } from "./sarathi/ProviderCatalog.js";
 import { ProviderCatalogEligibilityValidator } from "./sarathi/RouteEligibility.js";
+import { PermissionEngine } from "./sarathi/PermissionEngine.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
@@ -19,6 +20,8 @@ export interface BuildAppOptions {
   runtimeRouter?: RuntimeRouter;
   executionPlanResolver?: ExecutionPlanResolver;
   providerCatalogAdapters?: ReadonlyArray<ProviderCatalogAdapter>;
+  permissionTools?: SarathiToolExecutor;
+  permissionSemanticClassifier?: PermissionSemanticClassifier;
 }
 
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
@@ -29,14 +32,18 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
   const providerCatalogManager = new ProviderCatalogManager(options.providerCatalogAdapters ?? [], sarathiStore);
   const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore);
+  const permissionEngine = options.permissionTools
+    ? new PermissionEngine(sarathiStore, options.permissionTools, options.permissionSemanticClassifier)
+    : undefined;
   app.addHook("onReady", async () => providerCatalogManager.refreshAll());
   registerTaskRoutes(app, manager, taskStore, {
     runtimeRouter: options.runtimeRouter,
     planResolver: options.executionPlanResolver ?? new LayeredExecutionPlanResolver(sarathiStore),
     executionObserver: { record: (task) => sarathiStore.recordTask(task) },
     planAdmissionValidator: routeEligibility,
-    fixedRouteSelector: routeEligibility
+    fixedRouteSelector: routeEligibility,
+    toolMediator: permissionEngine
   });
-  registerSarathiRoutes(app, sarathiStore, providerCatalogManager);
+  registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine);
   return app;
 }

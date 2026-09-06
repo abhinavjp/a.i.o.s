@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAbstraction, ResolvedExecutionPlan, RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
+import type { AgentAbstraction, ResolvedExecutionPlan, RoutePolicyOverride, RuntimeRouter, TaskOutcome, ToolExecutionResult, ToolIntent } from "@aios/contracts";
 import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import {
   DefaultExecutionPlanResolver,
@@ -18,6 +18,10 @@ export interface TaskExecutionObserver {
   record(task: StoredTask): void;
 }
 
+export interface TaskToolMediator {
+  execute(intent: ToolIntent): Promise<ToolExecutionResult>;
+}
+
 /**
  * Coordinates live listeners while TaskStore owns canonical task, plan, and
  * attempt durability. Router adapters only produce normalized events.
@@ -31,7 +35,8 @@ export class TaskRunRegistry {
     private readonly planResolver: ExecutionPlanResolver = new DefaultExecutionPlanResolver(),
     private readonly observer?: TaskExecutionObserver,
     private readonly planAdmissionValidator?: ExecutionPlanAdmissionValidator,
-    private readonly fixedRouteSelector?: FixedRouteSelector
+    private readonly fixedRouteSelector?: FixedRouteSelector,
+    private readonly toolMediator?: TaskToolMediator
   ) {}
 
   start(
@@ -106,9 +111,14 @@ export class TaskRunRegistry {
     return true;
   }
 
-  private async execute(input: Parameters<RuntimeRouter["run"]>[0]): Promise<void> {
+  private async execute(input: Omit<Parameters<RuntimeRouter["run"]>[0], "executeTool">): Promise<void> {
     try {
-      for await (const event of this.runtimeRouter.run(input)) {
+      for await (const event of this.runtimeRouter.run({
+        ...input,
+        executeTool: (intent) => this.toolMediator?.execute(intent) ?? Promise.resolve({
+          decision: { outcome: "denied", reason: "Sarathi has no tool authority configured" }
+        })
+      })) {
         if (event.type === "progress") {
           this.store.applyRuntimeEvent(input.taskId, event);
           this.listeners.get(input.taskId)?.onChunk(event.text);
