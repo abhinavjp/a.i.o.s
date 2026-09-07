@@ -62,13 +62,16 @@ export class PermissionEngine {
     if (ask) {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "scoped ask" };
     }
+    if (isConsequential(intent)) {
+      return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "operator approval required" };
+    }
     if (rules.some((rule) => rule.decision === "allow")) {
       return { outcome: "allowed", reason: "scoped allow" };
     }
     if (isDeterministicallySafe(intent)) {
       return { outcome: "allowed", reason: "deterministic safe/read-only" };
     }
-    if (!isConsequential(intent) && this.classifier) {
+    if (this.classifier) {
       try {
         if (await this.classifier.classify(intent) === "low-risk") {
           return { outcome: "allowed", reason: "semantic low-risk" };

@@ -84,6 +84,64 @@ describe("Sarathi dashboard routes", () => {
     });
   });
 
+  test("requires exact approval for a consequential scoped allow while preserving read allow", async () => {
+    await withStore(async (path) => {
+      const executed: string[] = [];
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: {
+          definitions: [{ tool: "repository", operations: ["read_file", "write_file"] }],
+          async execute(intent) { executed.push(intent.operation); return { output: intent.operation }; }
+        }
+      });
+      const context = { projectId: "project-a", sessionKey: "session-a", revision: "abc123" };
+      const writeIntent = { tool: "repository", operation: "write_file", target: "reports/review.md", context };
+      await app.inject({
+        method: "POST",
+        url: "/api/sarathi/permissions/rules",
+        payload: { decision: "allow", tool: "repository", operation: "write_file", target: "reports/review.md", lifetime: "project", context: { projectId: "project-a" } }
+      });
+      await app.inject({
+        method: "POST",
+        url: "/api/sarathi/permissions/rules",
+        payload: { decision: "allow", tool: "repository", operation: "read_file", target: "reports/review.md", lifetime: "project", context: { projectId: "project-a" } }
+      });
+
+      const pendingWrite = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: writeIntent });
+      const read = await app.inject({
+        method: "POST",
+        url: "/api/sarathi/tools/execute",
+        payload: { ...writeIntent, operation: "read_file" }
+      });
+      expect(pendingWrite.statusCode).toBe(409);
+      expect(pendingWrite.json().decision).toEqual({ outcome: "requires_approval", reason: "operator approval required" });
+      expect(read.json().decision).toEqual({ outcome: "allowed", reason: "scoped allow" });
+
+      await app.inject({ method: "POST", url: "/api/sarathi/permissions/approvals", payload: { intent: writeIntent, lifetime: "project" } });
+      const approvedWrite = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: writeIntent });
+      expect(approvedWrite.json().decision).toEqual({ outcome: "allowed", reason: "action-bound approval" });
+      expect(executed).toEqual(["read_file", "write_file"]);
+      await app.close();
+    });
+  });
+
+  test("rejects session and project approvals without their context binding", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: { definitions: [], async execute() { return { output: "unused" }; } }
+      });
+      const intent = { tool: "repository", operation: "write_file", target: "reports/review.md", context: {} };
+
+      const session = await app.inject({ method: "POST", url: "/api/sarathi/permissions/approvals", payload: { intent, lifetime: "session" } });
+      const project = await app.inject({ method: "POST", url: "/api/sarathi/permissions/approvals", payload: { intent, lifetime: "project" } });
+
+      expect(session.statusCode).toBe(400);
+      expect(project.statusCode).toBe(400);
+      await app.close();
+    });
+  });
+
   test("requires an exact context-bound approval for a scoped ask and invalidates changed context", async () => {
     await withStore(async (path) => {
       const executed: string[] = [];

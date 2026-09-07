@@ -70,7 +70,7 @@ export function registerSarathiRoutes(
 
   app.post<{ Body: ApprovalBody }>("/api/sarathi/permissions/approvals", async (request, reply) => {
     const body = request.body;
-    if (!permissionEngine || !isApprovalLifetime(body?.lifetime) || !isToolIntent(body.intent)) {
+    if (!permissionEngine || !isApprovalLifetime(body?.lifetime) || !isToolIntent(body.intent) || !hasApprovalContext(body.intent, body.lifetime)) {
       reply.code(400);
       return { error: "provide an exact tool intent and approval lifetime" };
     }
@@ -181,4 +181,9 @@ function normalizeIntent(intent: ToolIntent): ToolIntent {
     target: intent.target.trim(),
     context: Object.fromEntries(Object.entries(intent.context).sort(([left], [right]) => left.localeCompare(right)))
   };
+}
+
+function hasApprovalContext(intent: ToolIntent, lifetime: ApprovalLifetime): boolean {
+  return (lifetime !== "session" || Boolean(intent.context.sessionKey)) &&
+    (lifetime !== "project" || Boolean(intent.context.projectId));
 }

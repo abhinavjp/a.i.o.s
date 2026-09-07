@@ -29,3 +29,9 @@
 ## Boundaries and unmeasured work
 
 - Fakes prove policy and application mediation only. No runtime-native restrictions, provider entitlement, external write, or live tool proof was attempted; these remain UNMEASURED.
+
+## Controller audit follow-up
+
+- RED: a scoped `allow` authorized `write_file` without an exact approval (200 instead of 409). Consequential intents now check for action-bound approval before scoped allow while read-only scoped allow remains valid.
+- RED: `session` and `project` approval requests with empty context returned 201. The approval route now requires `sessionKey` and `projectId` respectively.
+- Follow-up verification: `npm test -- --reporter=dot` — 11 files, 85 passing; contracts/server/client typechecks, client build, and `git diff --check` passed.
