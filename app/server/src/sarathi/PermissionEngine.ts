@@ -8,6 +8,7 @@ import type {
   PermissionSemanticClassifier,
   SarathiToolExecutor,
   ToolExecutionResult,
+  ToolExecutionContext,
   ToolIntent
 } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
@@ -19,17 +20,28 @@ export class PermissionEngine {
     private readonly classifier?: PermissionSemanticClassifier
   ) {}
 
-  async execute(intent: ToolIntent): Promise<ToolExecutionResult> {
+  async execute(intent: ToolIntent, context?: ToolExecutionContext): Promise<ToolExecutionResult> {
     if (!this.isDefined(intent)) {
-      return { decision: { outcome: "denied", reason: "Sarathi has not defined this tool operation" } };
+      const decision = { outcome: "denied" as const, reason: "Sarathi has not defined this tool operation" };
+      context?.onDecision(decision);
+      return { decision };
     }
 
+    context?.signal.throwIfAborted();
     const decision = await this.evaluate(intent);
+    context?.onDecision(decision);
     if (decision.outcome !== "allowed") {
       return { decision };
     }
-    const result = await this.tools.execute(intent);
-    return { decision, output: result.output };
+    context?.signal.throwIfAborted();
+    const definition = this.tools.definitions.find((entry) => entry.tool === intent.tool)!;
+    context?.beforeExecute(definition.idempotent ?? (isDeterministicallySafe(intent) && !isConsequential(intent)));
+    try {
+      const result = await this.tools.execute(intent, context ? { idempotencyKey: context.idempotencyKey, signal: context.signal } : undefined);
+      return { decision, output: result.output, effect: "completed" };
+    } catch (error) {
+      return { decision, effect: "uncertain", error: error instanceof Error ? error.message : "tool execution interrupted" };
+    }
   }
 
   saveRule(input: Omit<PermissionRule, "id" | "remainingUses" | "createdAt">): PermissionRule {

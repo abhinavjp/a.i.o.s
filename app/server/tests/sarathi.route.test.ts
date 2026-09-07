@@ -5,7 +5,7 @@ import { dirname, join } from "node:path";
 import { describe, expect, test } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
 import type { AgentAbstraction, AgentInfo, HealthStatus, TaskStream } from "@aios/contracts";
-import { buildApp } from "../src/app.js";
+import { createTestApp as buildApp } from "./testApp.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 

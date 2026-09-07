@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentInfo,
+  CanonicalHistoryEntry,
+  RouteCircuit,
   HealthStatus,
   TaskOutcome,
   TaskTerminalStatus
@@ -36,6 +38,7 @@ type Dashboard = {
       qualification: { health: string; streaming: string; structuredOutput: string; toolCalling: string };
     }>;
   }>;
+  routeCircuits: RouteCircuit[];
   discovery: {
     status: "blocked" | "ready";
     reason: string;
@@ -65,12 +68,15 @@ type Dashboard = {
   recentTasks: Array<{
     id: string;
     title: string;
-    status: "queued" | "running" | "completed" | "failed" | "blocked" | "unavailable";
+    status: "queued" | "running" | "completed" | "failed" | "blocked" | "unavailable" | "cancelled";
     runtime: string;
     planId: string;
     attemptId: string;
     evidence: string | null;
     selectionReason: string | null;
+    retryCount?: number;
+    fallbackCount?: number;
+    outcomeMessage?: string | null;
   }>;
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
@@ -96,6 +102,7 @@ const DEFAULT_DASHBOARD: Dashboard = {
   controls: { manualPaused: false, changedAt: null },
   routing: { policies: [] },
   providerCatalogs: [],
+  routeCircuits: [],
   discovery: {
     status: "blocked",
     reason: "GitLab adapter not configured; no external reads attempted.",
@@ -124,6 +131,7 @@ function parseTaskOutcome(data: string): TaskOutcome {
         status === "completed" ||
         status === "failed" ||
         status === "blocked" ||
+        status === "cancelled" ||
         status === "unavailable"
       ) {
         const message = (parsed as { message?: unknown }).message;
@@ -141,6 +149,22 @@ function statusLabel(status: string): string {
   return status.replaceAll("_", " ");
 }
 
+function describeHistory(entry: CanonicalHistoryEntry): string {
+  switch (entry.type) {
+    case "message": return `${entry.role}: ${entry.text}`;
+    case "tool-intent": return `${entry.intent.tool}: ${entry.intent.operation} ${entry.intent.target}`;
+    case "permission-decision": return `Permission: ${entry.decision.outcome} · ${entry.decision.reason}`;
+    case "tool-result": return `Tool result: ${entry.result.output ?? entry.result.error ?? entry.result.decision.outcome}`;
+    case "attempt-started": return `Attempt started: ${entry.route.provider}/${entry.route.model}`;
+    case "attempt-finished": return `Attempt finished: ${entry.outcome.status}`;
+    case "retry": return `Retry ${entry.retryNumber} after ${entry.delayMs} ms`;
+    case "fallback": return `Fallback: ${entry.to.provider}/${entry.to.model} · ${entry.reason}`;
+    case "tool-started": return "Tool execution started";
+    case "cancellation-requested": return "Operator requested cancellation";
+    case "outcome": return `Outcome: ${entry.outcome.status} · ${entry.outcome.message ?? ""}`;
+  }
+}
+
 function formatToday(): string {
   return new Intl.DateTimeFormat("en", {
     weekday: "long",
@@ -156,6 +180,10 @@ export function App() {
   const [task, setTask] = useState("");
   const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
   const [status, setStatus] = useState<RunStatus>("idle");
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
+  const [executionMessage, setExecutionMessage] = useState<string | null>(null);
+  const [history, setHistory] = useState<CanonicalHistoryEntry[] | null>(null);
   const [output, setOutput] = useState<string[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSpecialistFormOpen, setIsSpecialistFormOpen] = useState(false);
@@ -174,6 +202,8 @@ export function App() {
     eventSourceRef.current?.close();
     setOutput([]);
     setStatus("running");
+    setActiveTaskId(taskId);
+    setExecutionMessage(null);
     localStorage.setItem(LAST_TASK_STORAGE_KEY, taskId);
 
     const eventSource = new EventSource(`/api/agents/active/tasks/${taskId}/stream`);
@@ -272,6 +302,32 @@ export function App() {
     } finally {
       setIsRefreshing(false);
     }
+  }
+
+  async function stopTask() {
+    if (!activeTaskId) return;
+    const source = eventSourceRef.current;
+    setIsStopping(true);
+    try {
+      const response = await fetch(`/api/agents/active/tasks/${activeTaskId}/cancel`, { method: "POST" });
+      const result = await response.json();
+      if (eventSourceRef.current !== source) return;
+      if (!response.ok || !result.outcome) throw new Error(result.error ?? "Task could not be stopped");
+      eventSourceRef.current?.close();
+      setStatus(parseTaskOutcome(JSON.stringify(result.outcome)).status);
+      setOutput(result.chunks);
+      void refreshDashboard();
+    } catch (error) {
+      if (eventSourceRef.current === source) setExecutionMessage(error instanceof Error ? error.message : "Task could not be stopped");
+    } finally { setIsStopping(false); }
+  }
+
+  async function viewHistory(taskId: string) {
+    try {
+      const response = await fetch(`/api/agents/active/tasks/${taskId}`);
+      if (!response.ok) throw new Error("Task history unavailable");
+      setHistory((await response.json()).canonicalHistory ?? []);
+    } catch { setExecutionMessage("Task history unavailable"); }
   }
 
   async function refreshProviderCatalog(provider: string) {
@@ -409,9 +465,23 @@ export function App() {
 
             <section className="panel review-panel" id="review"><div className="panel-heading"><div><span className="eyebrow">Review queue</span><h2>Assigned merge requests</h2></div><button className="text-button" type="button" onClick={checkNow} disabled={isRefreshing}>Check now <span>↗</span></button></div>{dashboard.discovery.status === "blocked" ? <div className="blocked-state"><div className="blocked-icon">!</div><div><strong>Discovery is waiting for a real adapter.</strong><p>{dashboard.discovery.reason}</p></div><span className="state-chip blocked">blocked</span></div> : dashboard.discovery.mergeRequests.length === 0 ? <div className="empty-state"><span>◌</span><p>No assigned merge requests in this check.</p></div> : <div className="mr-list">{dashboard.discovery.mergeRequests.map((mergeRequest) => <div className="mr-row" key={mergeRequest.id}><strong>{mergeRequest.title}</strong><span>{mergeRequest.project}</span><span>{mergeRequest.role}</span><span>{mergeRequest.coverage}</span></div>)}</div>}</section>
 
-            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div><div className="task-routing"><label htmlFor="task-specialist">Specialist ID<input id="task-specialist" value={taskRouting.specialistId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, specialistId: event.target.value }))} placeholder="optional specialist id" /></label><label htmlFor="task-workflow">Workflow ID<input id="task-workflow" value={taskRouting.workflowId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, workflowId: event.target.value }))} placeholder="optional workflow id" /></label><label><input type="checkbox" checked={taskRouting.overridePrimary} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override task primary</label>{taskRouting.overridePrimary && <label htmlFor="task-primary">Primary override model<input id="task-primary" value={taskRouting.primaryModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={taskRouting.overrideFallback} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override task fallback chain</label>{taskRouting.overrideFallback && <label htmlFor="task-fallback">Fallback override model (blank clears)<input id="task-fallback" value={taskRouting.fallbackModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}</div></form>{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
+            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div><div className="task-routing"><label htmlFor="task-specialist">Specialist ID<input id="task-specialist" value={taskRouting.specialistId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, specialistId: event.target.value }))} placeholder="optional specialist id" /></label><label htmlFor="task-workflow">Workflow ID<input id="task-workflow" value={taskRouting.workflowId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, workflowId: event.target.value }))} placeholder="optional workflow id" /></label><label><input type="checkbox" checked={taskRouting.overridePrimary} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override task primary</label>{taskRouting.overridePrimary && <label htmlFor="task-primary">Primary override model<input id="task-primary" value={taskRouting.primaryModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={taskRouting.overrideFallback} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override task fallback chain</label>{taskRouting.overrideFallback && <label htmlFor="task-fallback">Fallback override model (blank clears)<input id="task-fallback" value={taskRouting.fallbackModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}</div></form>{status === "running" && <button type="button" onClick={() => void stopTask()} disabled={isStopping}>{isStopping ? "Stopping…" : "Stop task"}</button>}{executionMessage && <p role="alert">{executionMessage}</p>}{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
 
-            <section className="panel execution-panel" aria-label="Execution evidence"><div className="panel-heading"><div><span className="eyebrow">Durable execution</span><h2>Latest runtime evidence</h2></div></div>{dashboard.recentTasks.length === 0 ? <p className="panel-note subtle">No routed attempts recorded.</p> : <div className="gate-list">{dashboard.recentTasks.map((attempt) => <div className="gate-row" key={attempt.id}><span className="gate-index">{statusLabel(attempt.status)}</span><div><strong>{attempt.title}</strong><small>{attempt.runtime} · plan {attempt.planId} · attempt {attempt.attemptId}</small>{attempt.selectionReason && <small>{attempt.selectionReason}</small>}{attempt.evidence && <small>{attempt.evidence}</small>}</div><span className="state-chip">{statusLabel(attempt.status)}</span></div>)}</div>}</section>
+            <section className="panel execution-panel" aria-label="Execution evidence">
+              <div className="panel-heading"><div><span className="eyebrow">Durable execution</span><h2>Latest runtime evidence</h2></div></div>
+              {dashboard.recentTasks.length === 0 ? <p className="panel-note subtle">No routed attempts recorded.</p> : <div className="gate-list">{dashboard.recentTasks.map((attempt) =>
+                <div className="gate-row" key={attempt.id}><span className="gate-index">{statusLabel(attempt.status)}</span><div>
+                  <strong>{attempt.title}</strong><small>{attempt.runtime} · plan {attempt.planId} · attempt {attempt.attemptId}</small>
+                  {attempt.selectionReason && <small>{attempt.selectionReason}</small>}{attempt.evidence && <small>{attempt.evidence}</small>}
+                  <small>Retries: {attempt.retryCount ?? 0} · Fallbacks: {attempt.fallbackCount ?? 0}</small>
+                  {attempt.outcomeMessage && <small>{attempt.outcomeMessage}</small>}
+                  <button type="button" onClick={() => void viewHistory(attempt.id)}>View history</button>
+                </div><span className="state-chip">{statusLabel(attempt.status)}</span></div>)}</div>}
+              {dashboard.routeCircuits.map((circuit) => <p className="panel-note" key={JSON.stringify(circuit.route)}>
+                {circuit.route.provider}/{circuit.route.model}: {circuit.state} · {circuit.failureKind ?? "healthy"}{circuit.state === "open" ? ` · ${circuit.retryAt ? `Retry after ${circuit.retryAt}` : "Repair configuration or run a successful probe"}` : ""}
+              </p>)}
+              {history && <ol aria-label="Canonical task history">{history.map((entry) => <li key={entry.sequence}>{describeHistory(entry)}</li>)}</ol>}
+            </section>
           </div>
 
           <aside className="side-column">

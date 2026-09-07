@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RoutePolicyOverride, RoutePolicyScope, TaskStatus, ToolIntent } from "@aios/contracts";
+import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
@@ -55,6 +55,7 @@ export interface SarathiDashboard {
   routing: { policies: RoutePolicyRecord[] };
   permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
   providerCatalogs: ProviderCatalog[];
+  routeCircuits: RouteCircuit[];
   controls: { manualPaused: boolean; changedAt: string | null };
   discovery: DiscoveryState;
   tickets: SarathiTicket[];
@@ -68,6 +69,9 @@ export interface SarathiDashboard {
     attemptId: string;
     evidence: string | null;
     selectionReason: string | null;
+    retryCount: number;
+    fallbackCount: number;
+    outcomeMessage: string | null;
   }>;
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
@@ -94,6 +98,7 @@ export interface SarathiStore {
   addApproval(approval: ActionBoundApproval): ActionBoundApproval;
   findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
   consumeApproval(id: string): void;
+  recordCircuit(circuit: RouteCircuit): void;
 }
 
 export class FileSarathiStore implements SarathiStore {
@@ -140,20 +145,23 @@ export class FileSarathiStore implements SarathiStore {
       id: task.taskId,
       title: task.task,
       status: task.status,
-      runtime: plan.route.runtime,
+      runtime: attempt.route.runtime,
       planId: plan.planId,
       attemptId: attempt.attemptId,
       evidence,
-      selectionReason: attempt.selection?.reason ?? plan.selection?.reason ?? null
+      selectionReason: attempt.selection?.reason ?? plan.selection?.reason ?? null,
+      retryCount: task.canonicalHistory?.filter((event) => event.type === "retry").length ?? 0,
+      fallbackCount: task.canonicalHistory?.filter((event) => event.type === "fallback").length ?? 0,
+      outcomeMessage: task.outcome?.message ?? null
     };
     this.state.recentTasks = [
       summary,
       ...this.state.recentTasks.filter((candidate) => candidate.id !== task.taskId)
     ].slice(0, 10);
     this.state.runtime = {
-      name: runtimeName(plan.route.runtime),
-      state: plan.route.billingMode === "unmeasured" ? "unverified" : task.status === "unavailable" ? "unavailable" : "ready",
-      billingMode: plan.route.billingMode === "subscription" ? "subscription-only" : plan.route.billingMode,
+      name: runtimeName(attempt.route.runtime),
+      state: attempt.route.billingMode === "unmeasured" ? "unverified" : task.status === "unavailable" ? "unavailable" : "ready",
+      billingMode: attempt.route.billingMode === "subscription" ? "subscription-only" : attempt.route.billingMode,
       reason: task.outcome?.message ?? `Attempt ${attempt.attemptId} is ${task.status}.`
     };
     this.persist();
@@ -204,6 +212,13 @@ export class FileSarathiStore implements SarathiStore {
       policy: clonePolicy(policy)
     };
     this.state.routing.policies = [...this.state.routing.policies, next];
+    if (JSON.stringify(current.policy) !== JSON.stringify(next.policy)) {
+      const routes = [current.policy.primary, next.policy.primary, ...(current.policy.fallbacks ?? []), ...(next.policy.fallbacks ?? [])].filter(Boolean);
+      this.state.routeCircuits = this.state.routeCircuits.map((circuit) =>
+        (circuit.failureKind === "authentication" || circuit.failureKind === "configuration") &&
+        routes.some((route) => route!.runtime === circuit.route.runtime && route!.provider === circuit.route.provider && route!.model === circuit.route.model && route!.billingMode === circuit.route.billingMode)
+          ? { ...circuit, state: "closed", failureKind: null, consecutiveFailures: 0, openedAt: null, retryAt: null } : circuit);
+    }
     this.persist();
     return clone(next);
   }
@@ -258,6 +273,13 @@ export class FileSarathiStore implements SarathiStore {
     this.persist();
   }
 
+  recordCircuit(circuit: RouteCircuit): void {
+    this.state.routeCircuits = [...this.state.routeCircuits.filter((entry) =>
+      entry.route.runtime !== circuit.route.runtime || entry.route.provider !== circuit.route.provider ||
+      entry.route.model !== circuit.route.model || entry.route.billingMode !== circuit.route.billingMode), clone(circuit)];
+    this.persist();
+  }
+
   private load(): SarathiDashboard {
     if (!existsSync(this.filePath)) {
       return defaultDashboard();
@@ -307,6 +329,7 @@ function defaultDashboard(): SarathiDashboard {
     routing: { policies: [defaultPolicy("global")] },
     permissions: { rules: [], approvals: [] },
     providerCatalogs: [],
+    routeCircuits: [],
     controls: { manualPaused: false, changedAt: null },
     discovery: {
       status: "blocked",
@@ -344,6 +367,7 @@ function defaultDashboard(): SarathiDashboard {
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
+  state.routeCircuits ??= [];
   state.providerCatalogs = (state.providerCatalogs ?? []).map((catalog) => ({
     ...catalog,
     models: catalog.models.map((model) => ({

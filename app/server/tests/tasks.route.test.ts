@@ -10,7 +10,7 @@ import type {
 } from "@aios/contracts";
 import { describe, expect, test, vi } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent, HermesAgent } from "@aios/agents";
-import { buildApp } from "../src/app.js";
+import { createTestApp as buildApp } from "./testApp.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 

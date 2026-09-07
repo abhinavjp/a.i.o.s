@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
-import type { ApprovalLifetime, PermissionRuleDecision, RoutePolicyOverride, ToolIntent } from "@aios/contracts";
+import type { ApprovalLifetime, PermissionRuleDecision, ResolvedRoute, RoutePolicyOverride, RuntimeRouter, ToolIntent } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
 import { isRoutePolicyOverride } from "./RoutePolicy.js";
 import type { ProviderCatalogManager } from "./ProviderCatalog.js";
 import { isApprovalLifetime, isPermissionRuleDecision, isToolIntent, PermissionEngine } from "./PermissionEngine.js";
+import type { RouteResilience } from "./RouteResilience.js";
 
 interface PauseBody {
   paused: boolean;
@@ -42,11 +43,21 @@ export function registerSarathiRoutes(
   app: FastifyInstance,
   store: SarathiStore,
   providerCatalogManager?: ProviderCatalogManager,
-  permissionEngine?: PermissionEngine
+  permissionEngine?: PermissionEngine,
+  resilience?: RouteResilience,
+  runtimeRouter?: RuntimeRouter
 ): void {
   app.get("/api/sarathi/dashboard", async () => store.snapshot());
 
   app.get("/api/sarathi/routing/policies", async () => store.snapshot().routing);
+
+  app.get("/api/sarathi/routing/circuits", async () => store.snapshot().routeCircuits);
+  app.post<{ Body: { route: ResolvedRoute } }>("/api/sarathi/routing/circuits/probe", async (request, reply) => {
+    if (!request.body?.route || !isRoutePolicyOverride({ primary: request.body.route })) {
+      reply.code(400); return { error: "provide a valid route to probe" };
+    }
+    return { recovered: await resilience?.probe(request.body.route, runtimeRouter) ?? false, circuits: store.snapshot().routeCircuits };
+  });
 
   app.get("/api/sarathi/permissions", async () => store.snapshot().permissions);
 

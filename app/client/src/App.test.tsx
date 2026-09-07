@@ -46,6 +46,68 @@ function stubAgentsFetch() {
 }
 
 describe("App", () => {
+  test("stops active work through the API and preserves partial output with cancelled status", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () =>
+      url === "/api/agents" ? { agents: [] } : url.endsWith("/cancel")
+        ? { taskId: "task-stop", status: "cancelled", outcome: { status: "cancelled" }, chunks: ["partial evidence"] }
+        : { taskId: "task-stop" } }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+    fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "stop this work" } });
+    fireEvent.click(screen.getByRole("button", { name: /run/i }));
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    act(() => FakeEventSource.instances[0]?.emitMessage("partial evidence"));
+    fireEvent.click(await screen.findByRole("button", { name: "Stop task" }));
+    expect(await screen.findByText("Run status: cancelled")).toBeTruthy();
+    expect(screen.getByText("partial evidence")).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith("/api/agents/active/tasks/task-stop/cancel", { method: "POST" });
+    expect(FakeEventSource.instances[0]?.close).toHaveBeenCalled();
+    expect(screen.queryByRole("button", { name: "Stop task" })).toBeNull();
+  });
+
+  test("shows circuit recovery, retry and fallback counts, and reconstructs tool history on demand", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+      if (url === "/api/agents") return { agents: [] };
+      if (url === "/api/agents/active/tasks/history-task") return { canonicalHistory: [
+        { sequence: 1, type: "message", role: "user", text: "original task" },
+        { sequence: 2, type: "tool-result", result: { output: "recovered tool evidence", decision: { outcome: "allowed" } } }
+      ] };
+      return { runtime: { name: "fake", state: "ready" }, tickets: [], discovery: { status: "blocked" },
+        recentTasks: [{ id: "history-task", title: "recovered task", status: "completed", runtime: "fake", planId: "p", attemptId: "a", retryCount: 2, fallbackCount: 1 }],
+        routeCircuits: [{ route: { provider: "test", model: "primary" }, state: "open", failureKind: "transient", retryAt: "2026-09-07T00:01:00.000Z" }] };
+    } })));
+    render(<App />);
+    expect(await screen.findByText("Retries: 2 · Fallbacks: 1")).toBeTruthy();
+    expect(screen.getByText(/test\/primary: open/)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "View history" }));
+    expect(await screen.findByText(/recovered tool evidence/)).toBeTruthy();
+    expect(screen.getByText(/original task/)).toBeTruthy();
+  });
+
+  test("a late cancellation response cannot close or overwrite a newer task stream", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    let resolveCancellation: ((response: unknown) => void) | undefined;
+    let submissions = 0;
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url.endsWith("/cancel")) return new Promise((resolve) => { resolveCancellation = resolve; });
+      return Promise.resolve({ ok: true, json: async () => url === "/api/agents/active/tasks" ? { taskId: `task-${++submissions}` } : { agents: [] } });
+    }));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /run task/i }));
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
+    fireEvent.click(screen.getByRole("button", { name: "Stop task" }));
+    fireEvent.click(screen.getByRole("button", { name: /run task/i }));
+    await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(2));
+    act(() => FakeEventSource.instances[1]?.emitMessage("new task evidence"));
+    await act(async () => resolveCancellation!({ ok: true, json: async () => ({ outcome: { status: "cancelled" }, chunks: ["old task evidence"] }) }));
+    expect(screen.getByText("Run status: running")).toBeTruthy();
+    expect(screen.getByText("new task evidence")).toBeTruthy();
+    expect(FakeEventSource.instances[1]?.close).not.toHaveBeenCalled();
+  });
+
   test("renders the agent list with name and health from the BFF", async () => {
     vi.stubGlobal(
       "fetch",

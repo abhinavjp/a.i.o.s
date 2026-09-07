@@ -6,6 +6,7 @@ import type { NormalizedRuntimeEvent, RuntimeRouter } from "@aios/contracts";
  */
 export class AgentRuntimeRouter implements RuntimeRouter {
   async *run(input: Parameters<RuntimeRouter["run"]>[0]): AsyncIterable<NormalizedRuntimeEvent> {
+    input.signal.throwIfAborted();
     if (input.plan.route.runtime === "unmeasured") {
       yield {
         type: "terminal",
@@ -33,7 +34,8 @@ export class AgentRuntimeRouter implements RuntimeRouter {
     }
 
     try {
-      for await (const chunk of input.agent.runTask(input.task, input.sessionKey)) {
+      for await (const chunk of input.agent.runTask(input.task, input.sessionKey, { signal: input.signal })) {
+        input.signal.throwIfAborted();
         yield { type: "progress", text: chunk };
       }
       yield { type: "terminal", outcome: { status: "completed" } };

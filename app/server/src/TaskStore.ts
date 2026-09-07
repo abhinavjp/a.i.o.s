@@ -1,11 +1,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import type {
-  NormalizedRuntimeEvent,
-  ResolvedExecutionPlan,
-  RuntimeAttempt,
-  TaskOutcome,
-  TaskStatus
+  CanonicalHistoryEntry, CanonicalHistoryEvent, NormalizedRuntimeEvent,
+  ResolvedExecutionPlan, RuntimeAttempt, TaskOutcome, TaskStatus
 } from "@aios/contracts";
 
 export interface StoredTask {
@@ -19,132 +16,157 @@ export interface StoredTask {
   updatedAt: string;
   resolvedExecutionPlan?: ResolvedExecutionPlan;
   attempts?: RuntimeAttempt[];
+  canonicalHistory?: CanonicalHistoryEntry[];
 }
 
 export interface TaskStore {
   get(taskId: string): StoredTask | undefined;
+  list(): StoredTask[];
   create(task: StoredTask): void;
-  applyRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void;
+  applyRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent, terminalTask?: boolean): void;
+  appendHistory(taskId: string, event: CanonicalHistoryEvent): void;
+  startAttempt(taskId: string, attempt: RuntimeAttempt): void;
+  completeTask(taskId: string, outcome: TaskOutcome): void;
 }
 
-const INTERRUPTED_MESSAGE = "task interrupted by backend restart";
+/** A started effect without a confirmed result cannot be silently replayed. */
+export function needsReconciliation(task: StoredTask): boolean {
+  const history = task.canonicalHistory ?? [];
+  return history.some((event) => event.type === "tool-started" && !event.idempotent &&
+    !history.some((result) => result.type === "tool-result" && result.idempotencyKey === event.idempotencyKey && result.result.effect === "completed"));
+}
 
 export class FileTaskStore implements TaskStore {
   private readonly records = new Map<string, StoredTask>();
 
-  constructor(private readonly filePath: string) {
+  constructor(private readonly filePath: string, private readonly now: () => number = Date.now) {
     this.load();
   }
 
   get(taskId: string): StoredTask | undefined {
     const record = this.records.get(taskId);
-    return record ? cloneRecord(record) : undefined;
+    return record ? clone(record) : undefined;
   }
 
-  create(task: StoredTask): void {
-    if (this.records.has(task.taskId)) {
-      throw new Error(`Task already exists: ${task.taskId}`);
-    }
+  list(): StoredTask[] { return [...this.records.values()].map(clone); }
 
-    this.records.set(task.taskId, cloneRecord(task));
+  create(task: StoredTask): void {
+    if (this.records.has(task.taskId)) throw new Error(`Task already exists: ${task.taskId}`);
+    const record = clone(task);
+    this.seedHistory(record);
+    this.records.set(task.taskId, record);
     this.persist();
   }
 
-  applyRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent): void {
+  applyRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent, terminalTask = true): void {
     const record = this.require(taskId);
     const attempt = record.attempts?.at(-1);
-    if (!attempt) {
-      throw new Error(`Task has no durable attempt: ${taskId}`);
-    }
-    const now = new Date().toISOString();
-    const observedEvent = { ...event, observedAt: now };
-    record.attempts = [
-      ...(record.attempts ?? []).slice(0, -1),
-      {
-        ...attempt,
-        status: event.type === "terminal" ? event.outcome.status : attempt.status,
-        outcome: event.type === "terminal" ? { ...event.outcome } : attempt.outcome,
-        completedAt: event.type === "terminal" ? now : attempt.completedAt,
-        events: [...attempt.events, observedEvent]
-      }
-    ];
+    if (!attempt) throw new Error(`Task has no durable attempt: ${taskId}`);
+    if (record.outcome || attempt.outcome) return;
+    const now = this.timestamp();
+    record.attempts = [...record.attempts!.slice(0, -1), {
+      ...attempt,
+      ...(event.type === "resume" ? { resumeMetadata: clone(event.metadata) } : {}),
+      status: event.type === "terminal" ? event.outcome.status : attempt.status,
+      outcome: event.type === "terminal" ? clone(event.outcome) : null,
+      completedAt: event.type === "terminal" ? now : null,
+      events: [...attempt.events, { ...clone(event), observedAt: now }]
+    }];
     if (event.type === "progress") {
       record.chunks.push(event.text);
-    } else {
-      record.status = event.outcome.status;
-      record.outcome = { ...event.outcome };
+      this.append(record, { type: "message", role: "assistant", text: event.text });
+    } else if (event.type === "terminal") {
+      this.append(record, { type: "attempt-finished", outcome: event.outcome });
+      if (terminalTask) this.complete(record, event.outcome);
     }
     record.updatedAt = now;
     this.persist();
   }
 
+  appendHistory(taskId: string, event: CanonicalHistoryEvent): void {
+    const record = this.require(taskId);
+    if (record.outcome) return;
+    this.append(record, event);
+    this.persist();
+  }
+
+  startAttempt(taskId: string, attempt: RuntimeAttempt): void {
+    const record = this.require(taskId);
+    if (record.outcome || !record.attempts?.at(-1)?.outcome) throw new Error("Attempt requires a durable finished boundary");
+    record.attempts = [...record.attempts, clone(attempt)];
+    this.append(record, { type: "attempt-started", route: attempt.route });
+    this.persist();
+  }
+
+  completeTask(taskId: string, outcome: TaskOutcome): void {
+    const record = this.require(taskId);
+    if (record.outcome) return;
+    this.complete(record, outcome);
+    this.persist();
+  }
+
+  private complete(record: StoredTask, outcome: TaskOutcome): void {
+    record.status = outcome.status;
+    record.outcome = clone(outcome);
+    this.append(record, { type: "outcome", outcome });
+  }
+
+  private append(record: StoredTask, event: CanonicalHistoryEvent, attemptId = record.attempts?.at(-1)?.attemptId ?? null): void {
+    record.canonicalHistory ??= [];
+    record.updatedAt = this.timestamp();
+    record.canonicalHistory.push({ ...clone(event), sequence: record.canonicalHistory.length + 1,
+      observedAt: record.updatedAt, attemptId });
+  }
+
+  private seedHistory(record: StoredTask): void {
+    if (record.canonicalHistory) return;
+    this.append(record, { type: "message", role: "user", text: record.task }, null);
+    for (const attempt of record.attempts ?? []) {
+      this.append(record, { type: "attempt-started", route: attempt.route }, attempt.attemptId);
+      for (const event of attempt.events) {
+        if (event.type === "progress") this.append(record, { type: "message", role: "assistant", text: event.text }, attempt.attemptId);
+        if (event.type === "terminal") this.append(record, { type: "attempt-finished", outcome: event.outcome }, attempt.attemptId);
+      }
+    }
+    if (!record.attempts?.length) for (const text of record.chunks) this.append(record, { type: "message", role: "assistant", text });
+    if (record.outcome) this.append(record, { type: "outcome", outcome: record.outcome });
+  }
+
   private load(): void {
-    if (!existsSync(this.filePath)) {
-      return;
-    }
-
+    if (!existsSync(this.filePath)) return;
     const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
-    if (!Array.isArray(parsed)) {
-      throw new Error(`Task store must contain an array: ${this.filePath}`);
-    }
-
+    if (!Array.isArray(parsed)) throw new Error(`Task store must contain an array: ${this.filePath}`);
     let recovered = false;
     for (const value of parsed) {
-      const task = cloneRecord(value as StoredTask);
-      const attempt = task.attempts?.at(-1);
-      const terminal = [...(attempt?.events ?? [])]
-        .reverse()
-        .find((event) => event.type === "terminal");
-      if ((task.status === "queued" || task.status === "running") && terminal?.type === "terminal") {
-        task.status = terminal.outcome.status;
-        task.outcome = { ...terminal.outcome };
-        if (attempt) {
-          task.attempts = [
-            ...(task.attempts ?? []).slice(0, -1),
-            {
-              ...attempt,
-              status: terminal.outcome.status,
-              outcome: { ...terminal.outcome },
-              completedAt: terminal.observedAt
-            }
-          ];
-        }
-        recovered = true;
-      } else if (task.status === "queued" || task.status === "running") {
-        const now = new Date().toISOString();
-        task.status = "unavailable";
-        task.outcome = { status: "unavailable", message: INTERRUPTED_MESSAGE };
-        if (attempt) {
-          task.attempts = [
-            ...(task.attempts ?? []).slice(0, -1),
-            {
-              ...attempt,
-              status: "unavailable",
-              outcome: { ...task.outcome },
-              completedAt: now,
-              events: [
-                ...attempt.events,
-                { type: "terminal", outcome: { ...task.outcome }, observedAt: now }
-              ]
-            }
-          ];
-        }
-        task.updatedAt = now;
-        recovered = true;
-      }
+      const task = clone(value as StoredTask);
+      if (!task.canonicalHistory) { this.seedHistory(task); recovered = true; }
       this.records.set(task.taskId, task);
     }
-
-    if (recovered) {
-      this.persist();
+    for (const task of this.records.values()) {
+      if (task.status !== "queued" && task.status !== "running") continue;
+      const attempt = task.attempts?.at(-1);
+      const terminal = [...(attempt?.events ?? [])].reverse().find((event) => event.type === "terminal");
+      const cancelled = task.canonicalHistory?.some((event) => event.type === "cancellation-requested");
+      const outcome: TaskOutcome = cancelled ? { status: "cancelled", message: "Cancellation recovered after backend restart" }
+        : needsReconciliation(task) ? { status: "blocked", message: "Uncertain non-idempotent effect requires reconciliation" }
+        : terminal?.type === "terminal" ? terminal.outcome
+        : { status: "unavailable", message: "task interrupted by backend restart" };
+      if (attempt && !attempt.outcome) {
+        task.attempts = [...task.attempts!.slice(0, -1), { ...attempt, status: outcome.status, outcome: clone(outcome),
+          completedAt: this.timestamp(), events: terminal ? attempt.events : [...attempt.events, { type: "terminal", outcome: clone(outcome), observedAt: this.timestamp() }] }];
+        if (!terminal) this.append(task, { type: "attempt-finished", outcome });
+      }
+      this.complete(task, outcome);
+      recovered = true;
     }
+    if (recovered) this.persist();
   }
+
+  private timestamp(): string { return new Date(this.now()).toISOString(); }
 
   private require(taskId: string): StoredTask {
     const record = this.records.get(taskId);
-    if (!record) {
-      throw new Error(`Task not found: ${taskId}`);
-    }
+    if (!record) throw new Error(`Task not found: ${taskId}`);
     return record;
   }
 
@@ -156,65 +178,4 @@ export class FileTaskStore implements TaskStore {
   }
 }
 
-function cloneRecord(record: StoredTask): StoredTask {
-  return {
-    taskId: record.taskId,
-    task: record.task,
-    sessionKey: record.sessionKey,
-    chunks: [...record.chunks],
-    status: record.status,
-    outcome: record.outcome ? { ...record.outcome } : null,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt,
-    resolvedExecutionPlan: record.resolvedExecutionPlan
-      ? {
-          ...record.resolvedExecutionPlan,
-          route: { ...record.resolvedExecutionPlan.route },
-          ...(record.resolvedExecutionPlan.selection ? {
-            selection: {
-              ...record.resolvedExecutionPlan.selection,
-              requestedRoute: { ...record.resolvedExecutionPlan.selection.requestedRoute },
-              effectiveRoute: { ...record.resolvedExecutionPlan.selection.effectiveRoute }
-            }
-          } : {}),
-          fallbackRoutes: (record.resolvedExecutionPlan.fallbackRoutes ?? []).map((route) => ({ ...route })),
-          configurationVersions: { ...record.resolvedExecutionPlan.configurationVersions },
-          configurationSnapshots: cloneConfigurationSnapshots(record.resolvedExecutionPlan.configurationSnapshots)
-        }
-      : undefined,
-    attempts: record.attempts?.map((attempt) => ({
-      ...attempt,
-      route: { ...attempt.route },
-      ...(attempt.selection ? {
-        selection: {
-          ...attempt.selection,
-          requestedRoute: { ...attempt.selection.requestedRoute },
-          effectiveRoute: { ...attempt.selection.effectiveRoute }
-        }
-      } : {}),
-      outcome: attempt.outcome ? { ...attempt.outcome } : null,
-      events: attempt.events.map((event) =>
-        event.type === "progress"
-          ? { ...event }
-          : { ...event, outcome: { ...event.outcome } }
-      )
-    }))
-  };
-}
-
-function cloneConfigurationSnapshots(
-  snapshots: ResolvedExecutionPlan["configurationSnapshots"] | undefined
-): ResolvedExecutionPlan["configurationSnapshots"] {
-  const source = snapshots ?? {
-    task: { version: "task-legacy-v1", policy: {} }, workflow: { version: "workflow-legacy-v1", policy: {} },
-    specialist: { version: "specialist-legacy-v1", policy: {} }, global: { version: "global-legacy-v1", policy: {} }
-  };
-  const copy = (snapshot: (typeof source)["task"]) => ({
-    version: snapshot.version,
-    policy: {
-      ...(snapshot.policy.primary ? { primary: { ...snapshot.policy.primary } } : {}),
-      ...(snapshot.policy.fallbacks ? { fallbacks: snapshot.policy.fallbacks.map((route) => ({ ...route })) } : {})
-    }
-  });
-  return { task: copy(source.task), workflow: copy(source.workflow), specialist: copy(source.specialist), global: copy(source.global) };
-}
+function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }

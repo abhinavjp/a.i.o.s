@@ -17,7 +17,7 @@ export interface OrchestratorCapability {
 export interface AgentAbstraction {
   getInfo(): AgentInfo;
   checkHealth(): HealthStatus;
-  runTask(task: string, sessionKey: string): TaskStream;
+  runTask(task: string, sessionKey: string, options?: { readonly signal: AbortSignal }): TaskStream;
   asOrchestrator(): OrchestratorCapability | null;
 }
 
@@ -27,6 +27,7 @@ export type TaskStatus =
   | "completed"
   | "failed"
   | "blocked"
+  | "cancelled"
   | "unavailable";
 
 export type TaskTerminalStatus = Exclude<TaskStatus, "queued" | "running">;
@@ -34,6 +35,52 @@ export type TaskTerminalStatus = Exclude<TaskStatus, "queued" | "running">;
 export interface TaskOutcome {
   status: TaskTerminalStatus;
   message?: string;
+  failure?: RuntimeFailure;
+}
+
+export interface RuntimeFailure {
+  readonly kind: "transient" | "authentication" | "configuration" | "quota" | "capability" | "input";
+  /** Provider-reported quota reset, never an inferred recovery time. */
+  readonly resetAt?: string;
+}
+
+export interface RuntimeResumeMetadata {
+  readonly nativeSessionId?: string;
+  readonly providerConversationId?: string;
+}
+
+export type CanonicalHistoryEvent =
+  | { type: "message"; role: "user" | "assistant"; text: string }
+  | { type: "tool-intent"; idempotencyKey: string; intent: ToolIntent }
+  | { type: "permission-decision"; idempotencyKey: string; decision: PermissionDecision }
+  | { type: "tool-started"; idempotencyKey: string; idempotent: boolean }
+  | { type: "tool-result"; idempotencyKey: string; result: ToolExecutionResult }
+  | { type: "attempt-started"; route: ResolvedRoute }
+  | { type: "attempt-finished"; outcome: TaskOutcome }
+  | { type: "retry"; delayMs: number; retryNumber: number }
+  | { type: "fallback"; from: ResolvedRoute; to: ResolvedRoute; reason: string }
+  | { type: "cancellation-requested" }
+  | { type: "outcome"; outcome: TaskOutcome };
+
+export type CanonicalHistoryEntry = CanonicalHistoryEvent & {
+  readonly sequence: number;
+  readonly observedAt: string;
+  readonly attemptId: string | null;
+};
+
+export interface RouteCircuit {
+  readonly route: ResolvedRoute;
+  readonly state: "closed" | "open";
+  readonly failureKind: RuntimeFailure["kind"] | null;
+  readonly consecutiveFailures: number;
+  readonly openedAt: string | null;
+  readonly retryAt: string | null;
+}
+
+export interface RuntimeClock {
+  now(): number;
+  random(): number;
+  sleep(ms: number, signal: AbortSignal): Promise<void>;
 }
 
 /** One executable runtime/provider/model choice captured at task admission. */
@@ -95,6 +142,7 @@ export interface ResolvedExecutionPlan {
 /** Provider-neutral runtime output consumed by Sarathi orchestration. */
 export type NormalizedRuntimeEvent =
   | { type: "progress"; text: string }
+  | { type: "resume"; metadata: RuntimeResumeMetadata }
   | { type: "terminal"; outcome: TaskOutcome };
 
 /** A durable, attributable execution of a resolved plan. */
@@ -103,6 +151,7 @@ export interface RuntimeAttempt {
   readonly route: ResolvedRoute;
   readonly selection?: RouteSelection;
   readonly status: TaskStatus;
+  readonly resumeMetadata?: RuntimeResumeMetadata;
   readonly outcome: TaskOutcome | null;
   readonly startedAt: string;
   readonly completedAt: string | null;
@@ -115,6 +164,11 @@ export interface RoutedExecutionInput {
   readonly sessionKey: string;
   readonly plan: ResolvedExecutionPlan;
   readonly agent: AgentAbstraction;
+  readonly attemptId: string;
+  readonly signal: AbortSignal;
+  readonly canonicalHistory: ReadonlyArray<CanonicalHistoryEntry>;
+  /** Disable transport/SDK retries; Sarathi owns the only retry loop. */
+  readonly retryPolicy: { readonly maxRetries: 0 };
   /** The only tool capability runtime adapters receive. */
   executeTool(intent: ToolIntent): Promise<ToolExecutionResult>;
 }
@@ -122,6 +176,7 @@ export interface RoutedExecutionInput {
 /** Injectable seam for runtime adapters; it never owns task durability. */
 export interface RuntimeRouter {
   run(input: RoutedExecutionInput): AsyncIterable<NormalizedRuntimeEvent>;
+  probe?(route: ResolvedRoute): Promise<boolean>;
 }
 
 /** Authentication evidence for a provider catalog; no secret values are stored. */
@@ -180,6 +235,8 @@ export interface ProviderCatalog {
 export interface ToolDefinition {
   readonly tool: string;
   readonly operations: ReadonlyArray<string>;
+  /** Declared by Sarathi's executor, never by a model's tool intent. */
+  readonly idempotent?: boolean;
 }
 
 /** A runtime can request an intent, but never execute it directly. */
@@ -223,11 +280,20 @@ export type PermissionDecision =
 export interface ToolExecutionResult {
   readonly decision: PermissionDecision;
   readonly output?: string;
+  readonly effect?: "completed" | "uncertain";
+  readonly error?: string;
+}
+
+export interface ToolExecutionContext {
+  readonly idempotencyKey: string;
+  readonly signal: AbortSignal;
+  onDecision(decision: PermissionDecision): void;
+  beforeExecute(idempotent: boolean): void;
 }
 
 export interface SarathiToolExecutor {
   readonly definitions: ReadonlyArray<ToolDefinition>;
-  execute(intent: ToolIntent): Promise<{ readonly output: string }>;
+  execute(intent: ToolIntent, options?: { readonly idempotencyKey: string; readonly signal: AbortSignal }): Promise<{ readonly output: string }>;
 }
 
 /** Optional semantic classifier; it may only identify unresolved low-risk work. */

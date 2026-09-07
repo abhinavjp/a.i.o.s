@@ -7,6 +7,7 @@ import type { ExecutionPlanResolver } from "../sarathi/ExecutionPlanResolver.js"
 import { IneligibleRouteError, type ExecutionPlanAdmissionValidator, type FixedRouteSelector } from "../sarathi/RouteEligibility.js";
 import { isRoutePolicyOverride } from "../sarathi/RoutePolicy.js";
 import type { TaskStore } from "../TaskStore.js";
+import type { RouteResilience } from "../sarathi/RouteResilience.js";
 
 interface SubmitTaskBody {
   task: string;
@@ -26,6 +27,7 @@ export interface TaskRouteOptions {
   planAdmissionValidator?: ExecutionPlanAdmissionValidator;
   fixedRouteSelector?: FixedRouteSelector;
   toolMediator?: TaskToolMediator;
+  resilience?: RouteResilience;
 }
 
 export function registerTaskRoutes(
@@ -41,8 +43,16 @@ export function registerTaskRoutes(
     options.executionObserver,
     options.planAdmissionValidator,
     options.fixedRouteSelector,
-    options.toolMediator
+    options.toolMediator,
+    options.resilience
   );
+  app.addHook("onClose", async () => registry.close());
+
+  app.post<{ Params: StreamParams }>("/api/agents/active/tasks/:taskId/cancel", async (request, reply) => {
+    const task = await registry.cancel(request.params.taskId);
+    if (!task) { reply.code(404); return { error: "Task not found" }; }
+    return { taskId: task.taskId, status: task.status, outcome: task.outcome, chunks: task.chunks };
+  });
 
   app.post<{ Body: SubmitTaskBody }>("/api/agents/active/tasks", async (request, reply) => {
     const { task } = request.body;
@@ -92,7 +102,8 @@ export function registerTaskRoutes(
         createdAt: record.createdAt,
         updatedAt: record.updatedAt,
         resolvedExecutionPlan: record.resolvedExecutionPlan,
-        attempts: record.attempts ?? []
+        attempts: record.attempts ?? [],
+        canonicalHistory: record.canonicalHistory ?? []
       };
     }
   );
