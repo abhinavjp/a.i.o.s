@@ -28,7 +28,7 @@ export class PermissionEngine {
     }
 
     context?.signal.throwIfAborted();
-    const decision = await this.evaluate(intent);
+    const decision = await this.evaluate(intent, context?.signal);
     context?.onDecision(decision);
     if (decision.outcome !== "allowed") {
       return { decision };
@@ -63,7 +63,7 @@ export class PermissionEngine {
     });
   }
 
-  private async evaluate(intent: ToolIntent): Promise<PermissionDecision> {
+  private async evaluate(intent: ToolIntent, signal?: AbortSignal): Promise<PermissionDecision> {
     const rules = this.store.snapshot().permissions.rules.filter((rule) => matchesRule(rule, intent));
     if (rules.some((rule) => rule.decision === "deny")) {
       return { outcome: "denied", reason: "hard deny" };
@@ -85,7 +85,9 @@ export class PermissionEngine {
     }
     if (this.classifier) {
       try {
-        if (await this.classifier.classify(intent) === "low-risk") {
+        const classification = this.classifier.classify(intent);
+        const result = signal ? await Promise.race([classification, abortOn(signal)]) : await classification;
+        if (result === "low-risk") {
           return { outcome: "allowed", reason: "semantic low-risk" };
         }
       } catch {
@@ -107,6 +109,13 @@ export class PermissionEngine {
       definition.tool === intent.tool && definition.operations.includes(intent.operation)
     );
   }
+}
+
+function abortOn(signal: AbortSignal): Promise<never> {
+  if (signal.aborted) return Promise.reject(new Error("permission evaluation cancelled"));
+  return new Promise((_, reject) => {
+    signal.addEventListener("abort", () => reject(new Error("permission evaluation cancelled")), { once: true });
+  });
 }
 
 export function isPermissionRuleDecision(value: unknown): value is PermissionRuleDecision {

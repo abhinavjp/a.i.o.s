@@ -223,6 +223,24 @@ describe("durable runtime lifecycle through Fastify", () => {
     expect((await f.create().inject({ method: "GET", url: `${root}/${id}` })).json().status).toBe("cancelled");
   });
 
+  test("cancellation interrupts a pending semantic permission decision", async () => {
+    const intent: ToolIntent = { tool: "files", operation: "analyze", target: "notes.md", context: {} };
+    const f = await fixture({ async *run(input) {
+      await input.executeTool(intent);
+      yield { type: "terminal", outcome: { status: "completed" } };
+    } }, {
+      permissionSemanticClassifier: { classify: async () => new Promise<"low-risk">(() => {}) },
+      permissionTools: { definitions: [{ tool: "files", operations: ["analyze"] }], execute: async () => ({ output: "never reached" }) }
+    });
+    const id = (await f.submit()).json().taskId;
+    await vi.waitFor(async () => expect((await f.get(id)).canonicalHistory).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: "tool-intent" })
+    ])));
+    const cancelled = await f.app.inject({ method: "POST", url: `${root}/${id}/cancel` });
+    expect(cancelled.statusCode).toBe(200);
+    expect(cancelled.json()).toMatchObject({ status: "cancelled" });
+  }, 3000);
+
   test("cancellation during retry backoff prevents the next attempt", async () => {
     const clock = new ControlledClock();
     let waiting = false;
