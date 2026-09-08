@@ -14,11 +14,15 @@ import { ProviderCatalogManager } from "./sarathi/ProviderCatalog.js";
 import { ProviderCatalogEligibilityValidator } from "./sarathi/RouteEligibility.js";
 import { PermissionEngine } from "./sarathi/PermissionEngine.js";
 import { RouteResilience } from "./sarathi/RouteResilience.js";
+import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
+import { RuntimeRouterRegistry, type RuntimeAdapterRegistration } from "./sarathi/RuntimeAdapters.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
   sarathiStore?: SarathiStore;
   runtimeRouter?: RuntimeRouter;
+  /** Explicit provider/runtime adapters. Missing live adapters remain UNMEASURED. */
+  runtimeAdapters?: ReadonlyArray<RuntimeAdapterRegistration>;
   runtimeClock?: RuntimeClock;
   executionPlanResolver?: ExecutionPlanResolver;
   providerCatalogAdapters?: ReadonlyArray<ProviderCatalogAdapter>;
@@ -34,6 +38,9 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
   const providerCatalogManager = new ProviderCatalogManager(options.providerCatalogAdapters ?? [], sarathiStore);
   const resilience = new RouteResilience(sarathiStore, options.runtimeClock);
+  const runtimeRouter = options.runtimeRouter ?? (options.runtimeAdapters
+    ? new RuntimeRouterRegistry(options.runtimeAdapters, new AgentRuntimeRouter())
+    : undefined);
   const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore, resilience);
   const permissionEngine = options.permissionTools
     ? new PermissionEngine(sarathiStore, options.permissionTools, options.permissionSemanticClassifier)
@@ -42,7 +49,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   // Task history is authoritative if the dashboard projection lagged a crash.
   for (const task of taskStore.list().sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))) sarathiStore.recordTask(task);
   registerTaskRoutes(app, manager, taskStore, {
-    runtimeRouter: options.runtimeRouter,
+    runtimeRouter,
     planResolver: options.executionPlanResolver ?? new LayeredExecutionPlanResolver(sarathiStore),
     executionObserver: { record: (task) => sarathiStore.recordTask(task) },
     planAdmissionValidator: routeEligibility,
@@ -50,6 +57,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     toolMediator: permissionEngine,
     resilience
   });
-  registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, options.runtimeRouter);
+  registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter);
   return app;
 }

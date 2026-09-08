@@ -36,6 +36,27 @@ export interface TaskOutcome {
   status: TaskTerminalStatus;
   message?: string;
   failure?: RuntimeFailure;
+  usage?: RuntimeUsage;
+  attribution?: RuntimeAttribution;
+}
+
+/** Provider-reported values are optional and use explicit unknowns. */
+export interface RuntimeUsage {
+  readonly inputTokens: number | "unknown";
+  readonly cachedInputTokens: number | "unknown";
+  readonly reasoningTokens: number | "unknown";
+  readonly outputTokens: number | "unknown";
+  readonly cost: number | "unknown";
+  readonly costKind: "reported" | "estimated" | "unknown";
+  readonly currency?: string;
+}
+
+/** Stable identifiers and effective downstream attribution, when observable. */
+export interface RuntimeAttribution {
+  readonly providerRequestId?: string;
+  readonly clientRequestId?: string;
+  readonly effectiveProvider?: string;
+  readonly effectiveModel?: string;
 }
 
 export interface RuntimeFailure {
@@ -143,6 +164,9 @@ export interface ResolvedExecutionPlan {
 export type NormalizedRuntimeEvent =
   | { type: "progress"; text: string }
   | { type: "resume"; metadata: RuntimeResumeMetadata }
+  | { type: "tool-intent"; intent: ToolIntent; providerToolCallId?: string }
+  | { type: "tool-result"; intent: ToolIntent; result: ToolExecutionResult; providerToolCallId?: string }
+  | { type: "usage"; usage: RuntimeUsage; attribution?: RuntimeAttribution }
   | { type: "terminal"; outcome: TaskOutcome };
 
 /** A durable, attributable execution of a resolved plan. */
@@ -152,6 +176,8 @@ export interface RuntimeAttempt {
   readonly selection?: RouteSelection;
   readonly status: TaskStatus;
   readonly resumeMetadata?: RuntimeResumeMetadata;
+  readonly usage?: RuntimeUsage;
+  readonly attribution?: RuntimeAttribution;
   readonly outcome: TaskOutcome | null;
   readonly startedAt: string;
   readonly completedAt: string | null;
@@ -198,7 +224,14 @@ export interface DiscoveredProviderModel {
   readonly enabled?: boolean;
   readonly configured: boolean;
   readonly qualification: ModelQualification;
+  /** Operator-assigned; unknown models remain unclassified. */
+  readonly tier?: ModelTier;
+  readonly contextWindow?: number | "unknown";
+  readonly modalities?: ReadonlyArray<"text" | "image" | "audio" | "video">;
+  readonly locality?: "local" | "remote" | "unknown";
 }
+
+export type ModelTier = "economy" | "workhorse" | "frontier" | "unclassified";
 
 export interface ProviderCatalogDiscovery {
   readonly authenticationMode: ProviderAuthenticationMode;
@@ -206,6 +239,9 @@ export interface ProviderCatalogDiscovery {
   readonly observedAt: string;
   readonly completeness: "complete" | "incomplete";
   readonly models: ReadonlyArray<DiscoveredProviderModel>;
+  /** Non-loopback security is deliberately explicit until production controls are proven. */
+  readonly securityStatus?: "measured" | "unmeasured";
+  readonly credentialReference?: string;
 }
 
 /** Injectable provider boundary; production adapters arrive in later tickets. */
@@ -218,6 +254,7 @@ export interface ProviderCatalogModel extends DiscoveredProviderModel {
   readonly id: string;
   readonly enabled: boolean;
   readonly eligible: boolean;
+  readonly tier: ModelTier;
 }
 
 export interface ProviderCatalog {
@@ -229,6 +266,8 @@ export interface ProviderCatalog {
   readonly stale: boolean;
   readonly refreshError: string | null;
   readonly models: ReadonlyArray<ProviderCatalogModel>;
+  readonly securityStatus?: "measured" | "unmeasured";
+  readonly credentialReference?: string;
 }
 
 /** Sarathi-owned, named tool surface exposed to every runtime. */

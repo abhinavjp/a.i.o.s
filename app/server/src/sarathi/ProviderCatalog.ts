@@ -61,8 +61,14 @@ function normalizeCatalog(provider: string, discovery: ProviderCatalogDiscovery)
       enabled: model.enabled ?? model.configured,
       configured: model.configured,
       qualification: { ...model.qualification },
+      tier: model.tier ?? "unclassified",
+      ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
+      ...(model.modalities === undefined ? {} : { modalities: [...model.modalities] }),
+      ...(model.locality === undefined ? {} : { locality: model.locality }),
       eligible: (model.enabled ?? model.configured) && model.configured &&
         Object.values(model.qualification).every((evidence) => evidence === "qualified")
-    }))
+    })),
+    ...(discovery.securityStatus ? { securityStatus: discovery.securityStatus } : {}),
+    ...(discovery.credentialReference ? { credentialReference: discovery.credentialReference } : {})
   };
 }

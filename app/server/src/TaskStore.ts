@@ -67,6 +67,9 @@ export class FileTaskStore implements TaskStore {
     record.attempts = [...record.attempts!.slice(0, -1), {
       ...attempt,
       ...(event.type === "resume" ? { resumeMetadata: clone(event.metadata) } : {}),
+      ...(event.type === "usage" ? { usage: clone(event.usage), ...(event.attribution ? { attribution: clone(event.attribution) } : {}) } : {}),
+      ...(event.type === "terminal" && event.outcome.usage ? { usage: clone(event.outcome.usage) } : {}),
+      ...(event.type === "terminal" && event.outcome.attribution ? { attribution: clone(event.outcome.attribution) } : {}),
       status: event.type === "terminal" ? event.outcome.status : attempt.status,
       outcome: event.type === "terminal" ? clone(event.outcome) : null,
       completedAt: event.type === "terminal" ? now : null,

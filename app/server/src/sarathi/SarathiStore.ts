@@ -369,11 +369,12 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.permissions ??= { rules: [], approvals: [] };
   state.routeCircuits ??= [];
   state.providerCatalogs = (state.providerCatalogs ?? []).map((catalog) => ({
-    ...catalog,
-    models: catalog.models.map((model) => ({
-      ...model,
-      enabled: model.enabled ?? model.configured
-    }))
+      ...catalog,
+      models: catalog.models.map((model) => ({
+        ...model,
+        enabled: model.enabled ?? model.configured,
+        tier: model.tier ?? "unclassified"
+      }))
   }));
   if (!state.routing.policies.some((policy) => policy.scope === "global")) {
     state.routing.policies.push(defaultPolicy("global"));
