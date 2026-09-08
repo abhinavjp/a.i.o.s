@@ -249,6 +249,16 @@ export interface DiscoveredProviderModel {
 
 export type ModelTier = "economy" | "workhorse" | "frontier" | "unclassified";
 
+export type LiveProofRoute = "codex" | "claude" | "ollama" | "custom-openai-compatible" | "openai" | "anthropic" | "openrouter";
+export type LiveProofStatus = "passed" | "failed" | "UNMEASURED";
+
+export interface RuntimeProof {
+  readonly route: LiveProofRoute;
+  readonly status: LiveProofStatus;
+  readonly reason: string;
+  readonly checkedAt: string | null;
+}
+
 export interface ProviderCatalogDiscovery {
   readonly authenticationMode: ProviderAuthenticationMode;
   readonly provenance: string;

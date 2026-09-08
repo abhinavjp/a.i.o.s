@@ -18,6 +18,7 @@ import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import { RuntimeRouterRegistry, type RuntimeAdapterRegistration } from "./sarathi/RuntimeAdapters.js";
 import type { ProviderRuntimeAdapter } from "./sarathi/ProviderAdapters.js";
 import { AutoRouteSelector, type AutoRoutingOptions } from "./sarathi/AutoRouting.js";
+import { OptInProofHarness, type LiveProofHarness } from "./sarathi/ProofHarness.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
@@ -27,6 +28,7 @@ export interface BuildAppOptions {
   runtimeAdapters?: ReadonlyArray<RuntimeAdapterRegistration>;
   providerAdapters?: ReadonlyArray<ProviderRuntimeAdapter>;
   autoRouting?: AutoRoutingOptions;
+  proofHarness?: LiveProofHarness;
   runtimeClock?: RuntimeClock;
   executionPlanResolver?: ExecutionPlanResolver;
   providerCatalogAdapters?: ReadonlyArray<ProviderCatalogAdapter>;
@@ -70,6 +72,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     toolMediator: permissionEngine,
     resilience
   });
-  registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter);
+  registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness());
   return app;
 }

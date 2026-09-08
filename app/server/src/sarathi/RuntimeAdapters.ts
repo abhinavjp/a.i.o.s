@@ -57,11 +57,11 @@ export class NativeCliRuntimeAdapter implements RuntimeRouter {
     }
     const runner = this.options.runner;
     if (!runner || (runner.available && !(await runner.available()))) {
-      yield terminal({ status: "unavailable", message: `UNMEASURED: ${this.runtime} CLI entitlement, executable, model, or fixture is not verified.` });
+      yield terminal({ status: "unavailable", message: `UNMEASURED: ${this.runtime} CLI entitlement, executable, model, or fixture is not verified.`, usage: unknownUsage() });
       return;
     }
 
-    let usage: RuntimeUsage | undefined;
+    let usage: RuntimeUsage = unknownUsage();
     let attribution: RuntimeAttribution | undefined;
     try {
       const invocation = this.invocation(input.plan.route);
@@ -156,14 +156,14 @@ export class AiSdkToolLoopRuntimeAdapter implements RuntimeRouter {
     input.signal.throwIfAborted();
     const provider = this.options.provider;
     if (provider.available && !(await provider.available())) {
-      yield terminal({ status: "unavailable", message: `UNMEASURED: provider ${input.plan.route.provider} endpoint, model, or fixture is not verified.` });
+      yield terminal({ status: "unavailable", message: `UNMEASURED: provider ${input.plan.route.provider} endpoint, model, or fixture is not verified.`, usage: unknownUsage() });
       return;
     }
     const messages = input.canonicalHistory
       .filter((event) => event.type === "message")
       .map((event) => ({ role: event.role, text: event.text }));
     const toolResults: Array<{ intent: ToolIntent; result: ToolExecutionResult }> = [];
-    let usage: RuntimeUsage | undefined;
+    let usage: RuntimeUsage = unknownUsage();
     let attribution: RuntimeAttribution | undefined;
     try {
       for await (const event of provider.stream({ task: input.task, model: input.plan.route.model,
@@ -240,3 +240,6 @@ function withEvidence(
 
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "runtime adapter failed"; }
 
+export function unknownUsage(): RuntimeUsage {
+  return { inputTokens: "unknown", cachedInputTokens: "unknown", reasoningTokens: "unknown", outputTokens: "unknown", cost: "unknown", costKind: "unknown" };
+}

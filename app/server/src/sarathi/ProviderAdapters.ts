@@ -86,7 +86,8 @@ export class ProviderRuntimeAdapter implements ProviderCatalogAdapter, RuntimeRo
       credentialReference: this.options.credentialEnvVar ?? source.credentialReference,
       securityStatus: this.options.endpoint ? endpointSecurityStatus(this.options) : source.securityStatus
         ?? (this.provider === "ollama" ? "measured" : "unmeasured"),
-      models: source.models.map((model) => ({ ...model, tier: model.tier ?? "unclassified", configured: model.configured && (this.options.credentialEnvVar ? credential.configured : true) }))
+      models: source.models.map((model) => ({ ...model, tier: model.tier ?? "unclassified", configured: model.configured &&
+        (!requiresEnvironmentCredential(this.provider) || credential.configured) }))
     };
   }
 
@@ -121,4 +122,8 @@ function unavailableTransport(): ProviderTransport {
     available: async () => false,
     async *stream(_input: ToolLoopProviderInput): AsyncIterable<ToolLoopProviderEvent> { return; }
   };
+}
+
+function requiresEnvironmentCredential(provider: string): boolean {
+  return provider === "openai" || provider === "anthropic" || provider === "openrouter";
 }

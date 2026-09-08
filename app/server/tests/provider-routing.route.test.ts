@@ -52,6 +52,16 @@ describe("local, paid, aggregate, and Auto provider routes", () => {
     expect(dashboard).not.toContain("secret-value"); expect(dashboard).toContain("OPENAI_TEST_KEY");
   });
 
+  test("direct API routes without a named environment credential stay unconfigured", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-credential-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    const route: ResolvedRoute = { runtime: "openai", provider: "openai", model: "gpt-test", billingMode: "api" };
+    const adapter = new OpenAIProviderAdapter({ transport: transport(route.model), credentialEnvVar: "MISSING_OPENAI_TEST_KEY" });
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), providerAdapters: [adapter] });
+    resources.push(() => app.close()); await app.ready();
+    const response = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "paid", routePolicy: { primary: route } } });
+    expect(response.statusCode).toBe(400); expect(response.json().error).toMatch(/not configured/);
+  });
+
   test("custom non-loopback endpoints disclose UNMEASURED transport security", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-security-")); resources.push(() => rm(directory, { recursive: true, force: true }));
     const adapter = new CustomOpenAICompatibleProviderAdapter({ endpoint: "http://lan-host:8080/v1", models: [{ model: "custom-model", enabled: true, configured: true, tier: "unclassified", qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" } }] });
@@ -77,4 +87,3 @@ describe("local, paid, aggregate, and Auto provider routes", () => {
     expect(JSON.stringify((await app.inject({ method: "GET", url: "/api/sarathi/dashboard" })).json())).not.toContain("secret");
   });
 });
-

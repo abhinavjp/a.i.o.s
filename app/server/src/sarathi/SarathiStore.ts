@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, TaskStatus, ToolIntent } from "@aios/contracts";
+import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
@@ -56,6 +56,7 @@ export interface SarathiDashboard {
   permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
   providerCatalogs: ProviderCatalog[];
   routeCircuits: RouteCircuit[];
+  proofs: RuntimeProof[];
   controls: { manualPaused: boolean; changedAt: string | null };
   discovery: DiscoveryState;
   tickets: SarathiTicket[];
@@ -72,6 +73,8 @@ export interface SarathiDashboard {
     retryCount: number;
     fallbackCount: number;
     outcomeMessage: string | null;
+    usage?: RuntimeUsage;
+    attribution?: RuntimeAttribution;
   }>;
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
@@ -99,6 +102,7 @@ export interface SarathiStore {
   findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
   consumeApproval(id: string): void;
   recordCircuit(circuit: RouteCircuit): void;
+  recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
 export class FileSarathiStore implements SarathiStore {
@@ -152,7 +156,9 @@ export class FileSarathiStore implements SarathiStore {
       selectionReason: attempt.selection?.reason ?? plan.selection?.reason ?? null,
       retryCount: task.canonicalHistory?.filter((event) => event.type === "retry").length ?? 0,
       fallbackCount: task.canonicalHistory?.filter((event) => event.type === "fallback").length ?? 0,
-      outcomeMessage: task.outcome?.message ?? null
+      outcomeMessage: task.outcome?.message ?? null,
+      ...(attempt.usage ? { usage: clone(attempt.usage) } : {}),
+      ...(attempt.attribution ? { attribution: clone(attempt.attribution) } : {})
     };
     this.state.recentTasks = [
       summary,
@@ -280,6 +286,12 @@ export class FileSarathiStore implements SarathiStore {
     this.persist();
   }
 
+  recordProof(proof: RuntimeProof): RuntimeProof {
+    this.state.proofs = [...this.state.proofs.filter((entry) => entry.route !== proof.route), clone(proof)];
+    this.persist();
+    return clone(proof);
+  }
+
   private load(): SarathiDashboard {
     if (!existsSync(this.filePath)) {
       return defaultDashboard();
@@ -330,6 +342,7 @@ function defaultDashboard(): SarathiDashboard {
     permissions: { rules: [], approvals: [] },
     providerCatalogs: [],
     routeCircuits: [],
+    proofs: proofDefaults(),
     controls: { manualPaused: false, changedAt: null },
     discovery: {
       status: "blocked",
@@ -368,13 +381,14 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
   state.routeCircuits ??= [];
+  state.proofs ??= proofDefaults();
   state.providerCatalogs = (state.providerCatalogs ?? []).map((catalog) => ({
-      ...catalog,
-      models: catalog.models.map((model) => ({
-        ...model,
-        enabled: model.enabled ?? model.configured,
-        tier: model.tier ?? "unclassified"
-      }))
+    ...catalog,
+    models: catalog.models.map((model) => ({
+      ...model,
+      enabled: model.enabled ?? model.configured,
+      tier: model.tier ?? "unclassified"
+    }))
   }));
   if (!state.routing.policies.some((policy) => policy.scope === "global")) {
     state.routing.policies.push(defaultPolicy("global"));
@@ -410,6 +424,11 @@ function runtimeName(runtime: string): string {
     return "Fake runtime";
   }
   return runtime === "unmeasured" ? "Unmeasured runtime" : runtime;
+}
+
+function proofDefaults(): RuntimeProof[] {
+  const routes: RuntimeProof["route"][] = ["codex", "claude", "ollama", "custom-openai-compatible", "openai", "anthropic", "openrouter"];
+  return routes.map((route) => ({ route, status: "UNMEASURED" as const, reason: "Live contract proof is opt-in and has not been authorized on this host.", checkedAt: null }));
 }
 
 function sameIntent(left: ToolIntent, right: ToolIntent): boolean {

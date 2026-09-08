@@ -5,7 +5,10 @@ import type {
   RouteCircuit,
   HealthStatus,
   TaskOutcome,
-  TaskTerminalStatus
+  TaskTerminalStatus,
+  RuntimeAttribution,
+  RuntimeProof,
+  RuntimeUsage
 } from "@aios/contracts";
 import "./App.css";
 
@@ -29,12 +32,16 @@ type Dashboard = {
     completeness: "complete" | "incomplete";
     stale: boolean;
     refreshError: string | null;
+    securityStatus?: "measured" | "unmeasured";
+    credentialReference?: string;
     models: Array<{
       id: string;
       model: string;
       enabled: boolean;
       configured: boolean;
       eligible: boolean;
+      tier?: string;
+      contextWindow?: number | "unknown";
       qualification: { health: string; streaming: string; structuredOutput: string; toolCalling: string };
     }>;
   }>;
@@ -77,7 +84,10 @@ type Dashboard = {
     retryCount?: number;
     fallbackCount?: number;
     outcomeMessage?: string | null;
+    usage?: RuntimeUsage;
+    attribution?: RuntimeAttribution;
   }>;
+  proofs: RuntimeProof[];
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
   actionBatches: Array<{
@@ -91,6 +101,9 @@ type Dashboard = {
 type Specialist = Dashboard["specialists"][number];
 
 const LAST_TASK_STORAGE_KEY = "lastTaskId";
+const DEFAULT_PROOFS: RuntimeProof[] = ["codex", "claude", "ollama", "custom-openai-compatible", "openai", "anthropic", "openrouter"].map((route) => ({
+  route: route as RuntimeProof["route"], status: "UNMEASURED", reason: "Live contract proof is opt-in and has not been authorized on this host.", checkedAt: null
+}));
 
 const DEFAULT_DASHBOARD: Dashboard = {
   runtime: {
@@ -103,6 +116,7 @@ const DEFAULT_DASHBOARD: Dashboard = {
   routing: { policies: [] },
   providerCatalogs: [],
   routeCircuits: [],
+  proofs: DEFAULT_PROOFS,
   discovery: {
     status: "blocked",
     reason: "GitLab adapter not configured; no external reads attempted.",
@@ -135,7 +149,10 @@ function parseTaskOutcome(data: string): TaskOutcome {
         status === "unavailable"
       ) {
         const message = (parsed as { message?: unknown }).message;
-        return typeof message === "string" ? { status, message } : { status };
+        const failure = (parsed as { failure?: TaskOutcome["failure"] }).failure;
+        const usage = (parsed as { usage?: RuntimeUsage }).usage;
+        const attribution = (parsed as { attribution?: RuntimeAttribution }).attribution;
+        return { status, ...(typeof message === "string" ? { message } : {}), ...(failure ? { failure } : {}), ...(usage ? { usage } : {}), ...(attribution ? { attribution } : {}) };
       }
     }
   } catch {
@@ -147,6 +164,14 @@ function parseTaskOutcome(data: string): TaskOutcome {
 
 function statusLabel(status: string): string {
   return status.replaceAll("_", " ");
+}
+
+function formatUsage(usage?: RuntimeUsage): string {
+  if (!usage) return "usage unknown";
+  const tokens = [usage.inputTokens, usage.outputTokens].every((value) => typeof value === "number")
+    ? `${usage.inputTokens} in · ${usage.outputTokens} out tokens` : "tokens unknown";
+  const cost = usage.cost === "unknown" ? "cost unknown" : `${usage.costKind} cost ${usage.cost}${usage.currency ? ` ${usage.currency}` : ""}`;
+  return `${tokens} · ${cost}`;
 }
 
 function describeHistory(entry: CanonicalHistoryEntry): string {
@@ -195,6 +220,7 @@ export function App() {
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
   const [routeDraft, setRouteDraft] = useState({ scope: "global" as "global" | "specialist" | "workflow", id: "", primaryModel: "fake", fallbackModel: "", overridePrimary: true, overrideFallback: false });
   const [routeMessage, setRouteMessage] = useState<string | null>(null);
+  const [proofMessage, setProofMessage] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const dashboardRefreshGeneration = useRef(0);
 
@@ -228,7 +254,7 @@ export function App() {
       const response = await fetch("/api/sarathi/dashboard");
       const next = (await response.json()) as Partial<Dashboard>;
       if (generation === dashboardRefreshGeneration.current && Array.isArray(next.tickets) && next.runtime && next.discovery) {
-        setDashboard({ ...DEFAULT_DASHBOARD, ...next, providerCatalogs: next.providerCatalogs ?? [] });
+        setDashboard({ ...DEFAULT_DASHBOARD, ...next, providerCatalogs: next.providerCatalogs ?? [], proofs: next.proofs ?? DEFAULT_PROOFS });
       }
     } catch {
       // Keep the explicit local fallback while the API is down.
@@ -348,6 +374,17 @@ export function App() {
     }
   }
 
+  async function runProof(route: RuntimeProof["route"]) {
+    setProofMessage(null);
+    const response = await fetch(`/api/sarathi/proofs/${encodeURIComponent(route)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ optIn: true })
+    });
+    const next = await response.json() as { proof?: RuntimeProof; error?: string };
+    if (!response.ok || !next.proof) { setProofMessage(next.error ?? "Proof could not run."); return; }
+    setDashboard((current) => ({ ...current, proofs: [...current.proofs.filter((proof) => proof.route !== route), next.proof!] }));
+    setProofMessage(`${route}: ${next.proof.status}`);
+  }
+
   async function handleCreateSpecialist(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setSpecialistMessage(null);
@@ -416,6 +453,7 @@ export function App() {
 
   const blockedTickets = dashboard.tickets.filter((ticket) => ticket.status === "blocked");
   const activeAgent = agents[0];
+  const latestUsage = dashboard.recentTasks.find((task) => task.usage)?.usage;
   const todayLabel = formatToday();
 
   return (
@@ -456,7 +494,7 @@ export function App() {
           <div className="signal-cell"><span>Work in motion</span><strong>{status === "running" ? "1" : "0"}</strong><small>local task</small></div>
           <div className="signal-cell"><span>Waiting on you</span><strong>{blockedTickets.length}</strong><small>gates in view</small></div>
           <div className="signal-cell"><span>Remote effects</span><strong>0</strong><small>no fixture armed</small></div>
-          <div className="signal-cell"><span>Usage</span><strong>—</strong><small>not measured</small></div>
+          <div className="signal-cell"><span>Usage</span><strong>{latestUsage?.outputTokens ?? "—"}</strong><small>{latestUsage ? formatUsage(latestUsage) : "unknown until reported"}</small></div>
         </section>
 
         <div className="content-grid">
@@ -473,7 +511,8 @@ export function App() {
                 <div className="gate-row" key={attempt.id}><span className="gate-index">{statusLabel(attempt.status)}</span><div>
                   <strong>{attempt.title}</strong><small>{attempt.runtime} · plan {attempt.planId} · attempt {attempt.attemptId}</small>
                   {attempt.selectionReason && <small>{attempt.selectionReason}</small>}{attempt.evidence && <small>{attempt.evidence}</small>}
-                  <small>Retries: {attempt.retryCount ?? 0} · Fallbacks: {attempt.fallbackCount ?? 0}</small>
+                   <small>Retries: {attempt.retryCount ?? 0} · Fallbacks: {attempt.fallbackCount ?? 0}</small>
+                   <small>{formatUsage(attempt.usage)}{attempt.attribution?.providerRequestId ? ` · request ${attempt.attribution.providerRequestId}` : ""}{attempt.attribution?.effectiveProvider ? ` · effective ${attempt.attribution.effectiveProvider}/${attempt.attribution.effectiveModel ?? "unknown"}` : ""}</small>
                   {attempt.outcomeMessage && <small>{attempt.outcomeMessage}</small>}
                   <button type="button" onClick={() => void viewHistory(attempt.id)}>View history</button>
                 </div><span className="state-chip">{statusLabel(attempt.status)}</span></div>)}</div>}
@@ -491,7 +530,9 @@ export function App() {
 
             <section className="panel routing-panel"><div className="panel-heading"><div><span className="eyebrow">Routing policy</span><h2>New work only</h2></div></div><form className="specialist-form" onSubmit={saveRoutePolicy}><label htmlFor="route-scope">Scope<select id="route-scope" value={routeDraft.scope} onChange={(event) => setRouteDraft((draft) => ({ ...draft, scope: event.target.value as "global" | "specialist" | "workflow" }))}><option value="global">Global</option><option value="specialist">Specialist</option><option value="workflow">Workflow</option></select></label>{routeDraft.scope !== "global" && <label htmlFor="route-scope-id">Scope name<input id="route-scope-id" value={routeDraft.id} onChange={(event) => setRouteDraft((draft) => ({ ...draft, id: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overridePrimary} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override primary</label>{routeDraft.overridePrimary && <label htmlFor="route-primary">Primary model<input id="route-primary" value={routeDraft.primaryModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overrideFallback} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override fallback chain</label>{routeDraft.overrideFallback && <label htmlFor="route-fallback">Fallback model (blank clears)<input id="route-fallback" value={routeDraft.fallbackModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}<button className="specialist-submit" type="submit">Save route policy</button></form>{routeMessage && <p className="specialist-message" role="status">{routeMessage}</p>}<p className="panel-note subtle">Task overrides are recorded at admission. Later edits apply only to new tasks.</p></section>
 
-            <section className="panel provider-catalog-panel"><div className="panel-heading"><div><span className="eyebrow">Provider catalogs</span><h2>Observed, not assumed</h2></div></div>{dashboard.providerCatalogs.length === 0 ? <p className="panel-note subtle">No provider catalog observed. Missing evidence is not eligibility.</p> : <div className="catalog-list">{dashboard.providerCatalogs.map((catalog) => <div className="catalog-row" key={catalog.provider}><div><strong>{catalog.provider}</strong><small>{catalog.authenticationMode} · {catalog.completeness} · observed {catalog.observedAt}</small><small>{catalog.provenance}</small>{catalog.refreshError && <small className="catalog-error">Refresh failed: {catalog.refreshError}</small>}</div><div><button className="text-button" type="button" aria-label={`Refresh ${catalog.provider}`} onClick={() => refreshProviderCatalog(catalog.provider)} disabled={isRefreshing}>Refresh</button><span className={`state-chip ${catalog.stale ? "blocked" : "ready"}`}>{catalog.stale ? "stale" : "current"}</span></div><ul>{catalog.models.map((model) => <li key={model.id}><strong>{model.model}</strong><span>{model.enabled ? "enabled" : "not enabled"} · {model.configured ? "configured" : "not configured"} · {model.eligible ? "eligible" : "ineligible"}</span><small>health {model.qualification.health}; stream {model.qualification.streaming}; structured {model.qualification.structuredOutput}; tools {model.qualification.toolCalling}</small></li>)}</ul></div>)}</div>}<p className="panel-note subtle">A route must be enabled, configured, healthy, and capability-qualified before it is eligible.</p></section>
+            <section className="panel provider-catalog-panel"><div className="panel-heading"><div><span className="eyebrow">Provider catalogs</span><h2>Observed, not assumed</h2></div></div>{dashboard.providerCatalogs.length === 0 ? <p className="panel-note subtle">No provider catalog observed. Missing evidence is not eligibility.</p> : <div className="catalog-list">{dashboard.providerCatalogs.map((catalog) => <div className="catalog-row" key={catalog.provider}><div><strong>{catalog.provider}</strong><small>{catalog.authenticationMode} · {catalog.completeness} · observed {catalog.observedAt}</small><small>{catalog.provenance}</small>{catalog.credentialReference && <small>credential ref: {catalog.credentialReference}</small>}<small>transport security: {catalog.securityStatus ?? "unknown"}</small>{catalog.refreshError && <small className="catalog-error">Refresh failed: {catalog.refreshError}</small>}</div><div><button className="text-button" type="button" aria-label={`Refresh ${catalog.provider}`} onClick={() => refreshProviderCatalog(catalog.provider)} disabled={isRefreshing}>Refresh</button><span className={`state-chip ${catalog.stale ? "blocked" : "ready"}`}>{catalog.stale ? "stale" : "current"}</span></div><ul>{catalog.models.map((model) => <li key={model.id}><strong>{model.model}</strong><span>{model.enabled ? "enabled" : "not enabled"} · {model.configured ? "configured" : "not configured"} · {model.eligible ? "eligible" : "ineligible"}</span><small>tier {model.tier ?? "unclassified"}; health {model.qualification.health}; stream {model.qualification.streaming}; structured {model.qualification.structuredOutput}; tools {model.qualification.toolCalling}{model.contextWindow ? ` · context ${model.contextWindow}` : ""}</small></li>)}</ul></div>)}</div>}<p className="panel-note subtle">A route must be enabled, configured, healthy, and capability-qualified before it is eligible.</p></section>
+
+            <section className="panel proofs-panel"><div className="panel-heading"><div><span className="eyebrow">Live contract proofs</span><h2>Opt in per route</h2></div></div><div className="proof-list">{dashboard.proofs.map((proof) => <div className="proof-row" key={proof.route}><div><strong>{proof.route}</strong><small>{proof.reason}</small></div><span className={`state-chip ${proof.status === "passed" ? "ready" : proof.status === "UNMEASURED" ? "pending" : "blocked"}`}>{proof.status}</span><button className="text-button" type="button" aria-label={`Check ${proof.route} proof`} onClick={() => void runProof(proof.route)}>Opt-in check</button></div>)}</div>{proofMessage && <p className="panel-note" role="status">{proofMessage}</p>}<p className="panel-note subtle">No proof runs automatically; missing account, credential, endpoint, model, or fixture remains UNMEASURED.</p></section>
 
             <section className="panel runtime-panel"><div className="panel-heading"><div><span className="eyebrow">Runtime</span><h2>Attributable, or stopped</h2></div></div><div className="runtime-card"><div className="runtime-card-top"><span className={`status-dot ${dashboard.runtime.state === "ready" ? "green" : "amber"}`} /><strong>{dashboard.runtime.name}</strong><span className="state-chip">{statusLabel(dashboard.runtime.state)}</span></div><p>{dashboard.runtime.reason}</p>{activeAgent ? <small className="agent-health"><strong>{activeAgent.displayName}</strong><span> · </span><span>{activeAgent.health.ok ? "healthy" : activeAgent.health.reason}</span></small> : <small>Agent health unavailable</small>}</div><div className="runtime-footnote">Billing mode: <strong>{dashboard.runtime.billingMode}</strong></div></section>
           </aside>
