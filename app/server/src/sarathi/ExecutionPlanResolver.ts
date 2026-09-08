@@ -7,6 +7,7 @@ export interface RoutePolicyConfiguration {
 
 export interface ExecutionPlanInput {
   taskId: string;
+  task?: string;
   agent: AgentAbstraction;
   specialistId?: string;
   workflowId?: string;
@@ -23,7 +24,7 @@ export interface ExecutionPlanResolver {
  * the runtime-router or Fastify seams.
  */
 export class DefaultExecutionPlanResolver implements ExecutionPlanResolver {
-  resolve({ taskId, agent }: ExecutionPlanInput): ResolvedExecutionPlan {
+  resolve({ taskId, task, agent }: ExecutionPlanInput): ResolvedExecutionPlan {
     const agentInfo = agent.getInfo();
     const route: ResolvedRoute = {
       runtime: agentInfo.kind === "fake" ? "fake" : "unmeasured",
@@ -48,7 +49,8 @@ export class DefaultExecutionPlanResolver implements ExecutionPlanResolver {
         specialist: { version: "specialist-default-v1", policy: {} },
         global: { version: "global-default-v1", policy: {} }
       },
-      resolvedAt: new Date().toISOString()
+      resolvedAt: new Date().toISOString(),
+      ...(task === undefined ? {} : { taskText: task })
     });
   }
 }
@@ -89,7 +91,8 @@ export class LayeredExecutionPlanResolver implements ExecutionPlanResolver {
         specialist: snapshotPolicy(specialist.version, specialist.policy),
         global: snapshotPolicy(global.version, global.policy)
       },
-      resolvedAt: new Date().toISOString()
+      resolvedAt: new Date().toISOString(),
+      ...(input.task === undefined ? {} : { taskText: input.task })
     });
   }
 }

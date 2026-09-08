@@ -1,6 +1,7 @@
 import type { ResolvedExecutionPlan, ResolvedRoute, RouteSelection } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
 import type { RouteResilience } from "./RouteResilience.js";
+import type { AutoRouteSelector } from "./AutoRouting.js";
 
 export interface ExecutionPlanAdmissionValidator {
   validate(plan: ResolvedExecutionPlan): void;
@@ -14,7 +15,7 @@ export class IneligibleRouteError extends Error {}
 
 /** Rejects known catalog entries that have not earned execution eligibility. */
 export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissionValidator, FixedRouteSelector {
-  constructor(private readonly store: SarathiStore, private readonly resilience?: RouteResilience) {}
+  constructor(private readonly store: SarathiStore, private readonly resilience?: RouteResilience, private readonly autoSelector?: AutoRouteSelector) {}
 
   validate(plan: ResolvedExecutionPlan): void {
     for (const route of [plan.route, ...plan.fallbackRoutes]) {
@@ -23,6 +24,9 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
   }
 
   select(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {
+    if (this.autoSelector && (plan.route.runtime === "auto" || plan.route.provider === "auto" || plan.route.model === "auto")) {
+      return this.autoSelector.select(plan);
+    }
     this.resilience?.assertAvailable(plan.route);
     const authenticationMode = this.validateRoute(plan.route);
     const selection: RouteSelection = {

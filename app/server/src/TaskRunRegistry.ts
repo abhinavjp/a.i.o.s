@@ -31,7 +31,7 @@ export class TaskRunRegistry {
     routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride } = {}): string {
     const taskId = randomUUID();
     const now = new Date(this.clock.now()).toISOString();
-    const resolved = this.planResolver.resolve({ taskId, agent, ...routing });
+    const resolved = this.planResolver.resolve({ taskId, task, agent, ...routing });
     const plan = snapshotExecutionPlan(this.fixedRouteSelector?.select(resolved) ?? resolved);
     this.planAdmissionValidator?.validate(plan);
     this.assertSelectedAgentHealthy(agent, plan);

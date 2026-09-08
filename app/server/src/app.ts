@@ -16,6 +16,8 @@ import { PermissionEngine } from "./sarathi/PermissionEngine.js";
 import { RouteResilience } from "./sarathi/RouteResilience.js";
 import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import { RuntimeRouterRegistry, type RuntimeAdapterRegistration } from "./sarathi/RuntimeAdapters.js";
+import type { ProviderRuntimeAdapter } from "./sarathi/ProviderAdapters.js";
+import { AutoRouteSelector, type AutoRoutingOptions } from "./sarathi/AutoRouting.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
@@ -23,6 +25,8 @@ export interface BuildAppOptions {
   runtimeRouter?: RuntimeRouter;
   /** Explicit provider/runtime adapters. Missing live adapters remain UNMEASURED. */
   runtimeAdapters?: ReadonlyArray<RuntimeAdapterRegistration>;
+  providerAdapters?: ReadonlyArray<ProviderRuntimeAdapter>;
+  autoRouting?: AutoRoutingOptions;
   runtimeClock?: RuntimeClock;
   executionPlanResolver?: ExecutionPlanResolver;
   providerCatalogAdapters?: ReadonlyArray<ProviderCatalogAdapter>;
@@ -36,12 +40,21 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const taskStore = options.taskStore ?? new FileTaskStore(join(process.cwd(), ".data", "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
   const sarathiStore =
     options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
-  const providerCatalogManager = new ProviderCatalogManager(options.providerCatalogAdapters ?? [], sarathiStore);
+  const providerAdapters = options.providerAdapters ?? [];
+  const providerCatalogManager = new ProviderCatalogManager([
+    ...(options.providerCatalogAdapters ?? []),
+    ...providerAdapters
+  ], sarathiStore);
   const resilience = new RouteResilience(sarathiStore, options.runtimeClock);
-  const runtimeRouter = options.runtimeRouter ?? (options.runtimeAdapters
-    ? new RuntimeRouterRegistry(options.runtimeAdapters, new AgentRuntimeRouter())
+  const autoSelector = options.autoRouting ? new AutoRouteSelector(sarathiStore, resilience, options.autoRouting) : undefined;
+  const providerRegistrations: RuntimeAdapterRegistration[] = providerAdapters.flatMap((adapter) => [
+    { runtime: adapter.runtime, adapter },
+    { runtime: adapter.provider, adapter }
+  ]);
+  const runtimeRouter = options.runtimeRouter ?? (options.runtimeAdapters || providerRegistrations.length
+    ? new RuntimeRouterRegistry([...(options.runtimeAdapters ?? []), ...providerRegistrations], new AgentRuntimeRouter())
     : undefined);
-  const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore, resilience);
+  const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore, resilience, autoSelector);
   const permissionEngine = options.permissionTools
     ? new PermissionEngine(sarathiStore, options.permissionTools, options.permissionSemanticClassifier)
     : undefined;

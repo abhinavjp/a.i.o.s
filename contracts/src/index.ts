@@ -119,6 +119,21 @@ export interface RouteSelection {
   readonly authenticationMode: ProviderAuthenticationMode | "fake";
   readonly billingMode: ResolvedRoute["billingMode"];
   readonly reason: string;
+  readonly classification?: AutoComplexity;
+  readonly classificationEvidence?: string;
+  readonly candidates?: ReadonlyArray<string>;
+  readonly operatorOverride?: boolean;
+}
+
+export type AutoComplexity = "economy" | "workhorse" | "frontier" | "ambiguous";
+
+export interface AutoRouteRequirements {
+  readonly requiredTools?: ReadonlyArray<string>;
+  readonly contextWindow?: number;
+  readonly modality?: "text" | "image" | "audio" | "video";
+  readonly locality?: "local" | "remote";
+  readonly allowedTiers?: ReadonlyArray<ModelTier>;
+  readonly allowedProviders?: ReadonlyArray<string>;
 }
 
 /** Operator-editable policy fields; omitted fields inherit from lower precedence. */
@@ -158,6 +173,7 @@ export interface ResolvedExecutionPlan {
     readonly global: RoutePolicySnapshot;
   };
   readonly resolvedAt: string;
+  readonly taskText?: string;
 }
 
 /** Provider-neutral runtime output consumed by Sarathi orchestration. */
