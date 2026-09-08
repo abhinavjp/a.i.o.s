@@ -1,10 +1,10 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { afterEach, describe, expect, test } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
 import type { ProviderTransport } from "../src/sarathi/ProviderAdapters.js";
-import { AnthropicProviderAdapter, CustomOpenAICompatibleProviderAdapter, OllamaProviderAdapter, OpenAIProviderAdapter } from "../src/sarathi/ProviderAdapters.js";
+import { AnthropicProviderAdapter, CustomOpenAICompatibleProviderAdapter, OllamaProviderAdapter, OpenAIProviderAdapter, OpenRouterProviderAdapter } from "../src/sarathi/ProviderAdapters.js";
 import type { ResolvedRoute, RuntimeUsage } from "@aios/contracts";
 import { buildApp } from "../src/app.js";
 import { FileTaskStore } from "../src/TaskStore.js";
@@ -62,6 +62,61 @@ describe("local, paid, aggregate, and Auto provider routes", () => {
     expect(response.statusCode).toBe(400); expect(response.json().error).toMatch(/not configured/);
   });
 
+  test("paid providers default omitted enabled to disabled when configured", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-paid-default-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    process.env.OPENAI_TEST_KEY = "secret";
+    const adapters = [
+      new OpenAIProviderAdapter({ credentialEnvVar: "OPENAI_TEST_KEY", models: [{ model: "openai-model", configured: true, qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" } }] }),
+      new AnthropicProviderAdapter({ credentialEnvVar: "OPENAI_TEST_KEY", models: [{ model: "anthropic-model", configured: true, qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" } }] }),
+      new OpenRouterProviderAdapter({ credentialEnvVar: "OPENAI_TEST_KEY", models: [{ model: "openrouter-model", configured: true, qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" } }] }),
+      new CustomOpenAICompatibleProviderAdapter({ models: [{ model: "custom-model", configured: true, qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" } }] })
+    ];
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), providerAdapters: adapters });
+    resources.push(() => app.close()); await app.ready();
+    const catalogs = (await app.inject({ method: "GET", url: "/api/sarathi/providers/catalogs" })).json();
+    expect(catalogs.map((catalog: any) => catalog.models[0])).toEqual([
+      expect.objectContaining({ configured: true, enabled: false, eligible: false }),
+      expect.objectContaining({ configured: true, enabled: false, eligible: false }),
+      expect.objectContaining({ configured: true, enabled: false, eligible: false }),
+      expect.objectContaining({ configured: true, enabled: true, eligible: true })
+    ]);
+  });
+
+  test("Auto excludes a paid provider whose enabled field was omitted", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-paid-auto-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    process.env.OPENAI_TEST_KEY = "secret";
+    const ollama = new OllamaProviderAdapter({ transport: transport("local-model", "economy") });
+    const openai = new OpenAIProviderAdapter({ credentialEnvVar: "OPENAI_TEST_KEY", models: [{ model: "paid-model", configured: true, tier: "economy", qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" } }] });
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), providerAdapters: [ollama, openai], autoRouting: {} });
+    resources.push(() => app.close()); await app.ready();
+    const route: ResolvedRoute = { runtime: "auto", provider: "auto", model: "auto", billingMode: "unmeasured" };
+    const response = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "extract a short list", routePolicy: { primary: route } } });
+    expect(response.statusCode).toBe(202);
+    const result = await eventually(app, response.json().taskId);
+    expect(result.resolvedExecutionPlan.route.provider).toBe("ollama");
+  });
+
+  test("an explicitly enabled paid provider can execute", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-paid-enabled-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    process.env.OPENAI_TEST_KEY = "secret";
+    const route: ResolvedRoute = { runtime: "openai", provider: "openai", model: "gpt-enabled", billingMode: "api" };
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), providerAdapters: [new OpenAIProviderAdapter({ transport: transport(route.model), credentialEnvVar: "OPENAI_TEST_KEY" })] });
+    resources.push(() => app.close()); await app.ready();
+    const response = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "paid", routePolicy: { primary: route } } });
+    expect(response.statusCode).toBe(202);
+    expect((await eventually(app, response.json().taskId)).outcome.status).toBe("completed");
+  });
+
+  test("restart normalization keeps omitted paid enabled disabled", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-paid-restart-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, "sarathi.json");
+    const seed = new FileSarathiStore(path).snapshot();
+    seed.providerCatalogs = [{ provider: "openai", authenticationMode: "environment-reference", provenance: "legacy", observedAt: "2026-09-08T00:00:00.000Z", completeness: "complete", stale: false, refreshError: null, models: [{ id: "openai:gpt-legacy", model: "gpt-legacy", configured: true, qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" }, eligible: true, tier: "workhorse" }] }];
+    await writeFile(path, JSON.stringify(seed), "utf8");
+    const restored = new FileSarathiStore(path).snapshot();
+    expect(restored.providerCatalogs[0]?.models[0]).toMatchObject({ configured: true, enabled: false, eligible: false });
+  });
+
   test("custom non-loopback endpoints disclose UNMEASURED transport security", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-security-")); resources.push(() => rm(directory, { recursive: true, force: true }));
     const adapter = new CustomOpenAICompatibleProviderAdapter({ endpoint: "http://lan-host:8080/v1", models: [{ model: "custom-model", enabled: true, configured: true, tier: "unclassified", qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" } }] });
@@ -85,5 +140,44 @@ describe("local, paid, aggregate, and Auto provider routes", () => {
     expect(result).toMatchObject({ status: "completed", resolvedExecutionPlan: { route: { provider: "ollama", model: "local-economy" }, selection: { classification: "economy", operatorOverride: false } } });
     expect(result.resolvedExecutionPlan.selection.reason).toMatch(/lowest adequate economy/);
     expect(JSON.stringify((await app.inject({ method: "GET", url: "/api/sarathi/dashboard" })).json())).not.toContain("secret");
+  });
+
+  test("Auto invokes the classifier only for ambiguity and persists its selected result", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-auto-classifier-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    let calls = 0;
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), providerAdapters: [new OllamaProviderAdapter({ transport: transport("economy-model", "economy") }), new OllamaProviderAdapter({ transport: transport("frontier-model", "frontier") })], autoRouting: { classifier: async () => { calls += 1; return "frontier"; } } });
+    resources.push(() => app.close()); await app.ready();
+    const route: ResolvedRoute = { runtime: "auto", provider: "auto", model: "auto", billingMode: "unmeasured" };
+    const response = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "please help", routePolicy: { primary: route } } });
+    expect(response.statusCode).toBe(202);
+    const result = await eventually(app, response.json().taskId);
+    expect(calls).toBe(1);
+    expect(result.resolvedExecutionPlan).toMatchObject({ route: { model: "frontier-model" }, selection: { classification: "frontier", classificationEvidence: "optional classifier result" } });
+  });
+
+  test("Auto does not invoke the classifier for deterministic classifications", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-auto-classifier-skip-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    let calls = 0;
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), providerAdapters: [new OllamaProviderAdapter({ transport: transport("economy-model", "economy") })], autoRouting: { classifier: async () => { calls += 1; return "frontier"; } } });
+    resources.push(() => app.close()); await app.ready();
+    const route: ResolvedRoute = { runtime: "auto", provider: "auto", model: "auto", billingMode: "unmeasured" };
+    const response = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "extract a short list", routePolicy: { primary: route } } });
+    expect(response.statusCode).toBe(202);
+    await eventually(app, response.json().taskId);
+    expect(calls).toBe(0);
+  });
+
+  test("Auto falls back to deterministic ambiguity when its classifier fails", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-auto-classifier-error-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    let calls = 0;
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), providerAdapters: [new OllamaProviderAdapter({ transport: transport("workhorse-model", "workhorse") })], autoRouting: { classifier: async () => { calls += 1; throw new Error("offline"); } } });
+    resources.push(() => app.close()); await app.ready();
+    const route: ResolvedRoute = { runtime: "auto", provider: "auto", model: "auto", billingMode: "unmeasured" };
+    const response = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "please help", routePolicy: { primary: route } } });
+    expect(response.statusCode).toBe(202);
+    const result = await eventually(app, response.json().taskId);
+    expect(calls).toBe(1);
+    expect(result.resolvedExecutionPlan.selection).toMatchObject({ classification: "ambiguous" });
+    expect(result.resolvedExecutionPlan.selection.classificationEvidence).toMatch(/deterministic/);
   });
 });

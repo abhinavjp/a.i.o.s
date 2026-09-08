@@ -77,7 +77,7 @@ export class PermissionEngine {
     if (isConsequential(intent)) {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "operator approval required" };
     }
-    if (rules.some((rule) => rule.decision === "allow")) {
+    if (this.store.matchAndConsumePermissionRule(intent, "allow")) {
       return { outcome: "allowed", reason: "scoped allow" };
     }
     if (isDeterministicallySafe(intent)) {

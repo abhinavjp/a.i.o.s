@@ -8,7 +8,7 @@ export interface ExecutionPlanAdmissionValidator {
 }
 
 export interface FixedRouteSelector {
-  select(plan: ResolvedExecutionPlan): ResolvedExecutionPlan;
+  select(plan: ResolvedExecutionPlan): ResolvedExecutionPlan | Promise<ResolvedExecutionPlan>;
 }
 
 export class IneligibleRouteError extends Error {}
@@ -23,7 +23,7 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
     }
   }
 
-  select(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {
+  async select(plan: ResolvedExecutionPlan): Promise<ResolvedExecutionPlan> {
     if (this.autoSelector && (plan.route.runtime === "auto" || plan.route.provider === "auto" || plan.route.model === "auto")) {
       return this.autoSelector.select(plan);
     }

@@ -58,17 +58,22 @@ function normalizeCatalog(provider: string, discovery: ProviderCatalogDiscovery)
     models: discovery.models.map((model) => ({
       id: `${provider}:${model.model}`,
       model: model.model,
-      enabled: model.enabled ?? model.configured,
+      enabled: defaultModelEnabled(provider, model.configured, model.enabled),
       configured: model.configured,
       qualification: { ...model.qualification },
       tier: model.tier ?? "unclassified",
       ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
       ...(model.modalities === undefined ? {} : { modalities: [...model.modalities] }),
       ...(model.locality === undefined ? {} : { locality: model.locality }),
-      eligible: (model.enabled ?? model.configured) && model.configured &&
+      eligible: defaultModelEnabled(provider, model.configured, model.enabled) &&
         Object.values(model.qualification).every((evidence) => evidence === "qualified")
     })),
     ...(discovery.securityStatus ? { securityStatus: discovery.securityStatus } : {}),
     ...(discovery.credentialReference ? { credentialReference: discovery.credentialReference } : {})
   };
+}
+
+export function defaultModelEnabled(provider: string, configured: boolean, enabled?: boolean): boolean {
+  if (enabled !== undefined) return enabled;
+  return configured && !["openai", "anthropic", "openrouter"].includes(provider);
 }

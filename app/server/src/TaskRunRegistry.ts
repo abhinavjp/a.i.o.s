@@ -27,12 +27,13 @@ export class TaskRunRegistry {
     private readonly resilience?: RouteResilience
   ) {}
 
-  start(agent: AgentAbstraction, task: string, sessionKey: string,
-    routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride } = {}): string {
+  async start(agent: AgentAbstraction, task: string, sessionKey: string,
+    routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride } = {}): Promise<string> {
     const taskId = randomUUID();
     const now = new Date(this.clock.now()).toISOString();
     const resolved = this.planResolver.resolve({ taskId, task, agent, ...routing });
-    const plan = snapshotExecutionPlan(this.fixedRouteSelector?.select(resolved) ?? resolved);
+    const selected = this.fixedRouteSelector ? await this.fixedRouteSelector.select(resolved) : resolved;
+    const plan = snapshotExecutionPlan(selected);
     this.planAdmissionValidator?.validate(plan);
     this.assertSelectedAgentHealthy(agent, plan);
     this.store.create({ taskId, task, sessionKey, chunks: [], status: "running", outcome: null,
@@ -112,8 +113,9 @@ export class TaskRunRegistry {
         const nextRoute = routes[routeIndex + 1];
         if (!nextRoute) { this.finish(input.taskId, outcome); return; }
         const nextPlan = snapshotExecutionPlan({ ...input.plan, route: nextRoute, fallbackRoutes: [] });
-        this.planAdmissionValidator?.validate(nextPlan);
-        plan = snapshotExecutionPlan(this.fixedRouteSelector?.select(nextPlan) ?? nextPlan);
+        const selectedNextPlan = this.fixedRouteSelector ? await this.fixedRouteSelector.select(nextPlan) : nextPlan;
+        plan = snapshotExecutionPlan(selectedNextPlan);
+        this.planAdmissionValidator?.validate(plan);
         this.store.appendHistory(input.taskId, { type: "fallback", from: routes[routeIndex]!, to: nextRoute,
           reason: "Same-route transient retries exhausted at a durable attempt boundary" });
       }

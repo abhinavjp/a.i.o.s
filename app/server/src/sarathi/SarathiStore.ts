@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
+import { defaultModelEnabled } from "./ProviderCatalog.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
 export type SpecialistStatus = "pending_approval" | "active";
@@ -98,6 +99,7 @@ export interface SarathiStore {
   recordProviderCatalog(catalog: ProviderCatalog): SarathiDashboard;
   markProviderCatalogStale(provider: string, refreshError: string): ProviderCatalog | null;
   addPermissionRule(rule: PermissionRule): PermissionRule;
+  matchAndConsumePermissionRule(intent: ToolIntent, decision: PermissionRule["decision"]): PermissionRule | undefined;
   addApproval(approval: ActionBoundApproval): ActionBoundApproval;
   findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
   consumeApproval(id: string): void;
@@ -257,6 +259,21 @@ export class FileSarathiStore implements SarathiStore {
     return clone(rule);
   }
 
+  matchAndConsumePermissionRule(intent: ToolIntent, decision: PermissionRule["decision"]): PermissionRule | undefined {
+    const index = [...this.state.permissions.rules].reverse().findIndex((rule) => rule.decision === decision && matchesPermissionRule(rule, intent));
+    if (index < 0) return undefined;
+    const actualIndex = this.state.permissions.rules.length - 1 - index;
+    const rule = this.state.permissions.rules[actualIndex]!;
+    const remainingUses = rule.remainingUses;
+    if (remainingUses !== null) {
+      this.state.permissions.rules = this.state.permissions.rules.map((candidate, candidateIndex) =>
+        candidateIndex === actualIndex ? { ...candidate, remainingUses: Math.max(0, remainingUses - 1) } : candidate
+      );
+      this.persist();
+    }
+    return clone(rule);
+  }
+
   addApproval(approval: ActionBoundApproval): ActionBoundApproval {
     this.state.permissions.approvals.push(clone(approval));
     this.persist();
@@ -386,7 +403,9 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
     ...catalog,
     models: catalog.models.map((model) => ({
       ...model,
-      enabled: model.enabled ?? model.configured,
+      enabled: defaultModelEnabled(catalog.provider, model.configured, model.enabled),
+      eligible: defaultModelEnabled(catalog.provider, model.configured, model.enabled) && model.configured &&
+        Object.values(model.qualification).every((evidence) => evidence === "qualified"),
       tier: model.tier ?? "unclassified"
     }))
   }));
@@ -434,6 +453,11 @@ function proofDefaults(): RuntimeProof[] {
 function sameIntent(left: ToolIntent, right: ToolIntent): boolean {
   return left.tool === right.tool && left.operation === right.operation && left.target === right.target &&
     JSON.stringify(sorted(left.context)) === JSON.stringify(sorted(right.context));
+}
+
+function matchesPermissionRule(rule: PermissionRule, intent: ToolIntent): boolean {
+  if (rule.remainingUses === 0 || rule.tool !== intent.tool || rule.operation !== intent.operation || rule.target !== intent.target) return false;
+  return Object.entries(rule.context).every(([key, value]) => intent.context[key] === value);
 }
 
 function sorted(context: Readonly<Record<string, string>>): Record<string, string> {

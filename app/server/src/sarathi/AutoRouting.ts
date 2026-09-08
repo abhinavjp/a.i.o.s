@@ -36,7 +36,7 @@ export class AutoRouteSelector {
     private readonly defaults: AutoRoutingOptions = {}
   ) {}
 
-  select(plan: ResolvedExecutionPlan, options: AutoRoutingOptions = {}): ResolvedExecutionPlan {
+  async select(plan: ResolvedExecutionPlan, options: AutoRoutingOptions = {}): Promise<ResolvedExecutionPlan> {
     const effectiveOptions = { ...this.defaults, ...options, requirements: { ...this.defaults.requirements, ...options.requirements } };
     const requested = plan.route;
     if (!isAutoRoute(requested) && !effectiveOptions.override) return plan;
@@ -44,8 +44,9 @@ export class AutoRouteSelector {
       const selection = this.selection(requested, effectiveOptions.override, "operator override", "operator supplied an explicit route", [], true);
       return { ...plan, route: { ...effectiveOptions.override }, selection };
     }
-    const classification = classifyTask(plan.taskText ?? "");
-    const candidates = this.candidates(plan, effectiveOptions.requirements);
+    const classificationResult = await this.classify(plan.taskText ?? "", effectiveOptions.classifier);
+    const classification = classificationResult.classification;
+    const candidates = this.candidates(plan, effectiveOptions.requirements, effectiveOptions.health);
     const adequate = candidates.filter((candidate) => tierRank(candidate.tier) >= requiredTierRank(classification));
     if (!adequate.length) {
       throw new IneligibleRouteError(`Auto route has no eligible model at or above ${classification} complexity.`);
@@ -55,21 +56,24 @@ export class AutoRouteSelector {
     this.resilience?.assertAvailable(selected.route);
     const reason = `auto selected lowest adequate ${selected.tier} tier after filtering ${candidates.length} eligible candidate(s); ${selected.catalog.securityStatus === "unmeasured" ? "transport security UNMEASURED; " : ""}classification=${classification}.`;
     const selection = this.selection(requested, selected.route,
-      reason, classificationEvidence(plan.taskText ?? "", classification), adequate.map((candidate) => candidate.route), false, classification);
+      reason, classificationResult.evidence, adequate.map((candidate) => candidate.route), false, classification);
     return { ...plan, route: { ...selected.route }, selection };
   }
 
   /** Optional classifier hook is deliberately separate; deterministic routing remains available if it fails. */
-  async classify(task: string): Promise<{ classification: AutoComplexity; evidence: string }> {
-    if (this.defaults.classifier) {
-      try { return { classification: await this.defaults.classifier(task), evidence: "optional classifier result" }; }
-      catch { /* classifier failure is not route evidence */ }
+  async classify(task: string, classifier = this.defaults.classifier): Promise<{ classification: AutoComplexity; evidence: string }> {
+    const deterministic = classifyTask(task);
+    if (deterministic !== "ambiguous") {
+      return { classification: deterministic, evidence: classificationEvidence(task, deterministic) };
     }
-    const classification = classifyTask(task);
-    return { classification, evidence: classificationEvidence(task, classification) };
+    if (classifier) {
+      try { return { classification: await classifier(task), evidence: "optional classifier result" }; }
+      catch { return { classification: deterministic, evidence: `${classificationEvidence(task, deterministic)}; optional classifier unavailable` }; }
+    }
+    return { classification: deterministic, evidence: classificationEvidence(task, deterministic) };
   }
 
-  private candidates(plan: ResolvedExecutionPlan, requirements?: AutoRouteRequirements): Array<{ route: ResolvedRoute; tier: ModelTier; catalog: ProviderCatalog }> {
+  private candidates(plan: ResolvedExecutionPlan, requirements?: AutoRouteRequirements, health?: (route: ResolvedRoute) => boolean): Array<{ route: ResolvedRoute; tier: ModelTier; catalog: ProviderCatalog }> {
     const requested = plan.route;
     const catalogs = this.store.snapshot().providerCatalogs;
     const result: Array<{ route: ResolvedRoute; tier: ModelTier; catalog: ProviderCatalog }> = [];
@@ -81,7 +85,7 @@ export class AutoRouteSelector {
         if (!meetsRequirements(model, requirements)) continue;
         const route: ResolvedRoute = { runtime: runtimeForProvider(catalog.provider), provider: catalog.provider,
           model: model.model, billingMode: billingForCatalog(catalog) };
-        if (this.defaults.health && !this.defaults.health(route)) continue;
+        if (health && !health(route)) continue;
         try { this.resilience?.assertAvailable(route); } catch { continue; }
         result.push({ route, tier: model.tier, catalog });
       }
@@ -118,6 +122,7 @@ function classifyTask(task: string): AutoComplexity {
   if (!normalized.trim()) return "ambiguous";
   if (/(architecture|debug|security|threat|multi[- ]step|complex|design|refactor)/.test(normalized) || normalized.length > 900) return "frontier";
   if (/(extract|format|summari[sz]e|translate|classify|rewrite|list|convert)/.test(normalized) && normalized.length < 500) return "economy";
+  if (normalized.trim().split(/\s+/).length <= 3) return "ambiguous";
   return "workhorse";
 }
 

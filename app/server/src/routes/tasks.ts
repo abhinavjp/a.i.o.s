@@ -65,7 +65,7 @@ export function registerTaskRoutes(
 
     let taskId: string;
     try {
-      taskId = registry.start(agent, task, sessionKey, {
+      taskId = await registry.start(agent, task, sessionKey, {
         specialistId: request.body.specialistId,
         workflowId: request.body.workflowId,
         taskPolicy: request.body.routePolicy

@@ -236,7 +236,7 @@ export interface ModelQualification {
 
 export interface DiscoveredProviderModel {
   readonly model: string;
-  /** Omitted legacy discovery records inherit enabled from configured. */
+  /** Omitted discovery defaults to enabled for non-paid providers only; paid routes require explicit enablement. */
   readonly enabled?: boolean;
   readonly configured: boolean;
   readonly qualification: ModelQualification;

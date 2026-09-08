@@ -281,6 +281,36 @@ describe("Sarathi dashboard routes", () => {
     });
   });
 
+  test("consumes a once allow rule atomically across concurrent executions and restart", async () => {
+    await withStore(async (path) => {
+      let executions = 0;
+      const intent = { tool: "workspace", operation: "format_file", target: "notes.md", context: { projectId: "project-a", sessionKey: "session-a" } };
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: {
+          definitions: [{ tool: "workspace", operations: ["format_file"] }],
+          async execute() { executions += 1; await new Promise((resolve) => setTimeout(resolve, 5)); return { output: "formatted" }; }
+        }
+      });
+      await app.inject({ method: "POST", url: "/api/sarathi/permissions/rules", payload: { decision: "allow", ...intent, lifetime: "once" } });
+      const [first, second] = await Promise.all([
+        app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent }),
+        app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent })
+      ]);
+      expect([first.statusCode, second.statusCode].sort()).toEqual([200, 409]);
+      expect(executions).toBe(1);
+      await app.close();
+
+      const restored = new FileSarathiStore(path).snapshot();
+      expect(restored.permissions.rules[0]?.remainingUses).toBe(0);
+      const restarted = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [{ tool: "workspace", operations: ["format_file"] }], async execute() { executions += 1; return { output: "must not run" }; } } });
+      const afterRestart = await restarted.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent });
+      expect(afterRestart.statusCode).toBe(409);
+      expect(executions).toBe(1);
+      await restarted.close();
+    });
+  });
+
   test("mediates a runtime tool request through Sarathi instead of ambient tool authority", async () => {
     await withStore(async (sarathiPath) => {
       let runtimeToolResult: unknown;
