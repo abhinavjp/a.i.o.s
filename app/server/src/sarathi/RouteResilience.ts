@@ -24,15 +24,30 @@ export class RouteResilience {
 
   failure(route: ResolvedRoute, failure?: RuntimeFailure): void {
     const previous = this.find(route);
-    // Late results from previously admitted work are not recovery evidence.
-    if (previous?.state === "open") return;
     if (!failure) { this.success(route); return; }
+    // A later permanent failure upgrades an already-open transient/quota
+    // circuit; late results cannot otherwise weaken open state.
+    if (previous?.state === "open") {
+      if (failure.kind === "authentication" || failure.kind === "configuration" ||
+        (failure.kind === "quota" && previous.failureKind !== "authentication" && previous.failureKind !== "configuration")) {
+        this.recordOpenFailure(route, failure);
+      }
+      return;
+    }
     const consecutiveFailures = failure.kind === "transient" ? (previous?.failureKind === "transient" ? previous.consecutiveFailures : 0) + 1 : 0;
     const open = failure.kind === "transient" ? consecutiveFailures >= 3 : ["authentication", "configuration", "quota"].includes(failure.kind);
     const reportedReset = failure.resetAt && Number.isFinite(Date.parse(failure.resetAt)) ? failure.resetAt : null;
     this.store.recordCircuit({ route, state: open ? "open" : "closed", failureKind: failure.kind, consecutiveFailures,
       openedAt: open ? new Date(this.clock.now()).toISOString() : null,
       retryAt: open && failure.kind === "transient" ? new Date(this.clock.now() + 60_000).toISOString() : failure.kind === "quota" ? reportedReset : null });
+  }
+
+  private recordOpenFailure(route: ResolvedRoute, failure: RuntimeFailure): void {
+    const retryAt = failure.kind === "quota" && failure.resetAt && Number.isFinite(Date.parse(failure.resetAt))
+      ? failure.resetAt
+      : null;
+    this.store.recordCircuit({ route, state: "open", failureKind: failure.kind, consecutiveFailures: 0,
+      openedAt: new Date(this.clock.now()).toISOString(), retryAt });
   }
 
   success(route: ResolvedRoute, recovered = false): void {

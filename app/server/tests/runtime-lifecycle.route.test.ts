@@ -8,6 +8,7 @@ import type { ResolvedRoute, RuntimeRouter, ToolIntent } from "@aios/contracts";
 import { buildApp, type BuildAppOptions } from "../src/app.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
+import { RouteResilience } from "../src/sarathi/RouteResilience.js";
 
 const root = "/api/agents/active/tasks";
 const primary: ResolvedRoute = { runtime: "fake", provider: "test", model: "primary", billingMode: "fake" };
@@ -262,6 +263,35 @@ describe("durable runtime lifecycle through Fastify", () => {
     expect(result.attempts).toHaveLength(2);
     expect(keys).toHaveLength(2);
     expect(keys[0]).toBe(keys[1]);
+  });
+
+  test("does not deduplicate two legitimate same-intent calls in one attempt", async () => {
+    let effects = 0;
+    const f = await fixture({ async *run(input) {
+      await input.executeTool(readIntent);
+      await input.executeTool(readIntent);
+      yield { type: "terminal", outcome: { status: "completed" } };
+    } }, { permissionTools: { definitions: [{ tool: "files", operations: ["read"], idempotent: true }],
+      execute: async () => { effects++; return { output: `read-${effects}` }; } } });
+    const result = await f.done((await f.submit()).json().taskId);
+    expect(result.status).toBe("completed");
+    expect(effects).toBe(2);
+    expect(result.canonicalHistory.filter((event: any) => event.type === "tool-result")).toHaveLength(2);
+  });
+
+  test("upgrades an open transient circuit when a later permanent failure is observed", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-circuit-"));
+    resources.push(() => rm(directory, { recursive: true, force: true }));
+    const store = new FileSarathiStore(join(directory, "sarathi.json"));
+    const clock = new ControlledClock();
+    const resilience = new RouteResilience(store, clock);
+    resilience.failure(primary, { kind: "transient" });
+    resilience.failure(primary, { kind: "transient" });
+    resilience.failure(primary, { kind: "transient" });
+    resilience.failure(primary, { kind: "authentication" });
+    clock.time += 60_000;
+    expect(() => resilience.assertAvailable(primary)).toThrow(/authentication/);
+    expect(store.snapshot().routeCircuits[0]).toMatchObject({ state: "open", failureKind: "authentication", retryAt: null });
   });
 
   test("unreported quota reset remains blocked after policy edits and time passage", async () => {

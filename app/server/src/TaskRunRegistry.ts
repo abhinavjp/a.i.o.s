@@ -123,6 +123,7 @@ export class TaskRunRegistry {
   private async runAttempt(input: Execution): Promise<TaskOutcome> {
     const attempt = this.store.get(input.taskId)!.attempts!.at(-1)!;
     const tools = new Map<string, Promise<ToolExecutionResult>>();
+    const invocationCounts = new Map<string, number>();
     const controller = new AbortController();
     const abort = () => controller.abort();
     input.signal.addEventListener("abort", abort, { once: true });
@@ -133,7 +134,10 @@ export class TaskRunRegistry {
         canonicalHistory: this.store.get(input.taskId)!.canonicalHistory ?? [], retryPolicy: { maxRetries: 0 },
         executeTool: (intent) => {
           controller.signal.throwIfAborted();
-          const key = toolKey(input.taskId, intent);
+          const fingerprint = toolFingerprint(intent);
+          const occurrence = (invocationCounts.get(fingerprint) ?? 0) + 1;
+          invocationCounts.set(fingerprint, occurrence);
+          const key = toolKey(input.taskId, intent, occurrence);
           if (!tools.has(key)) tools.set(key, this.executeTool(input.taskId, intent, key, controller.signal));
           return tools.get(key)!;
         }
@@ -214,7 +218,10 @@ export class TaskRunRegistry {
 
 function cancelledOutcome(): TaskOutcome { return { status: "cancelled", message: "Stopped by operator; partial output retained" }; }
 function errorMessage(error: unknown): string { return error instanceof Error ? error.message : "runtime execution failed"; }
-function toolKey(taskId: string, intent: ToolIntent): string {
-  const canonical = JSON.stringify([intent.tool, intent.operation, intent.target, Object.entries(intent.context).sort(([a], [b]) => a.localeCompare(b))]);
+function toolFingerprint(intent: ToolIntent): string {
+  return JSON.stringify([intent.tool, intent.operation, intent.target, Object.entries(intent.context).sort(([a], [b]) => a.localeCompare(b))]);
+}
+function toolKey(taskId: string, intent: ToolIntent, occurrence: number): string {
+  const canonical = `${toolFingerprint(intent)}:${occurrence}`;
   return `sarathi:${taskId}:${createHash("sha256").update(canonical).digest("hex")}`;
 }
