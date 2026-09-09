@@ -38,4 +38,3 @@ describe("opt-in live proof harness", () => {
     expect(dashboard.proofs.find((proof: any) => proof.route === "ollama").status).toBe("passed");
   });
 });
-

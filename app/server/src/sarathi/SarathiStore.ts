@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
-import { defaultModelEnabled } from "./ProviderCatalog.js";
+import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
 export type SpecialistStatus = "pending_approval" | "active";
@@ -404,8 +404,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
     models: catalog.models.map((model) => ({
       ...model,
       enabled: defaultModelEnabled(catalog.provider, model.configured, model.enabled),
-      eligible: defaultModelEnabled(catalog.provider, model.configured, model.enabled) && model.configured &&
-        Object.values(model.qualification).every((evidence) => evidence === "qualified"),
+      eligible: isModelEligible(catalog.provider, model),
       tier: model.tier ?? "unclassified"
     }))
   }));

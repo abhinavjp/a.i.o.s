@@ -1,4 +1,4 @@
-import type { ProviderCatalog, ProviderCatalogAdapter, ProviderCatalogDiscovery } from "@aios/contracts";
+import type { DiscoveredProviderModel, ProviderCatalog, ProviderCatalogAdapter, ProviderCatalogDiscovery } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
 
 export interface ProviderCatalogRefresh {
@@ -65,8 +65,7 @@ function normalizeCatalog(provider: string, discovery: ProviderCatalogDiscovery)
       ...(model.contextWindow === undefined ? {} : { contextWindow: model.contextWindow }),
       ...(model.modalities === undefined ? {} : { modalities: [...model.modalities] }),
       ...(model.locality === undefined ? {} : { locality: model.locality }),
-      eligible: defaultModelEnabled(provider, model.configured, model.enabled) &&
-        Object.values(model.qualification).every((evidence) => evidence === "qualified")
+      eligible: isModelEligible(provider, model)
     })),
     ...(discovery.securityStatus ? { securityStatus: discovery.securityStatus } : {}),
     ...(discovery.credentialReference ? { credentialReference: discovery.credentialReference } : {})
@@ -76,4 +75,9 @@ function normalizeCatalog(provider: string, discovery: ProviderCatalogDiscovery)
 export function defaultModelEnabled(provider: string, configured: boolean, enabled?: boolean): boolean {
   if (enabled !== undefined) return enabled;
   return configured && !["openai", "anthropic", "openrouter"].includes(provider);
+}
+
+export function isModelEligible(provider: string, model: DiscoveredProviderModel): boolean {
+  return defaultModelEnabled(provider, model.configured, model.enabled) && model.configured &&
+    Object.values(model.qualification).every((evidence) => evidence === "qualified");
 }

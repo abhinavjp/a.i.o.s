@@ -115,4 +115,3 @@ describe("provider runtime adapters through the public app boundary", () => {
     expect(seen[0]).toMatchObject({ model: "sdk-model", retryPolicy: { maxRetries: 0 }, tools: tools.definitions });
   });
 });
-

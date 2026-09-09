@@ -151,4 +151,3 @@ function billingForCatalog(catalog: ProviderCatalog): ResolvedRoute["billingMode
   if (["openai", "anthropic", "openrouter", "custom-openai-compatible"].includes(catalog.provider)) return "api";
   return "unmeasured";
 }
-

@@ -82,6 +82,29 @@ describe("local, paid, aggregate, and Auto provider routes", () => {
     ]);
   });
 
+  test("fresh discovery keeps an enabled but unconfigured qualified model ineligible", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-fresh-ineligible-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    const app = buildApp(manager(), {
+      taskStore: new FileTaskStore(join(directory, "tasks.json")),
+      sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
+      providerCatalogAdapters: [{
+        provider: "fresh-provider",
+        async discover() {
+          return {
+            authenticationMode: "none" as const,
+            provenance: "fresh fully-qualified test discovery",
+            observedAt: "2026-09-09T00:00:00.000Z",
+            completeness: "complete" as const,
+            models: [{ model: "fresh-model", enabled: true, configured: false, qualification: { health: "qualified" as const, streaming: "qualified" as const, structuredOutput: "qualified" as const, toolCalling: "qualified" as const } }]
+          };
+        }
+      }]
+    });
+    resources.push(() => app.close()); await app.ready();
+    const catalog = (await app.inject({ method: "GET", url: "/api/sarathi/providers/catalogs" })).json()[0];
+    expect(catalog.models[0]).toMatchObject({ enabled: true, configured: false, eligible: false });
+  });
+
   test("Auto excludes a paid provider whose enabled field was omitted", async () => {
     const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-paid-auto-")); resources.push(() => rm(directory, { recursive: true, force: true }));
     process.env.OPENAI_TEST_KEY = "secret";
@@ -115,6 +138,19 @@ describe("local, paid, aggregate, and Auto provider routes", () => {
     await writeFile(path, JSON.stringify(seed), "utf8");
     const restored = new FileSarathiStore(path).snapshot();
     expect(restored.providerCatalogs[0]?.models[0]).toMatchObject({ configured: true, enabled: false, eligible: false });
+  });
+
+  test("restart normalization keeps a stale enabled but unconfigured qualified model ineligible", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "sarathi-provider-stale-ineligible-")); resources.push(() => rm(directory, { recursive: true, force: true }));
+    const path = join(directory, "sarathi.json");
+    const seed = new FileSarathiStore(path).snapshot();
+    seed.providerCatalogs = [{ provider: "stale-provider", authenticationMode: "none", provenance: "stale persisted catalog", observedAt: "2026-09-08T00:00:00.000Z", completeness: "complete", stale: true, refreshError: "offline", models: [{ id: "stale-provider:stale-model", model: "stale-model", enabled: true, configured: false, qualification: { health: "qualified", streaming: "qualified", structuredOutput: "qualified", toolCalling: "qualified" }, eligible: true, tier: "workhorse" }] }];
+    await writeFile(path, JSON.stringify(seed), "utf8");
+    const app = buildApp(manager(), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(path) });
+    resources.push(() => app.close()); await app.ready();
+    const catalog = (await app.inject({ method: "GET", url: "/api/sarathi/providers/catalogs" })).json()[0];
+    expect(catalog).toMatchObject({ stale: true, refreshError: "offline" });
+    expect(catalog.models[0]).toMatchObject({ enabled: true, configured: false, eligible: false });
   });
 
   test("custom non-loopback endpoints disclose UNMEASURED transport security", async () => {

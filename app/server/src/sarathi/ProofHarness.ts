@@ -24,4 +24,3 @@ export class OptInProofHarness implements LiveProofHarness {
     }
   }
 }
-
