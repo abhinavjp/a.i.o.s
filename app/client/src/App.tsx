@@ -1,9 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentInfo,
+  CanonicalHistoryEntry,
+  RouteCircuit,
   HealthStatus,
   TaskOutcome,
-  TaskTerminalStatus
+  TaskTerminalStatus,
+  RuntimeAttribution,
+  RuntimeProof,
+  RuntimeUsage
 } from "@aios/contracts";
 import "./App.css";
 
@@ -14,10 +19,33 @@ type Dashboard = {
   runtime: {
     name: string;
     state: "unavailable" | "unverified" | "ready";
-    billingMode: "subscription-only";
+    billingMode: "fake" | "subscription-only" | "api" | "unmeasured";
     reason: string;
   };
   controls: { manualPaused: boolean; changedAt: string | null };
+  routing: { policies: Array<{ scope: "global" | "specialist" | "workflow" | "task"; id: string; version: string }> };
+  providerCatalogs: Array<{
+    provider: string;
+    authenticationMode: "none" | "subscription" | "environment-reference" | "unmeasured";
+    provenance: string;
+    observedAt: string;
+    completeness: "complete" | "incomplete";
+    stale: boolean;
+    refreshError: string | null;
+    securityStatus?: "measured" | "unmeasured";
+    credentialReference?: string;
+    models: Array<{
+      id: string;
+      model: string;
+      enabled: boolean;
+      configured: boolean;
+      eligible: boolean;
+      tier?: string;
+      contextWindow?: number | "unknown";
+      qualification: { health: string; streaming: string; structuredOutput: string; toolCalling: string };
+    }>;
+  }>;
+  routeCircuits: RouteCircuit[];
   discovery: {
     status: "blocked" | "ready";
     reason: string;
@@ -47,8 +75,19 @@ type Dashboard = {
   recentTasks: Array<{
     id: string;
     title: string;
-    status: "completed" | "failed" | "blocked" | "unavailable";
+    status: "queued" | "running" | "completed" | "failed" | "blocked" | "unavailable" | "cancelled";
+    runtime: string;
+    planId: string;
+    attemptId: string;
+    evidence: string | null;
+    selectionReason: string | null;
+    retryCount?: number;
+    fallbackCount?: number;
+    outcomeMessage?: string | null;
+    usage?: RuntimeUsage;
+    attribution?: RuntimeAttribution;
   }>;
+  proofs: RuntimeProof[];
   groups: Array<{ id: string; label: string; status: "unresolved" | "ready" | "blocked" }>;
   reviewRounds: Array<{ id: string; label: string; status: "draft" | "blocked" | "published" }>;
   actionBatches: Array<{
@@ -62,6 +101,9 @@ type Dashboard = {
 type Specialist = Dashboard["specialists"][number];
 
 const LAST_TASK_STORAGE_KEY = "lastTaskId";
+const DEFAULT_PROOFS: RuntimeProof[] = ["codex", "claude", "ollama", "custom-openai-compatible", "openai", "anthropic", "openrouter"].map((route) => ({
+  route: route as RuntimeProof["route"], status: "UNMEASURED", reason: "Live contract proof is opt-in and has not been authorized on this host.", checkedAt: null
+}));
 
 const DEFAULT_DASHBOARD: Dashboard = {
   runtime: {
@@ -71,6 +113,10 @@ const DEFAULT_DASHBOARD: Dashboard = {
     reason: "Native runtime launch is not verified on this host."
   },
   controls: { manualPaused: false, changedAt: null },
+  routing: { policies: [] },
+  providerCatalogs: [],
+  routeCircuits: [],
+  proofs: DEFAULT_PROOFS,
   discovery: {
     status: "blocked",
     reason: "GitLab adapter not configured; no external reads attempted.",
@@ -99,10 +145,14 @@ function parseTaskOutcome(data: string): TaskOutcome {
         status === "completed" ||
         status === "failed" ||
         status === "blocked" ||
+        status === "cancelled" ||
         status === "unavailable"
       ) {
         const message = (parsed as { message?: unknown }).message;
-        return typeof message === "string" ? { status, message } : { status };
+        const failure = (parsed as { failure?: TaskOutcome["failure"] }).failure;
+        const usage = (parsed as { usage?: RuntimeUsage }).usage;
+        const attribution = (parsed as { attribution?: RuntimeAttribution }).attribution;
+        return { status, ...(typeof message === "string" ? { message } : {}), ...(failure ? { failure } : {}), ...(usage ? { usage } : {}), ...(attribution ? { attribution } : {}) };
       }
     }
   } catch {
@@ -114,6 +164,30 @@ function parseTaskOutcome(data: string): TaskOutcome {
 
 function statusLabel(status: string): string {
   return status.replaceAll("_", " ");
+}
+
+function formatUsage(usage?: RuntimeUsage): string {
+  if (!usage) return "usage unknown";
+  const tokens = [usage.inputTokens, usage.outputTokens].every((value) => typeof value === "number")
+    ? `${usage.inputTokens} in · ${usage.outputTokens} out tokens` : "tokens unknown";
+  const cost = usage.cost === "unknown" ? "cost unknown" : `${usage.costKind} cost ${usage.cost}${usage.currency ? ` ${usage.currency}` : ""}`;
+  return `${tokens} · ${cost}`;
+}
+
+function describeHistory(entry: CanonicalHistoryEntry): string {
+  switch (entry.type) {
+    case "message": return `${entry.role}: ${entry.text}`;
+    case "tool-intent": return `${entry.intent.tool}: ${entry.intent.operation} ${entry.intent.target}`;
+    case "permission-decision": return `Permission: ${entry.decision.outcome} · ${entry.decision.reason}`;
+    case "tool-result": return `Tool result: ${entry.result.output ?? entry.result.error ?? entry.result.decision.outcome}`;
+    case "attempt-started": return `Attempt started: ${entry.route.provider}/${entry.route.model}`;
+    case "attempt-finished": return `Attempt finished: ${entry.outcome.status}`;
+    case "retry": return `Retry ${entry.retryNumber} after ${entry.delayMs} ms`;
+    case "fallback": return `Fallback: ${entry.to.provider}/${entry.to.model} · ${entry.reason}`;
+    case "tool-started": return "Tool execution started";
+    case "cancellation-requested": return "Operator requested cancellation";
+    case "outcome": return `Outcome: ${entry.outcome.status} · ${entry.outcome.message ?? ""}`;
+  }
 }
 
 function formatToday(): string {
@@ -129,7 +203,12 @@ export function App() {
   const [agents, setAgents] = useState<AgentListItem[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>(DEFAULT_DASHBOARD);
   const [task, setTask] = useState("");
+  const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
   const [status, setStatus] = useState<RunStatus>("idle");
+  const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
+  const [isStopping, setIsStopping] = useState(false);
+  const [executionMessage, setExecutionMessage] = useState<string | null>(null);
+  const [history, setHistory] = useState<CanonicalHistoryEntry[] | null>(null);
   const [output, setOutput] = useState<string[]>([]);
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [isSpecialistFormOpen, setIsSpecialistFormOpen] = useState(false);
@@ -139,12 +218,18 @@ export function App() {
     runtime: "unselected"
   });
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
+  const [routeDraft, setRouteDraft] = useState({ scope: "global" as "global" | "specialist" | "workflow", id: "", primaryModel: "fake", fallbackModel: "", overridePrimary: true, overrideFallback: false });
+  const [routeMessage, setRouteMessage] = useState<string | null>(null);
+  const [proofMessage, setProofMessage] = useState<string | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const dashboardRefreshGeneration = useRef(0);
 
   function openTaskStream(taskId: string) {
     eventSourceRef.current?.close();
     setOutput([]);
     setStatus("running");
+    setActiveTaskId(taskId);
+    setExecutionMessage(null);
     localStorage.setItem(LAST_TASK_STORAGE_KEY, taskId);
 
     const eventSource = new EventSource(`/api/agents/active/tasks/${taskId}/stream`);
@@ -158,15 +243,18 @@ export function App() {
       const outcome = parseTaskOutcome((event as MessageEvent<string>).data);
       eventSource.close();
       setStatus(outcome.status);
+      void refreshDashboard();
     });
   }
 
   async function refreshDashboard() {
+    const generation = dashboardRefreshGeneration.current + 1;
+    dashboardRefreshGeneration.current = generation;
     try {
       const response = await fetch("/api/sarathi/dashboard");
       const next = (await response.json()) as Partial<Dashboard>;
-      if (Array.isArray(next.tickets) && next.runtime && next.discovery) {
-        setDashboard(next as Dashboard);
+      if (generation === dashboardRefreshGeneration.current && Array.isArray(next.tickets) && next.runtime && next.discovery) {
+        setDashboard({ ...DEFAULT_DASHBOARD, ...next, providerCatalogs: next.providerCatalogs ?? [], proofs: next.proofs ?? DEFAULT_PROOFS });
       }
     } catch {
       // Keep the explicit local fallback while the API is down.
@@ -193,9 +281,26 @@ export function App() {
     const response = await fetch("/api/agents/active/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task })
+      body: JSON.stringify({
+        task,
+        ...(taskRouting.specialistId.trim() ? { specialistId: taskRouting.specialistId.trim() } : {}),
+        ...(taskRouting.workflowId.trim() ? { workflowId: taskRouting.workflowId.trim() } : {}),
+        ...(taskRouting.overridePrimary || taskRouting.overrideFallback ? {
+          routePolicy: {
+            ...(taskRouting.overridePrimary ? { primary: { runtime: "fake", provider: "test", model: taskRouting.primaryModel, billingMode: "fake" } } : {}),
+            ...(taskRouting.overrideFallback ? { fallbacks: taskRouting.fallbackModel ? [{ runtime: "fake", provider: "test", model: taskRouting.fallbackModel, billingMode: "fake" }] : [] } : {})
+          }
+        } : {})
+      })
     });
-    const { taskId } = await response.json();
+    const next = (await response.json()) as { taskId?: string; error?: string };
+    if (!response.ok || !next.taskId) {
+      setOutput([next.error ?? "Task route was rejected before runtime work started."]);
+      setStatus("unavailable");
+      return;
+    }
+    const { taskId } = next;
+    void refreshDashboard();
     openTaskStream(taskId);
   }
 
@@ -223,6 +328,61 @@ export function App() {
     } finally {
       setIsRefreshing(false);
     }
+  }
+
+  async function stopTask() {
+    if (!activeTaskId) return;
+    const source = eventSourceRef.current;
+    setIsStopping(true);
+    try {
+      const response = await fetch(`/api/agents/active/tasks/${activeTaskId}/cancel`, { method: "POST" });
+      const result = await response.json();
+      if (eventSourceRef.current !== source) return;
+      if (!response.ok || !result.outcome) throw new Error(result.error ?? "Task could not be stopped");
+      eventSourceRef.current?.close();
+      setStatus(parseTaskOutcome(JSON.stringify(result.outcome)).status);
+      setOutput(result.chunks);
+      void refreshDashboard();
+    } catch (error) {
+      if (eventSourceRef.current === source) setExecutionMessage(error instanceof Error ? error.message : "Task could not be stopped");
+    } finally { setIsStopping(false); }
+  }
+
+  async function viewHistory(taskId: string) {
+    try {
+      const response = await fetch(`/api/agents/active/tasks/${taskId}`);
+      if (!response.ok) throw new Error("Task history unavailable");
+      setHistory((await response.json()).canonicalHistory ?? []);
+    } catch { setExecutionMessage("Task history unavailable"); }
+  }
+
+  async function refreshProviderCatalog(provider: string) {
+    setIsRefreshing(true);
+    try {
+      const response = await fetch(`/api/sarathi/providers/${encodeURIComponent(provider)}/catalog/refresh`, { method: "POST" });
+      const next = await response.json();
+      if (next.catalog) {
+        setDashboard((current) => ({
+          ...current,
+          providerCatalogs: current.providerCatalogs.map((catalog) =>
+            catalog.provider === provider ? next.catalog : catalog
+          )
+        }));
+      }
+    } finally {
+      setIsRefreshing(false);
+    }
+  }
+
+  async function runProof(route: RuntimeProof["route"]) {
+    setProofMessage(null);
+    const response = await fetch(`/api/sarathi/proofs/${encodeURIComponent(route)}`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ optIn: true })
+    });
+    const next = await response.json() as { proof?: RuntimeProof; error?: string };
+    if (!response.ok || !next.proof) { setProofMessage(next.error ?? "Proof could not run."); return; }
+    setDashboard((current) => ({ ...current, proofs: [...current.proofs.filter((proof) => proof.route !== route), next.proof!] }));
+    setProofMessage(`${route}: ${next.proof.status}`);
   }
 
   async function handleCreateSpecialist(event: React.FormEvent<HTMLFormElement>) {
@@ -264,8 +424,36 @@ export function App() {
     setSpecialistMessage(`${next.specialist.name} is active.`);
   }
 
+  async function saveRoutePolicy(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    if (routeDraft.scope !== "global" && !routeDraft.id.trim()) {
+      setRouteMessage("Name the specialist or workflow.");
+      return;
+    }
+    const route = (model: string) => ({ runtime: "fake", provider: "test", model, billingMode: "fake" });
+    const response = await fetch(
+      `/api/sarathi/routing/policies/${routeDraft.scope}${routeDraft.scope === "global" ? "" : `/${encodeURIComponent(routeDraft.id)}`}`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          ...(routeDraft.overridePrimary ? { primary: route(routeDraft.primaryModel) } : {}),
+          ...(routeDraft.overrideFallback ? { fallbacks: routeDraft.fallbackModel ? [route(routeDraft.fallbackModel)] : [] } : {})
+        })
+      }
+    );
+    if (!response.ok) {
+      setRouteMessage("Route policy was rejected.");
+      return;
+    }
+    const next = await response.json();
+    setDashboard((current) => ({ ...current, routing: next.routing }));
+    setRouteMessage(`Saved ${next.policy.version}; active tasks remain pinned.`);
+  }
+
   const blockedTickets = dashboard.tickets.filter((ticket) => ticket.status === "blocked");
   const activeAgent = agents[0];
+  const latestUsage = dashboard.recentTasks.find((task) => task.usage)?.usage;
   const todayLabel = formatToday();
 
   return (
@@ -306,7 +494,7 @@ export function App() {
           <div className="signal-cell"><span>Work in motion</span><strong>{status === "running" ? "1" : "0"}</strong><small>local task</small></div>
           <div className="signal-cell"><span>Waiting on you</span><strong>{blockedTickets.length}</strong><small>gates in view</small></div>
           <div className="signal-cell"><span>Remote effects</span><strong>0</strong><small>no fixture armed</small></div>
-          <div className="signal-cell"><span>Usage</span><strong>—</strong><small>not measured</small></div>
+          <div className="signal-cell"><span>Usage</span><strong>{latestUsage?.outputTokens ?? "—"}</strong><small>{latestUsage ? formatUsage(latestUsage) : "unknown until reported"}</small></div>
         </section>
 
         <div className="content-grid">
@@ -315,13 +503,36 @@ export function App() {
 
             <section className="panel review-panel" id="review"><div className="panel-heading"><div><span className="eyebrow">Review queue</span><h2>Assigned merge requests</h2></div><button className="text-button" type="button" onClick={checkNow} disabled={isRefreshing}>Check now <span>↗</span></button></div>{dashboard.discovery.status === "blocked" ? <div className="blocked-state"><div className="blocked-icon">!</div><div><strong>Discovery is waiting for a real adapter.</strong><p>{dashboard.discovery.reason}</p></div><span className="state-chip blocked">blocked</span></div> : dashboard.discovery.mergeRequests.length === 0 ? <div className="empty-state"><span>◌</span><p>No assigned merge requests in this check.</p></div> : <div className="mr-list">{dashboard.discovery.mergeRequests.map((mergeRequest) => <div className="mr-row" key={mergeRequest.id}><strong>{mergeRequest.title}</strong><span>{mergeRequest.project}</span><span>{mergeRequest.role}</span><span>{mergeRequest.coverage}</span></div>)}</div>}</section>
 
-            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div></form>{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
+            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div><div className="task-routing"><label htmlFor="task-specialist">Specialist ID<input id="task-specialist" value={taskRouting.specialistId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, specialistId: event.target.value }))} placeholder="optional specialist id" /></label><label htmlFor="task-workflow">Workflow ID<input id="task-workflow" value={taskRouting.workflowId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, workflowId: event.target.value }))} placeholder="optional workflow id" /></label><label><input type="checkbox" checked={taskRouting.overridePrimary} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override task primary</label>{taskRouting.overridePrimary && <label htmlFor="task-primary">Primary override model<input id="task-primary" value={taskRouting.primaryModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={taskRouting.overrideFallback} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override task fallback chain</label>{taskRouting.overrideFallback && <label htmlFor="task-fallback">Fallback override model (blank clears)<input id="task-fallback" value={taskRouting.fallbackModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}</div></form>{status === "running" && <button type="button" onClick={() => void stopTask()} disabled={isStopping}>{isStopping ? "Stopping…" : "Stop task"}</button>}{executionMessage && <p role="alert">{executionMessage}</p>}{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
+
+            <section className="panel execution-panel" aria-label="Execution evidence">
+              <div className="panel-heading"><div><span className="eyebrow">Durable execution</span><h2>Latest runtime evidence</h2></div></div>
+              {dashboard.recentTasks.length === 0 ? <p className="panel-note subtle">No routed attempts recorded.</p> : <div className="gate-list">{dashboard.recentTasks.map((attempt) =>
+                <div className="gate-row" key={attempt.id}><span className="gate-index">{statusLabel(attempt.status)}</span><div>
+                  <strong>{attempt.title}</strong><small>{attempt.runtime} · plan {attempt.planId} · attempt {attempt.attemptId}</small>
+                  {attempt.selectionReason && <small>{attempt.selectionReason}</small>}{attempt.evidence && <small>{attempt.evidence}</small>}
+                   <small>Retries: {attempt.retryCount ?? 0} · Fallbacks: {attempt.fallbackCount ?? 0}</small>
+                   <small>{formatUsage(attempt.usage)}{attempt.attribution?.providerRequestId ? ` · request ${attempt.attribution.providerRequestId}` : ""}{attempt.attribution?.effectiveProvider ? ` · effective ${attempt.attribution.effectiveProvider}/${attempt.attribution.effectiveModel ?? "unknown"}` : ""}</small>
+                  {attempt.outcomeMessage && <small>{attempt.outcomeMessage}</small>}
+                  <button type="button" onClick={() => void viewHistory(attempt.id)}>View history</button>
+                </div><span className="state-chip">{statusLabel(attempt.status)}</span></div>)}</div>}
+              {dashboard.routeCircuits.map((circuit) => <p className="panel-note" key={JSON.stringify(circuit.route)}>
+                {circuit.route.provider}/{circuit.route.model}: {circuit.state} · {circuit.failureKind ?? "healthy"}{circuit.state === "open" ? ` · ${circuit.retryAt ? `Retry after ${circuit.retryAt}` : "Repair configuration or run a successful probe"}` : ""}
+              </p>)}
+              {history && <ol aria-label="Canonical task history">{history.map((entry) => <li key={entry.sequence}>{describeHistory(entry)}</li>)}</ol>}
+            </section>
           </div>
 
           <aside className="side-column">
             <section className="panel gates-panel"><div className="panel-heading"><div><span className="eyebrow">Readiness gates</span><h2>What still needs proof</h2></div><span className="gate-count">{blockedTickets.length}</span></div><div className="gate-list">{blockedTickets.slice(0, 6).map((ticket) => <div className="gate-row" key={ticket.id}><span className="gate-index">{ticket.id}</span><div><strong>{ticket.title}</strong><small>{ticket.reason}</small></div><span className="state-chip blocked">blocked</span></div>)}</div>{blockedTickets.length > 6 && <p className="more-note">+ {blockedTickets.length - 6} more gates in the ticket map</p>}</section>
 
             <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Select after runtime proof</option><option value="fake">Fake test seam</option><option value="hermes">Hermes (unverified)</option></select></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className="state-chip ready">active</span>}</div>)}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
+
+            <section className="panel routing-panel"><div className="panel-heading"><div><span className="eyebrow">Routing policy</span><h2>New work only</h2></div></div><form className="specialist-form" onSubmit={saveRoutePolicy}><label htmlFor="route-scope">Scope<select id="route-scope" value={routeDraft.scope} onChange={(event) => setRouteDraft((draft) => ({ ...draft, scope: event.target.value as "global" | "specialist" | "workflow" }))}><option value="global">Global</option><option value="specialist">Specialist</option><option value="workflow">Workflow</option></select></label>{routeDraft.scope !== "global" && <label htmlFor="route-scope-id">Scope name<input id="route-scope-id" value={routeDraft.id} onChange={(event) => setRouteDraft((draft) => ({ ...draft, id: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overridePrimary} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override primary</label>{routeDraft.overridePrimary && <label htmlFor="route-primary">Primary model<input id="route-primary" value={routeDraft.primaryModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overrideFallback} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override fallback chain</label>{routeDraft.overrideFallback && <label htmlFor="route-fallback">Fallback model (blank clears)<input id="route-fallback" value={routeDraft.fallbackModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}<button className="specialist-submit" type="submit">Save route policy</button></form>{routeMessage && <p className="specialist-message" role="status">{routeMessage}</p>}<p className="panel-note subtle">Task overrides are recorded at admission. Later edits apply only to new tasks.</p></section>
+
+            <section className="panel provider-catalog-panel"><div className="panel-heading"><div><span className="eyebrow">Provider catalogs</span><h2>Observed, not assumed</h2></div></div>{dashboard.providerCatalogs.length === 0 ? <p className="panel-note subtle">No provider catalog observed. Missing evidence is not eligibility.</p> : <div className="catalog-list">{dashboard.providerCatalogs.map((catalog) => <div className="catalog-row" key={catalog.provider}><div><strong>{catalog.provider}</strong><small>{catalog.authenticationMode} · {catalog.completeness} · observed {catalog.observedAt}</small><small>{catalog.provenance}</small>{catalog.credentialReference && <small>credential ref: {catalog.credentialReference}</small>}<small>transport security: {catalog.securityStatus ?? "unknown"}</small>{catalog.refreshError && <small className="catalog-error">Refresh failed: {catalog.refreshError}</small>}</div><div><button className="text-button" type="button" aria-label={`Refresh ${catalog.provider}`} onClick={() => refreshProviderCatalog(catalog.provider)} disabled={isRefreshing}>Refresh</button><span className={`state-chip ${catalog.stale ? "blocked" : "ready"}`}>{catalog.stale ? "stale" : "current"}</span></div><ul>{catalog.models.map((model) => <li key={model.id}><strong>{model.model}</strong><span>{model.enabled ? "enabled" : "not enabled"} · {model.configured ? "configured" : "not configured"} · {model.eligible ? "eligible" : "ineligible"}</span><small>tier {model.tier ?? "unclassified"}; health {model.qualification.health}; stream {model.qualification.streaming}; structured {model.qualification.structuredOutput}; tools {model.qualification.toolCalling}{model.contextWindow ? ` · context ${model.contextWindow}` : ""}</small></li>)}</ul></div>)}</div>}<p className="panel-note subtle">A route must be enabled, configured, healthy, and capability-qualified before it is eligible.</p></section>
+
+            <section className="panel proofs-panel"><div className="panel-heading"><div><span className="eyebrow">Live contract proofs</span><h2>Opt in per route</h2></div></div><div className="proof-list">{dashboard.proofs.map((proof) => <div className="proof-row" key={proof.route}><div><strong>{proof.route}</strong><small>{proof.reason}</small></div><span className={`state-chip ${proof.status === "passed" ? "ready" : proof.status === "UNMEASURED" ? "pending" : "blocked"}`}>{proof.status}</span><button className="text-button" type="button" aria-label={`Check ${proof.route} proof`} onClick={() => void runProof(proof.route)}>Opt-in check</button></div>)}</div>{proofMessage && <p className="panel-note" role="status">{proofMessage}</p>}<p className="panel-note subtle">No proof runs automatically; missing account, credential, endpoint, model, or fixture remains UNMEASURED.</p></section>
 
             <section className="panel runtime-panel"><div className="panel-heading"><div><span className="eyebrow">Runtime</span><h2>Attributable, or stopped</h2></div></div><div className="runtime-card"><div className="runtime-card-top"><span className={`status-dot ${dashboard.runtime.state === "ready" ? "green" : "amber"}`} /><strong>{dashboard.runtime.name}</strong><span className="state-chip">{statusLabel(dashboard.runtime.state)}</span></div><p>{dashboard.runtime.reason}</p>{activeAgent ? <small className="agent-health"><strong>{activeAgent.displayName}</strong><span> · </span><span>{activeAgent.health.ok ? "healthy" : activeAgent.health.reason}</span></small> : <small>Agent health unavailable</small>}</div><div className="runtime-footnote">Billing mode: <strong>{dashboard.runtime.billingMode}</strong></div></section>
           </aside>
