@@ -1,5 +1,5 @@
 import cors from "@fastify/cors";
-import { AgentConfigurator, AgentManager, HermesAgent } from "@aios/agents";
+import { AgentConfigurator, AgentManager, ClaudeCodeAgent, CodexAgent, EngineRegistry, HermesAgent } from "@aios/agents";
 import { buildApp } from "./app.js";
 
 const configurator = new AgentConfigurator();
@@ -12,7 +12,12 @@ configurator.register("hermes", hermesAgent);
 // actually see reality on a cold start, not just the optimistic default.
 await hermesAgent.warmUpHealth();
 
-const manager = new AgentManager(configurator, "hermes");
+const engineRegistry = new EngineRegistry();
+engineRegistry.register("hermes", () => hermesAgent);
+engineRegistry.register("codex", (route) => new CodexAgent(route));
+engineRegistry.register("claude-code", (route) => new ClaudeCodeAgent(route));
+
+const manager = new AgentManager(configurator, "hermes", engineRegistry);
 
 const app = buildApp(manager);
 await app.register(cors, { origin: true });

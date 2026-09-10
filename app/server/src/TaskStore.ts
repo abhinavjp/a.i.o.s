@@ -1,6 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
-import type { TaskOutcome, TaskStatus } from "@aios/contracts";
+import type { EngineReadiness, ResolvedEnginePlan, TaskOutcome, TaskStatus } from "@aios/contracts";
 
 export interface StoredTask {
   taskId: string;
@@ -11,6 +11,10 @@ export interface StoredTask {
   outcome: TaskOutcome | null;
   createdAt: string;
   updatedAt: string;
+  resolvedEnginePlan?: ResolvedEnginePlan;
+  readiness?: EngineReadiness;
+  routingSource?: string;
+  nativeSessionIds?: Record<string, string>;
 }
 
 export interface TaskStore {
@@ -18,6 +22,7 @@ export interface TaskStore {
   create(task: StoredTask): void;
   appendChunk(taskId: string, chunk: string): void;
   complete(taskId: string, outcome: TaskOutcome): void;
+  setNativeSessionId?(taskId: string, engine: string, sessionId: string): void;
 }
 
 const INTERRUPTED_MESSAGE = "task interrupted by backend restart";
@@ -54,6 +59,13 @@ export class FileTaskStore implements TaskStore {
     const record = this.require(taskId);
     record.status = outcome.status;
     record.outcome = { ...outcome };
+    record.updatedAt = new Date().toISOString();
+    this.persist();
+  }
+
+  setNativeSessionId(taskId: string, engine: string, sessionId: string): void {
+    const record = this.require(taskId);
+    record.nativeSessionIds = { ...(record.nativeSessionIds ?? {}), [engine]: sessionId };
     record.updatedAt = new Date().toISOString();
     this.persist();
   }
@@ -112,5 +124,13 @@ function cloneRecord(record: StoredTask): StoredTask {
     outcome: record.outcome ? { ...record.outcome } : null,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
+    ,resolvedEnginePlan: record.resolvedEnginePlan ? clone(record.resolvedEnginePlan) : undefined
+    ,readiness: record.readiness ? { ...record.readiness } : undefined
+    ,routingSource: record.routingSource
+    ,nativeSessionIds: record.nativeSessionIds ? { ...record.nativeSessionIds } : undefined
   };
+}
+
+function clone<T>(value: T): T {
+  return JSON.parse(JSON.stringify(value)) as T;
 }

@@ -1,8 +1,16 @@
 export { AgentConfigurator } from "./AgentConfigurator.js";
 export { AgentManager } from "./AgentManager.js";
+export { EngineRegistry } from "./EngineRegistry.js";
+export { readinessFromHealth, unmeasuredReadiness } from "./EngineReadiness.js";
+export type { EngineFactory } from "./EngineRegistry.js";
+export { NativeProcessRunner } from "./native/NativeProcessRunner.js";
+export type { NativeExecution, NativeProcessResult, NativeProcessRunnerPort } from "./native/NativeProcessRunner.js";
 export { CustomAgent } from "./strategies/CustomAgent.js";
 export { FakeAgent } from "./strategies/FakeAgent.js";
 export { HermesAgent } from "./strategies/HermesAgent.js";
+export { CodexAgent } from "./strategies/CodexAgent.js";
+export { ClaudeCodeAgent } from "./strategies/ClaudeCodeAgent.js";
 export { NullAgent } from "./strategies/NullAgent.js";
 export type { ProcessRunner } from "./strategies/hermes/ProcessRunner.js";
+export type { HermesProcessOptions } from "./strategies/hermes/ProcessRunner.js";
 export { RealProcessRunner } from "./strategies/hermes/RealProcessRunner.js";

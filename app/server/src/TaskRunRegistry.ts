@@ -1,10 +1,18 @@
 import { randomUUID } from "node:crypto";
-import type { AgentAbstraction, TaskOutcome } from "@aios/contracts";
+import type { AgentAbstraction, EngineReadiness, ResolvedEnginePlan, TaskOutcome } from "@aios/contracts";
 import type { TaskStore } from "./TaskStore.js";
 
 interface TaskListener {
   onChunk: (chunk: string) => void;
   onDone: (outcome: TaskOutcome) => void;
+}
+
+export interface TaskAdmissionMetadata {
+  resolvedEnginePlan?: ResolvedEnginePlan;
+  readiness?: EngineReadiness;
+  routingSource?: string;
+  nativeSessionIds?: Record<string, string>;
+  initialOutcome?: TaskOutcome;
 }
 
 /**
@@ -19,7 +27,7 @@ export class TaskRunRegistry {
 
   constructor(private readonly store: TaskStore) {}
 
-  start(agent: AgentAbstraction, task: string, sessionKey: string): string {
+  start(agent: AgentAbstraction, task: string, sessionKey: string, metadata: TaskAdmissionMetadata = {}): string {
     const taskId = randomUUID();
     const now = new Date().toISOString();
     this.store.create({
@@ -31,9 +39,17 @@ export class TaskRunRegistry {
       outcome: null,
       createdAt: now,
       updatedAt: now
+      ,resolvedEnginePlan: metadata.resolvedEnginePlan
+      ,readiness: metadata.readiness
+      ,routingSource: metadata.routingSource
+      ,nativeSessionIds: metadata.nativeSessionIds
     });
 
     void (async () => {
+      if (metadata.initialOutcome) {
+        this.finish(taskId, metadata.initialOutcome);
+        return;
+      }
       let health;
       try {
         health = agent.checkHealth();
@@ -54,6 +70,9 @@ export class TaskRunRegistry {
           this.store.appendChunk(taskId, chunk);
           this.listeners.get(taskId)?.onChunk(chunk);
         }
+        const nativeSessionId = (agent as AgentAbstraction & { getNativeSessionId?: () => string | undefined }).getNativeSessionId?.();
+        const engine = agent.getInfo().kind;
+        if (nativeSessionId) this.store.setNativeSessionId?.(taskId, engine, nativeSessionId);
         this.finish(taskId, { status: "completed" });
       } catch (error) {
         const message = error instanceof Error ? error.message : "task failed";

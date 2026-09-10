@@ -1,10 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type {
   AgentInfo,
+  AgentEngineKind,
+  EngineReadiness,
+  ResolvedEnginePlan,
   HealthStatus,
   TaskOutcome,
   TaskTerminalStatus
 } from "@aios/contracts";
+import { RoutingPage } from "./routing/RoutingPage.js";
 import "./App.css";
 
 type AgentListItem = AgentInfo & { health: HealthStatus };
@@ -139,6 +143,11 @@ export function App() {
     runtime: "unselected"
   });
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
+  const [view, setView] = useState<"command" | "routing">("command");
+  const [taskEngine, setTaskEngine] = useState<"inherit" | AgentEngineKind>("inherit");
+  const [taskConfiguration, setTaskConfiguration] = useState("default");
+  const [taskModel, setTaskModel] = useState("");
+  const [admission, setAdmission] = useState<{ plan?: ResolvedEnginePlan; readiness?: EngineReadiness; outcome?: TaskOutcome } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
   function openTaskStream(taskId: string) {
@@ -190,13 +199,15 @@ export function App() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    const body = taskEngine === "inherit" ? { task } : { task, engineOverride: { primary: { engine: taskEngine, configuration: taskConfiguration, billingMode: "subscription" as const, ...(taskModel ? { model: taskModel } : {}) } } };
     const response = await fetch("/api/agents/active/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ task })
+      body: JSON.stringify(body)
     });
-    const { taskId } = await response.json();
-    openTaskStream(taskId);
+    const result = await response.json() as { taskId: string; resolvedEnginePlan?: ResolvedEnginePlan; readiness?: EngineReadiness; outcome?: TaskOutcome };
+    setAdmission({ plan: result.resolvedEnginePlan, readiness: result.readiness, outcome: result.outcome });
+    openTaskStream(result.taskId);
   }
 
   async function togglePause() {
@@ -268,6 +279,8 @@ export function App() {
   const activeAgent = agents[0];
   const todayLabel = formatToday();
 
+  if (view === "routing") return <div className="sarathi-shell"><aside className="rail"><div className="brand-lockup"><span className="brand-mark" aria-hidden="true">✳</span><div><strong>Sarathi</strong><span>local command center</span></div></div><nav className="primary-nav" aria-label="Primary navigation"><button className="nav-item" type="button" onClick={() => setView("command")}><span>01</span>Command</button><button className="nav-item active" type="button"><span>05</span>Routing</button></nav></aside><main className="dashboard"><RoutingPage /></main></div>;
+
   return (
     <div className="sarathi-shell">
       <aside className="rail">
@@ -280,6 +293,7 @@ export function App() {
           <a className="nav-item" href="#specialists"><span>02</span>Specialists</a>
           <a className="nav-item" href="#review"><span>03</span>Review queue</a>
           <a className="nav-item" href="#knowledge"><span>04</span>Knowledge</a>
+          <a className="nav-item" href="#routing" onClick={(event) => { event.preventDefault(); setView("routing"); }}><span>05</span>Routing</a>
         </nav>
         <div className="rail-footer">
           <div className="rail-caption">Current host</div>
@@ -315,13 +329,13 @@ export function App() {
 
             <section className="panel review-panel" id="review"><div className="panel-heading"><div><span className="eyebrow">Review queue</span><h2>Assigned merge requests</h2></div><button className="text-button" type="button" onClick={checkNow} disabled={isRefreshing}>Check now <span>↗</span></button></div>{dashboard.discovery.status === "blocked" ? <div className="blocked-state"><div className="blocked-icon">!</div><div><strong>Discovery is waiting for a real adapter.</strong><p>{dashboard.discovery.reason}</p></div><span className="state-chip blocked">blocked</span></div> : dashboard.discovery.mergeRequests.length === 0 ? <div className="empty-state"><span>◌</span><p>No assigned merge requests in this check.</p></div> : <div className="mr-list">{dashboard.discovery.mergeRequests.map((mergeRequest) => <div className="mr-row" key={mergeRequest.id}><strong>{mergeRequest.title}</strong><span>{mergeRequest.project}</span><span>{mergeRequest.role}</span><span>{mergeRequest.coverage}</span></div>)}</div>}</section>
 
-            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div></form>{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
+            <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div><div className="task-routing-fields"><label htmlFor="task-engine">Engine<select id="task-engine" aria-label="Task engine" value={taskEngine} onChange={(event) => setTaskEngine(event.target.value as "inherit" | AgentEngineKind)}><option value="inherit">Inherit</option><option value="hermes">Hermes</option><option value="codex">Codex</option><option value="claude-code">Claude Code</option></select></label>{taskEngine !== "inherit" && <><label htmlFor="task-configuration">Configuration<input id="task-configuration" value={taskConfiguration} onChange={(event) => setTaskConfiguration(event.target.value)} /></label><label htmlFor="task-model">Model <input id="task-model" value={taskModel} onChange={(event) => setTaskModel(event.target.value)} placeholder="optional" /></label></>}</div></form>{admission?.plan && <div className="admission-summary">Admitted: <strong>{admission.plan.primary.engine}</strong> · {admission.plan.primary.configuration} · source {admission.plan.source} · readiness {admission.readiness?.state ?? "unmeasured"}{admission.outcome?.message && <p>{admission.outcome.message}</p>}</div>}{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
           </div>
 
           <aside className="side-column">
             <section className="panel gates-panel"><div className="panel-heading"><div><span className="eyebrow">Readiness gates</span><h2>What still needs proof</h2></div><span className="gate-count">{blockedTickets.length}</span></div><div className="gate-list">{blockedTickets.slice(0, 6).map((ticket) => <div className="gate-row" key={ticket.id}><span className="gate-index">{ticket.id}</span><div><strong>{ticket.title}</strong><small>{ticket.reason}</small></div><span className="state-chip blocked">blocked</span></div>)}</div>{blockedTickets.length > 6 && <p className="more-note">+ {blockedTickets.length - 6} more gates in the ticket map</p>}</section>
 
-            <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Select after runtime proof</option><option value="fake">Fake test seam</option><option value="hermes">Hermes (unverified)</option></select></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className="state-chip ready">active</span>}</div>)}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
+            <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Inherit global after runtime proof</option><option value="hermes">Hermes (unverified)</option><option value="codex">Codex (unverified)</option><option value="claude-code">Claude Code (unverified)</option></select></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className="state-chip ready">active</span>}</div>)}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
 
             <section className="panel runtime-panel"><div className="panel-heading"><div><span className="eyebrow">Runtime</span><h2>Attributable, or stopped</h2></div></div><div className="runtime-card"><div className="runtime-card-top"><span className={`status-dot ${dashboard.runtime.state === "ready" ? "green" : "amber"}`} /><strong>{dashboard.runtime.name}</strong><span className="state-chip">{statusLabel(dashboard.runtime.state)}</span></div><p>{dashboard.runtime.reason}</p>{activeAgent ? <small className="agent-health"><strong>{activeAgent.displayName}</strong><span> · </span><span>{activeAgent.health.ok ? "healthy" : activeAgent.health.reason}</span></small> : <small>Agent health unavailable</small>}</div><div className="runtime-footnote">Billing mode: <strong>{dashboard.runtime.billingMode}</strong></div></section>
           </aside>

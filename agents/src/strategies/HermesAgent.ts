@@ -5,7 +5,8 @@ import type {
   OrchestratorCapability,
   TaskStream
 } from "@aios/contracts";
-import type { ProcessRunner } from "./hermes/ProcessRunner.js";
+import type { HermesProcessOptions, ProcessRunner } from "./hermes/ProcessRunner.js";
+import { join } from "node:path";
 import { RealProcessRunner } from "./hermes/RealProcessRunner.js";
 
 /**
@@ -25,7 +26,7 @@ export class HermesAgent implements AgentAbstraction {
   // checkHealth() call and updates the cache for the *next* call.
   private cachedHealth: HealthStatus = { ok: true };
 
-  constructor(private readonly runner: ProcessRunner = new RealProcessRunner()) {}
+  constructor(private readonly runner: ProcessRunner = new RealProcessRunner(), private readonly route?: { configuration: string }, private readonly processOptions: HermesProcessOptions = {}) {}
 
   getInfo(): AgentInfo {
     return { id: "hermes", kind: "hermes", displayName: "Hermes" };
@@ -37,7 +38,7 @@ export class HermesAgent implements AgentAbstraction {
     // throw, but if a future ProcessRunner implementation violated that,
     // this would otherwise be an unhandled rejection.
     void this.runner
-      .checkVersion()
+      .checkVersion(this.nativeOptions())
       .then((ok) => {
         this.cachedHealth = HermesAgent.deriveHealth(ok);
       })
@@ -53,7 +54,7 @@ export class HermesAgent implements AgentAbstraction {
   // composition root deciding whether to fall back at boot) should await
   // this once first; it updates the same cache checkHealth() reads.
   async warmUpHealth(): Promise<HealthStatus> {
-    const ok = await this.runner.checkVersion().catch(() => false);
+    const ok = await this.runner.checkVersion(this.nativeOptions()).catch(() => false);
     this.cachedHealth = HermesAgent.deriveHealth(ok);
     return this.cachedHealth;
   }
@@ -64,10 +65,10 @@ export class HermesAgent implements AgentAbstraction {
 
   runTask(task: string, sessionKey: string): TaskStream {
     const runner = this.runner;
+    const options = { ...this.nativeOptions(), sessionId: sessionKey };
 
-    // sessionKey is intentionally unused: Hermes ignores --resume <our-key>
-    // and silently assigns its own session id, so wiring it into a CLI flag
-    // here would be a no-op. Session-id mapping is deferred to a later slice.
+    // Keep Sarathi's stable key available to the native runner for attribution;
+    // the runner must still capture the provider-issued native session id.
     return (async function* (): TaskStream {
       const lineQueue: string[] = [];
       // Single-waiter invariant: at most one consumer ever awaits the queue
@@ -88,9 +89,9 @@ export class HermesAgent implements AgentAbstraction {
       const tail = runner.tailLogs((line) => {
         lineQueue.push(line);
         wake();
-      });
+      }, options);
 
-      const oneShotPromise = runner.runOneShot(task).finally(() => {
+      const oneShotPromise = runner.runOneShot(task, options).finally(() => {
         tailDone = true;
         wake();
       });
@@ -116,6 +117,11 @@ export class HermesAgent implements AgentAbstraction {
         tail.stop();
       }
     })();
+  }
+
+  private nativeOptions(): HermesProcessOptions {
+    const profile = this.route?.configuration ?? this.processOptions.profile ?? "default";
+    return { ...this.processOptions, profile, homeDir: this.processOptions.homeDir ?? join(process.cwd(), ".data", "engine-sessions", "hermes", profile) };
   }
 
   asOrchestrator(): OrchestratorCapability | null {

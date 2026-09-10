@@ -35,3 +35,55 @@ export interface TaskOutcome {
   status: TaskTerminalStatus;
   message?: string;
 }
+
+export type AgentEngineKind = "hermes" | "codex" | "claude-code";
+export type EnginePolicySource = "task" | "workflow" | "agent" | "global";
+
+export interface EngineRoute {
+  engine: AgentEngineKind;
+  configuration: string;
+  model?: string;
+  credentialEnv?: string;
+  billingMode: "subscription" | "api" | "local";
+}
+
+export interface EnginePolicy {
+  primary: EngineRoute;
+  fallbacks: EngineRoute[];
+  fallbackEnabled: boolean;
+}
+
+/** A layer may override individual route fields while inheriting the rest. */
+export interface EnginePolicyOverride {
+  primary?: Partial<EngineRoute>;
+  fallbacks?: EngineRoute[];
+  fallbackEnabled?: boolean;
+  version?: number;
+}
+
+export interface ResolvedEnginePlan {
+  primary: EngineRoute;
+  fallbacks: EngineRoute[];
+  source: EnginePolicySource;
+  configurationVersions: Record<EnginePolicySource, number | null>;
+}
+
+export interface EngineReadiness {
+  state: "ready" | "unavailable" | "unmeasured";
+  reason: string;
+  checkedAt: string;
+}
+
+export interface EngineConsent {
+  crossEngineFallback: boolean;
+  paidFallback: boolean;
+  acceptedAt: string | null;
+}
+
+export interface EngineConfigDocument {
+  version: 1;
+  global: EnginePolicyOverride & { version: number };
+  workflows: Record<string, EnginePolicyOverride & { version: number }>;
+  agents: Record<string, EnginePolicyOverride & { version: number }>;
+  consent: EngineConsent;
+}
