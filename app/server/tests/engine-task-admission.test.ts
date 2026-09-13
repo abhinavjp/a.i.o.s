@@ -42,9 +42,34 @@ describe("engine task admission", () => {
       await engineStore.setPolicy("global", undefined, policy("codex"));
       const unavailable = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "blocked" } });
       expect(unavailable.json().outcome.status).toBe("unavailable");
+      expect(unavailable.json().executedEngineRoute).toBeUndefined();
       await engineStore.setPolicy("global", undefined, policy("codex"));
       const incompatible = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "kanban", orchestration: "hermes-kanban" } });
       expect(incompatible.json().outcome.status).toBe("blocked");
+    } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
+  });
+
+  test("derives the initial safe boundary and returns fallback execution attribution", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-admission-fallback-"));
+    const engineStore = new FileEngineConfigStore(join(directory, "routing.json"));
+    const taskStore = new FileTaskStore(join(directory, "tasks.json"));
+    engineStore.setConsent({ crossEngineFallback: true, paidFallback: false, acceptedAt: "now" });
+    engineStore.setPolicy("global", undefined, {
+      primary: { engine: "codex", configuration: "default", billingMode: "subscription" },
+      fallbacks: [{ engine: "hermes", configuration: "fallback", billingMode: "subscription" }],
+      fallbackEnabled: true
+    });
+    const registry = new EngineRegistry();
+    registry.registerAgent("codex", new NullAgent());
+    registry.registerAgent("hermes", new FakeAgent());
+    const app = buildApp(new AgentManager(new AgentConfigurator(), "hermes", registry), { engineConfigStore: engineStore, taskStore });
+    try {
+      const response = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "fallback" } });
+      expect(response.statusCode).toBe(202);
+      const body = response.json();
+      expect(body.executedEngineRoute).toMatchObject({ engine: "hermes", configuration: "fallback" });
+      expect(body.attemptedEngineRoutes.map((route: { engine: string }) => route.engine)).toEqual(["codex", "hermes"]);
+      expect(taskStore.get(body.taskId)?.executedEngineRoute).toEqual(body.executedEngineRoute);
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
   });
 });

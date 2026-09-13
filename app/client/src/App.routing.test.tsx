@@ -19,8 +19,11 @@ describe("App routing controls", () => {
     });
     vi.stubGlobal("fetch", fetchMock); vi.stubGlobal("EventSource", EventSourceStub);
     render(<App />);
-    await screen.findByRole("textbox", { name: /task/i });
-    fireEvent.change(screen.getByRole("combobox", { name: "Task engine" }), { target: { value: "codex" } });
+    const taskInput = await screen.findByRole("textbox", { name: /task/i });
+    const taskForm = taskInput.closest("form");
+    const engineSelect = screen.getByRole("combobox", { name: "Task engine" });
+    expect(taskForm?.contains(engineSelect)).toBe(true);
+    fireEvent.change(engineSelect, { target: { value: "codex" } });
     fireEvent.change(screen.getByLabelText("Configuration"), { target: { value: "work" } });
     fireEvent.change(screen.getByRole("textbox", { name: /task/i }), { target: { value: "inspect" } });
     fireEvent.click(screen.getByRole("button", { name: /run task/i }));

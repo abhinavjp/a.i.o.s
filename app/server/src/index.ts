@@ -14,8 +14,8 @@ await hermesAgent.warmUpHealth();
 
 const engineRegistry = new EngineRegistry();
 engineRegistry.register("hermes", (route) => new HermesAgent(undefined, route));
-engineRegistry.register("codex", (route) => new CodexAgent(route));
-engineRegistry.register("claude-code", (route) => new ClaudeCodeAgent(route));
+engineRegistry.register("codex", (route, context) => new CodexAgent(route, { agentId: context.agentId }));
+engineRegistry.register("claude-code", (route, context) => new ClaudeCodeAgent(route, { agentId: context.agentId }));
 
 const manager = new AgentManager(configurator, "hermes", engineRegistry);
 

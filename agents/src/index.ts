@@ -2,7 +2,7 @@ export { AgentConfigurator } from "./AgentConfigurator.js";
 export { AgentManager } from "./AgentManager.js";
 export { EngineRegistry } from "./EngineRegistry.js";
 export { readinessFromHealth, unmeasuredReadiness } from "./EngineReadiness.js";
-export type { EngineFactory } from "./EngineRegistry.js";
+export type { EngineCreationContext, EngineFactory } from "./EngineRegistry.js";
 export { NativeProcessRunner } from "./native/NativeProcessRunner.js";
 export type { NativeExecution, NativeProcessResult, NativeProcessRunnerPort } from "./native/NativeProcessRunner.js";
 export { CustomAgent } from "./strategies/CustomAgent.js";

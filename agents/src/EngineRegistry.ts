@@ -1,6 +1,7 @@
 import type { AgentAbstraction, AgentEngineKind, EngineRoute } from "@aios/contracts";
 
-export type EngineFactory = (route: EngineRoute) => AgentAbstraction;
+export interface EngineCreationContext { agentId: string }
+export type EngineFactory = (route: EngineRoute, context: EngineCreationContext) => AgentAbstraction;
 
 const REGISTERED_ENGINES: readonly AgentEngineKind[] = ["hermes", "codex", "claude-code"];
 
@@ -20,8 +21,8 @@ export class EngineRegistry {
     return REGISTERED_ENGINES.includes(kind as AgentEngineKind) && this.factories.has(kind as AgentEngineKind);
   }
 
-  create(route: EngineRoute): AgentAbstraction | undefined {
-    return this.factories.get(route.engine)?.(route);
+  create(route: EngineRoute, context: EngineCreationContext = { agentId: "active-agent" }): AgentAbstraction | undefined {
+    return this.factories.get(route.engine)?.(route, context);
   }
 
   kinds(): AgentEngineKind[] {

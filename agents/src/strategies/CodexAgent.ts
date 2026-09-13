@@ -1,8 +1,10 @@
 import type { AgentAbstraction, AgentInfo, EngineReadiness, EngineRoute, HealthStatus, OrchestratorCapability, TaskStream } from "@aios/contracts";
 import { NativeProcessRunner, type NativeProcessRunnerPort } from "../native/NativeProcessRunner.js";
 import { readinessFromHealth } from "../EngineReadiness.js";
+import { join } from "node:path";
+import { createHash } from "node:crypto";
 
-export interface CodexAgentOptions { runner?: NativeProcessRunnerPort; workingRoot?: string; sandbox?: string; configRoot?: string }
+export interface CodexAgentOptions { runner?: NativeProcessRunnerPort; workingRoot?: string; sandbox?: string; configRoot?: string; agentId?: string; readinessProbe?: () => Promise<EngineReadiness> }
 
 export class CodexAgent implements AgentAbstraction {
   private readonly runner: NativeProcessRunnerPort;
@@ -13,18 +15,27 @@ export class CodexAgent implements AgentAbstraction {
     this.runner = options.runner ?? new NativeProcessRunner();
     this.workingRoot = options.workingRoot ?? process.cwd();
     this.sandbox = options.sandbox ?? "workspace-write";
-    this.configRoot = options.configRoot ?? `${process.cwd()}\\.data\\engine-sessions\\codex\\${route.configuration}`;
+    this.configRoot = options.configRoot ?? join(process.cwd(), ".data", "engine-sessions", "codex", safeSegment(options.agentId ?? "active-agent"), safeSegment(route.configuration));
+    this.readinessProbe = options.readinessProbe;
   }
   private readonly workingRoot: string;
   private readonly sandbox: string;
   private readonly configRoot: string;
+  private readonly readinessProbe?: () => Promise<EngineReadiness>;
 
   getInfo(): AgentInfo { return { id: "codex", kind: "codex", displayName: "Codex" }; }
   checkHealth(): HealthStatus { return this.cachedHealth; }
   async checkReadiness(): Promise<EngineReadiness> {
     const ok = await this.runner.check("codex", ["--version"], { cwd: this.workingRoot });
-    this.cachedHealth = ok ? { ok: true } : { ok: false, reason: "codex executable or authentication is unavailable" };
-    return readinessFromHealth(this.cachedHealth);
+    if (!ok) {
+      this.cachedHealth = { ok: false, reason: "codex executable is unavailable" };
+      return readinessFromHealth(this.cachedHealth);
+    }
+    const readiness = this.readinessProbe
+      ? await this.readinessProbe()
+      : { state: "unmeasured", reason: "Codex executable found; authenticated readiness proof is UNMEASURED", checkedAt: new Date().toISOString() } as const;
+    this.cachedHealth = readiness.state === "ready" ? { ok: true } : { ok: false, reason: readiness.reason };
+    return readiness;
   }
   getNativeSessionId(): string | undefined { return this.nativeSessionId; }
 
@@ -49,6 +60,12 @@ export class CodexAgent implements AgentAbstraction {
     })(this);
   }
   asOrchestrator(): OrchestratorCapability | null { return null; }
+}
+
+function safeSegment(value: string): string {
+  const normalized = value.trim() || "default";
+  const readable = normalized.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 40) || "value";
+  return `${readable}-${createHash("sha256").update(normalized).digest("hex").slice(0, 12)}`;
 }
 
 function normalizeEvent(line: string): { text?: string; sessionId?: string } {

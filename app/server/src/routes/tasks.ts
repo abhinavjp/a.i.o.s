@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { AgentManager } from "@aios/agents";
-import type { AgentEngineKind, EnginePolicyOverride, RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
+import type { AgentEngineKind, EnginePolicyOverride, EngineRoute, RoutePolicyOverride, RuntimeRouter, TaskOutcome } from "@aios/contracts";
 import { NullAgent } from "@aios/agents";
 import { TaskRunRegistry, type TaskExecutionObserver, type TaskToolMediator } from "../TaskRunRegistry.js";
 import { computeSessionKey } from "../sessionKey.js";
@@ -18,7 +18,6 @@ interface SubmitTaskBody {
   workflowId?: string;
   agentId?: string;
   engineOverride?: EnginePolicyOverride | AgentEngineKind;
-  safeBoundary?: boolean;
   orchestration?: string;
   specialistId?: string;
   routePolicy?: RoutePolicyOverride;
@@ -68,7 +67,7 @@ export function registerTaskRoutes(
       reply.code(400);
       return { error: "task is required" };
     }
-    const { task, workflowId, agentId, engineOverride, safeBoundary = false, orchestration } = request.body;
+    const { task, workflowId, agentId, engineOverride, orchestration } = request.body;
     if (request.body.routePolicy !== undefined && !isRoutePolicyOverride(request.body.routePolicy)) {
       reply.code(400);
       return { error: "routePolicy must contain valid primary and fallback routes" };
@@ -113,15 +112,17 @@ export function registerTaskRoutes(
       return { taskId, resolvedEnginePlan: resolved, readiness: { state: "unavailable", reason: "Hermes Kanban is incompatible with the selected engine", checkedAt: new Date().toISOString() }, outcome: { status: "blocked", message: "Hermes Kanban is incompatible with the selected engine" } };
     }
     const attemptedEngineRoutes = [resolved.primary];
-    let executedEngineRoute = resolved.primary;
-    let admission = await manager.resolveEngine(resolved);
+    let executedEngineRoute: EngineRoute | undefined;
+    const engineAgentId = agentId?.trim() || "active-agent";
+    let admission = await manager.resolveEngine(resolved, engineAgentId);
+    if (admission.ok) executedEngineRoute = resolved.primary;
     if (!admission.ok && resolved.fallbacks.length && resolved.primary.engine !== resolved.fallbacks[0]?.engine) {
       const consent = engineStore.snapshot().consent;
       const fallbackAllowed = resolved.primary.billingMode !== "api" && resolved.fallbacks.every((route) => route.billingMode !== "api") || consent.paidFallback;
-      if (resolved.primary.engine !== resolved.fallbacks[0]?.engine && consent.crossEngineFallback && fallbackAllowed && safeBoundary) {
+      if (resolved.primary.engine !== resolved.fallbacks[0]?.engine && consent.crossEngineFallback && fallbackAllowed) {
         for (const fallback of resolved.fallbacks) {
           attemptedEngineRoutes.push(fallback);
-          const candidate = await manager.resolveEngine({ ...resolved, primary: fallback });
+          const candidate = await manager.resolveEngine({ ...resolved, primary: fallback }, engineAgentId);
           if (candidate.ok) { admission = candidate; executedEngineRoute = fallback; break; }
         }
       } else {
@@ -142,7 +143,7 @@ export function registerTaskRoutes(
     });
 
     reply.code(202);
-    return { taskId, resolvedEnginePlan: resolved, readiness: admission.readiness, outcome: admission.ok ? undefined : admission.outcome };
+    return { taskId, resolvedEnginePlan: resolved, executedEngineRoute, attemptedEngineRoutes, readiness: admission.readiness, outcome: admission.ok ? undefined : admission.outcome };
   });
 
   app.get<{ Params: StreamParams }>(
