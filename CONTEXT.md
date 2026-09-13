@@ -11,7 +11,8 @@
 
 ## Agent
 
-- **Agent** — the single swappable engine that powers Akasha. One Abstraction, one swap point. No tool is privileged.
+- **Agent engine** — a selectable agent harness that executes work for Sarathi. Hermes, Codex, and Claude Code are peer agent engines; none is required to wrap another.
+- **Agent** — a configured worker identity powered by an agent engine. An agent may inherit the global engine choice or override it.
 - **Orchestration** — an optional capability an Agent may implement (Hermes does); Akasha runs single-agent when the active agent lacks it. "host" is not a slot — it is `activeAgent.asOrchestrator()`.
 - **BYOA** — bring your own agent: implement the Agent Abstraction + register + select. CustomAgent template is the starting point.
 
@@ -39,13 +40,14 @@
 
 ## Sarathi runtime routing
 
-- **Runtime** — the execution engine that runs an agentic task. Sarathi v1 runtimes are Codex CLI, Claude CLI, and the provider-neutral AI SDK tool loop.
+- **Runtime** — lower-level execution machinery used by an agent engine. Runtime is not the operator-facing choice between Hermes, Codex, and Claude Code.
 - **Provider** — the account or inference source used by a runtime. Providers include Ollama, a custom on-premises OpenAI-compatible endpoint, OpenAI API, Anthropic API, and OpenRouter.
 - **Model** — a provider-discovered model identity with normalized capabilities and an operator-editable tier.
 - **Route** — a runtime, provider, model policy, and credential reference considered as one executable choice.
 - **Route policy** — a fixed or automatic primary route plus an optional ordered fallback policy.
 - **Specialist** — a persistent configured agent responsibility with instructions, tools, and an optional route-policy override. A specialist is not a runtime or provider.
 - **Workflow override** — a route-policy override shared by tasks in one defined flow.
+- **Engine selection** — the agent-engine choice resolved in precedence order: task override, workflow override, agent override, then global default.
 - **Resolved execution plan** — the immutable route decision captured when a task starts. Later configuration changes affect only new tasks.
 - **Attempt** — one execution of a task through one resolved runtime and model route.
 - **Permission rule** — a deny, ask, or allow decision scoped by tool, operation, target, and lifetime.
