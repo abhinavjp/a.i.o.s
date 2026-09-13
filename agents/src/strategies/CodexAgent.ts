@@ -29,9 +29,10 @@ export class CodexAgent implements AgentAbstraction {
   getNativeSessionId(): string | undefined { return this.nativeSessionId; }
 
   runTask(task: string): TaskStream {
+    const model = this.route.model ? ["-m", this.route.model] : [];
     const argv = this.nativeSessionId
-      ? ["exec", "resume", this.nativeSessionId, "--json", "--profile", this.route.configuration, "--sandbox", this.sandbox, "--cd", this.workingRoot, task]
-      : ["exec", "--json", "--profile", this.route.configuration, "--sandbox", this.sandbox, "--cd", this.workingRoot, task];
+      ? ["exec", "resume", this.nativeSessionId, "--json", "--profile", this.route.configuration, ...model, "--sandbox", this.sandbox, "--cd", this.workingRoot, task]
+      : ["exec", "--json", "--profile", this.route.configuration, ...model, "--sandbox", this.sandbox, "--cd", this.workingRoot, task];
     const runner = this.runner;
     return (async function* (owner: CodexAgent): TaskStream {
       const execution = runner.spawn("codex", argv, { cwd: owner.workingRoot, env: { ...process.env, CODEX_HOME: owner.configRoot } });
@@ -56,6 +57,8 @@ function normalizeEvent(line: string): { text?: string; sessionId?: string } {
   if (!event || typeof event !== "object" || Array.isArray(event)) throw new Error("codex returned a malformed JSON event");
   const value = event as Record<string, unknown>;
   const sessionId = typeof value.session_id === "string" ? value.session_id : typeof value.thread_id === "string" ? value.thread_id : undefined;
-  const text = typeof value.text === "string" ? value.text : typeof value.output === "string" ? value.output : undefined;
+  const item = value.item as Record<string, unknown> | undefined;
+  const text = value.type === "item.completed" && item?.type === "agent_message" && typeof item.text === "string"
+    ? item.text : typeof value.text === "string" ? value.text : typeof value.output === "string" ? value.output : undefined;
   return { text, sessionId };
 }

@@ -13,7 +13,7 @@ configurator.register("hermes", hermesAgent);
 await hermesAgent.warmUpHealth();
 
 const engineRegistry = new EngineRegistry();
-engineRegistry.register("hermes", () => hermesAgent);
+engineRegistry.register("hermes", (route) => new HermesAgent(undefined, route));
 engineRegistry.register("codex", (route) => new CodexAgent(route));
 engineRegistry.register("claude-code", (route) => new ClaudeCodeAgent(route));
 

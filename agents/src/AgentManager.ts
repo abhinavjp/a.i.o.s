@@ -26,15 +26,16 @@ export class AgentManager {
     return this.activeAgent;
   }
 
-  resolveEngine(plan: ResolvedEnginePlan): { ok: true; agent: AgentAbstraction; readiness: EngineReadiness } | { ok: false; outcome: TaskOutcome; readiness: EngineReadiness } {
+  async resolveEngine(plan: ResolvedEnginePlan): Promise<{ ok: true; agent: AgentAbstraction; readiness: EngineReadiness } | { ok: false; outcome: TaskOutcome; readiness: EngineReadiness }> {
     const route = plan.primary;
     const agent = this.registry?.create(route);
     if (!agent) {
       const readiness = { state: "unavailable", reason: `${route.engine} engine is not registered`, checkedAt: new Date().toISOString() } as EngineReadiness;
       return { ok: false, readiness, outcome: { status: "unavailable", message: readiness.reason } };
     }
+    const readinessProbe = agent as AgentAbstraction & { checkReadiness?: () => Promise<EngineReadiness> };
+    const readiness = readinessProbe.checkReadiness ? await readinessProbe.checkReadiness() : readinessFromHealth(agent.checkHealth());
     const health = agent.checkHealth();
-    const readiness = readinessFromHealth(health);
     return health.ok
       ? { ok: true, agent, readiness }
       : { ok: false, readiness, outcome: { status: "unavailable", message: health.reason } };

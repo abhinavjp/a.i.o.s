@@ -14,6 +14,7 @@ describe("engine routing API", () => {
       const first = new FileEngineConfigStore(path);
       expect(first.snapshot().global.primary?.engine).toBe("hermes");
       expect(first.snapshot().consent.crossEngineFallback).toBe(false);
+      expect(first.setPolicy("workflow", "review", { primary: { model: "gpt-5" } }).primary).toEqual({ model: "gpt-5" });
       expect(first.setPolicy("global", undefined, { primary: { engine: "codex", configuration: "work", billingMode: "subscription" } }).version).toBe(2);
       const restarted = new FileEngineConfigStore(path);
       expect(restarted.snapshot().global.primary?.engine).toBe("codex");

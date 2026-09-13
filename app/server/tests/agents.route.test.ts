@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
-import { buildApp } from "../src/app.js";
+import { createTestApp as buildApp } from "./testApp.js";
 
 describe("GET /api/agents", () => {
   test("returns the active agent sourced from the Manager/Configurator/Abstraction chain", async () => {

@@ -73,7 +73,6 @@ export class FileEngineConfigStore implements EngineConfigStore {
     if (!existsSync(this.filePath)) {
       const migrated = defaultDocument();
       this.document = migrated;
-      this.persist();
       return migrated;
     }
     const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
@@ -83,7 +82,6 @@ export class FileEngineConfigStore implements EngineConfigStore {
     for (const policy of Object.values(migrated.workflows)) validatePolicy(policy);
     for (const policy of Object.values(migrated.agents)) validatePolicy(policy);
     this.document = migrated;
-    this.persist();
     return migrated;
   }
 
@@ -98,8 +96,8 @@ export class FileEngineConfigStore implements EngineConfigStore {
 export function validatePolicy(policy: EnginePolicyOverride): void {
   rejectSecrets(policy);
   if (policy.primary) {
-    if (!ENGINES.includes(policy.primary.engine as AgentEngineKind)) throw new Error("unknown engine");
-    if (typeof policy.primary.configuration !== "string" || !policy.primary.configuration.trim()) throw new Error("configuration is required");
+    if (policy.primary.engine !== undefined && !ENGINES.includes(policy.primary.engine as AgentEngineKind)) throw new Error("unknown engine");
+    if (policy.primary.configuration !== undefined && (typeof policy.primary.configuration !== "string" || !policy.primary.configuration.trim())) throw new Error("configuration is required");
     if (policy.primary.credentialEnv !== undefined && !ENV_NAME.test(policy.primary.credentialEnv)) throw new Error("credentialEnv must be an environment-variable name");
     if (policy.primary.billingMode !== undefined && !["subscription", "api", "local"].includes(policy.primary.billingMode)) throw new Error("unknown billing mode");
   }

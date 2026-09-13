@@ -6,7 +6,7 @@ const route = (engine: "codex" | "claude-code") => ({ engine, configuration: "na
 
 describe("native engine adapters", () => {
   test("Codex emits JSON events, captures native ID, and uses safe argv", async () => {
-    const runner = new FakeNativeProcessRunner(['{"thread_id":"thread-1","text":"hello"}']);
+    const runner = new FakeNativeProcessRunner(['{"type":"thread.started","thread_id":"thread-1"}', '{"type":"item.completed","item":{"type":"agent_message","text":"hello"}}']);
     const agent = new CodexAgent(route("codex"), { runner, workingRoot: "D:/safe-root" });
     expect((await agent.checkReadiness()).state).toBe("ready");
     const chunks: string[] = [];
@@ -15,6 +15,17 @@ describe("native engine adapters", () => {
     expect(runner.calls[0]).toEqual({ executable: "codex", argv: ["exec", "--json", "--profile", "named", "--sandbox", "workspace-write", "--cd", "D:/safe-root", "inspect"] });
     expect(agent.getNativeSessionId()).toBe("thread-1");
     expect(runner.calls[0]?.argv).not.toContain("--dangerously-bypass-approvals-and-sandbox");
+  });
+
+  test("Codex passes the resolved model for new and resumed sessions", async () => {
+    const runner = new FakeNativeProcessRunner(['{"thread_id":"thread-1"}']);
+    const agent = new CodexAgent({ ...route("codex"), model: "gpt-5" }, { runner, workingRoot: "D:/safe-root" });
+    for await (const _ of agent.runTask("first")) { /* drain */ }
+    for await (const _ of agent.runTask("second")) { /* drain */ }
+    expect(runner.calls[0]?.argv).toContain("-m");
+    expect(runner.calls[0]?.argv).toContain("gpt-5");
+    expect(runner.calls[1]?.argv).toContain("-m");
+    expect(runner.calls[1]?.argv).toContain("gpt-5");
   });
 
   test("Claude Code uses stream-json and permission mode without bypass flags", async () => {
