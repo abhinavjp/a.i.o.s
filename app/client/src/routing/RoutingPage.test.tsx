@@ -21,6 +21,21 @@ describe("RoutingPage", () => {
     expect(screen.getByText(/effective source · global/)).toBeTruthy();
   });
 
+  test("shows live engine readiness on the cards instead of a fixed UNMEASURED label", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/routing/readiness") return Promise.resolve({ ok: true, json: async () => ({ engines: {
+        hermes: { state: "unavailable", reason: "launcher is not verified", checkedAt: "now" },
+        codex: { state: "unmeasured", reason: "authenticated readiness proof is UNMEASURED", checkedAt: "now" },
+        "claude-code": { state: "ready", reason: "installed and authenticated", checkedAt: "now" }
+      } }) });
+      return Promise.resolve({ ok: true, json: async () => document });
+    }));
+    render(<RoutingPage />);
+    expect(await screen.findByText(/Ready · installed and authenticated/)).toBeTruthy();
+    expect(screen.getByText(/UNMEASURED · authenticated readiness proof/)).toBeTruthy();
+    expect(screen.getByText(/Unavailable · launcher is not verified/)).toBeTruthy();
+  });
+
   test("saves a named Codex global configuration without rendering secrets", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string, options?: RequestInit) => {
       if (url === "/api/routing/global") return Promise.resolve({ ok: true, json: async () => ({ routing: { ...document, global: { ...document.global, primary: { engine: "codex", configuration: "work", billingMode: "subscription" }, version: 2 } } }) });

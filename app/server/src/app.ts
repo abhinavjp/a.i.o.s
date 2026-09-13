@@ -79,6 +79,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     resilience
   }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness());
-  registerEngineRoutes(app, engineConfigStore);
+  registerEngineRoutes(app, engineConfigStore, manager);
   return app;
 }

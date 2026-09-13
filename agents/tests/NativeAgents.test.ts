@@ -43,10 +43,37 @@ describe("native engine adapters", () => {
   test("keeps executable-only native readiness unmeasured until a qualified proof passes", async () => {
     const runner = new FakeNativeProcessRunner();
     const codex = new CodexAgent(route("codex"), { runner });
-    const claude = new ClaudeCodeAgent(route("claude-code"), { runner });
     expect((await codex.checkReadiness()).state).toBe("unmeasured");
-    expect((await claude.checkReadiness()).state).toBe("unmeasured");
     expect((await new CodexAgent(route("codex"), { runner, readinessProbe: readyProbe }).checkReadiness()).state).toBe("ready");
+  });
+
+  test("Claude Code readiness is proven by an authenticated `claude auth status`", async () => {
+    const loggedIn = new FakeNativeProcessRunner();
+    expect((await new ClaudeCodeAgent(route("claude-code"), { runner: loggedIn }).checkReadiness()).state).toBe("ready");
+    expect(loggedIn.checks.map((c) => c.argv)).toContainEqual(["auth", "status"]);
+
+    const loggedOut = new FakeNativeProcessRunner([], "s", (argv) => argv[0] !== "auth");
+    const readiness = await new ClaudeCodeAgent(route("claude-code"), { runner: loggedOut }).checkReadiness();
+    expect(readiness.state).toBe("unavailable");
+    expect(readiness.reason).toContain("claude auth login");
+  });
+
+  test("Claude Code only passes --settings for a real settings file and keeps the user's login", async () => {
+    const plain = new FakeNativeProcessRunner();
+    for await (const _ of new ClaudeCodeAgent({ engine: "claude-code", configuration: "default", billingMode: "subscription" }, { runner: plain }).runTask("x")) { /* drain */ }
+    expect(plain.calls[0]?.argv).not.toContain("--settings");
+    expect(plain.calls[0]?.options?.env?.CLAUDE_CONFIG_DIR).toBe(process.env.CLAUDE_CONFIG_DIR);
+    expect(plain.calls[0]?.options?.stdio).toEqual(["ignore", "pipe", "pipe"]);
+
+    const file = new FakeNativeProcessRunner();
+    for await (const _ of new ClaudeCodeAgent({ engine: "claude-code", configuration: "D:/cfg/reviewer.json", billingMode: "subscription" }, { runner: file }).runTask("x")) { /* drain */ }
+    expect(file.calls[0]?.argv).toContain("D:/cfg/reviewer.json");
+  });
+
+  test("Claude Code error results fail the task instead of streaming as output", async () => {
+    const runner = new FakeNativeProcessRunner(['{"type":"result","is_error":true,"result":"Failed to authenticate","session_id":"s"}']);
+    const agent = new ClaudeCodeAgent(route("claude-code"), { runner });
+    await expect((async () => { for await (const _ of agent.runTask("x")) { /* drain */ } })()).rejects.toThrow("Failed to authenticate");
   });
 
   test("isolates native roots by agent identity and passes Claude model with a unique session", async () => {
@@ -62,7 +89,9 @@ describe("native engine adapters", () => {
     const secondSession = secondRunner.calls[0]?.argv[secondRunner.calls[0]!.argv.indexOf("--session-id") + 1];
     expect(firstSession).not.toBe("sarathi-session");
     expect(firstSession).not.toBe(secondSession);
-    expect(firstRunner.calls[0]?.options?.env?.CLAUDE_CONFIG_DIR).not.toBe(secondRunner.calls[0]?.options?.env?.CLAUDE_CONFIG_DIR);
+    const isolated = new FakeNativeProcessRunner();
+    for await (const _ of new ClaudeCodeAgent(route("claude-code"), { runner: isolated, configRoot: "D:/iso" }).runTask("x")) { /* drain */ }
+    expect(isolated.calls[0]?.options?.env?.CLAUDE_CONFIG_DIR).toBe("D:/iso");
   });
 
   test("malformed events fail closed and cancel the child", async () => {

@@ -4,7 +4,8 @@ import type { NativeExecution, NativeProcessResult, NativeProcessRunnerPort } fr
 export class FakeNativeProcessRunner implements NativeProcessRunnerPort {
   readonly calls: Array<{ executable: string; argv: string[]; options?: SpawnOptions }> = [];
   cancelled = 0;
-  constructor(private readonly lines: string[] = [], private readonly sessionId = "native-session") {}
+  readonly checks: Array<{ executable: string; argv: string[] }> = [];
+  constructor(private readonly lines: string[] = [], private readonly sessionId = "native-session", private readonly checkResult: (argv: string[]) => boolean = () => true) {}
   spawn(executable: string, argv: string[], options?: SpawnOptions): NativeExecution {
     this.calls.push({ executable, argv: [...argv], options });
     const owner = this;
@@ -14,5 +15,8 @@ export class FakeNativeProcessRunner implements NativeProcessRunnerPort {
       cancel: () => { this.cancelled += 1; }
     };
   }
-  async check(): Promise<boolean> { return true; }
+  async check(executable: string, argv: string[]): Promise<boolean> {
+    this.checks.push({ executable, argv: [...argv] });
+    return this.checkResult(argv);
+  }
 }

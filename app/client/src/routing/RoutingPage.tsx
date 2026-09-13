@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import type { AgentEngineKind, EnginePolicyOverride } from "@aios/contracts";
-import { getRouting, saveAgentRouting, saveGlobalRouting, saveRoutingConsent, saveWorkflowRouting } from "./api.js";
+import { getEngineReadiness, getRouting, saveAgentRouting, saveGlobalRouting, saveRoutingConsent, saveWorkflowRouting, type EngineReadinessMap } from "./api.js";
 import "./RoutingPage.css";
 
 const ENGINES: Array<{ id: AgentEngineKind; label: string; note: string }> = [
@@ -8,6 +8,14 @@ const ENGINES: Array<{ id: AgentEngineKind; label: string; note: string }> = [
   { id: "codex", label: "Codex", note: "OpenAI coding-agent CLI" },
   { id: "claude-code", label: "Claude Code", note: "Anthropic coding-agent CLI" }
 ];
+
+/** A badge states only what the engine's own readiness probe observed. */
+function readinessLabel(readiness?: { state: string; reason: string }): string {
+  if (!readiness) return "Readiness not reported";
+  if (readiness.state === "ready") return `Ready · ${readiness.reason}`;
+  if (readiness.state === "unavailable") return `Unavailable · ${readiness.reason}`;
+  return `UNMEASURED · ${readiness.reason}`;
+}
 
 export function RoutingPage() {
   const [routing, setRouting] = useState<Awaited<ReturnType<typeof getRouting>> | null>(null);
@@ -19,6 +27,9 @@ export function RoutingPage() {
   const [workflowId, setWorkflowId] = useState("");
   const [message, setMessage] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
+  const [readiness, setReadiness] = useState<EngineReadinessMap>({});
+
+  useEffect(() => { void getEngineReadiness().then(setReadiness).catch(() => setReadiness({})); }, []);
 
   useEffect(() => {
     void getRouting().then((data) => {
@@ -62,7 +73,7 @@ export function RoutingPage() {
 
   return <section className="routing-page" id="routing">
     <div className="routing-heading"><div><span className="eyebrow">Routing</span><h1>Choose the engine that moves work.</h1><p>Every admitted task keeps its resolved engine and configuration. Edits apply to new tasks only.</p></div><span className="routing-source">effective source · global</span></div>
-    <div className="engine-cards">{ENGINES.map((item) => <button type="button" key={item.id} className={`engine-card ${engine === item.id ? "selected" : ""}`} onClick={() => setEngine(item.id)}><span className="engine-card-status" /> <strong>{item.label}</strong><small>{item.note}</small><em>{item.id === "hermes" ? "Configured · unavailable" : "UNMEASURED until live proof"}</em></button>)}</div>
+    <div className="engine-cards">{ENGINES.map((item) => <button type="button" key={item.id} className={`engine-card ${engine === item.id ? "selected" : ""}`} onClick={() => setEngine(item.id)}><span className="engine-card-status" /> <strong>{item.label}</strong><small>{item.note}</small><em>{readinessLabel(readiness[item.id])}</em></button>)}</div>
     <div className="routing-grid">
       <div className="routing-form panel"><div className="panel-heading"><div><span className="eyebrow">Global default</span><h2>Primary policy</h2></div><span className="state-chip pending">new tasks</span></div>
         <label>Engine<select aria-label="Global engine" value={engine} onChange={(event) => setEngine(event.target.value as AgentEngineKind)}>{ENGINES.map((item) => <option key={item.id} value={item.id}>{item.label}</option>)}</select></label>

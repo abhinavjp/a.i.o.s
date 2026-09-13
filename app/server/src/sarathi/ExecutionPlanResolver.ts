@@ -25,13 +25,7 @@ export interface ExecutionPlanResolver {
  */
 export class DefaultExecutionPlanResolver implements ExecutionPlanResolver {
   resolve({ taskId, task, agent }: ExecutionPlanInput): ResolvedExecutionPlan {
-    const agentInfo = agent.getInfo();
-    const route: ResolvedRoute = {
-      runtime: agentInfo.kind === "fake" ? "fake" : "unmeasured",
-      provider: agentInfo.kind,
-      model: agentInfo.id,
-      billingMode: agentInfo.kind === "fake" ? "fake" : "unmeasured"
-    };
+    const route = agentRoute(agent);
     return freezePlan({
       planId: randomUUID(),
       taskId,
@@ -65,12 +59,7 @@ export class LayeredExecutionPlanResolver implements ExecutionPlanResolver {
     const workflow = this.configuration.getPolicy("workflow", input.workflowId);
     const taskVersion = `task-${input.taskId}-v1`;
     const taskPolicy = input.taskPolicy ?? {};
-    const fallbackRoute: ResolvedRoute = {
-      runtime: input.agent.getInfo().kind === "fake" ? "fake" : "unmeasured",
-      provider: input.agent.getInfo().kind,
-      model: input.agent.getInfo().id,
-      billingMode: input.agent.getInfo().kind === "fake" ? "fake" : "unmeasured"
-    };
+    const fallbackRoute = agentRoute(input.agent);
     const policies = [global.policy, specialist.policy, workflow.policy, taskPolicy];
     const primary = lastDefined(policies.map((policy) => policy.primary)) ?? fallbackRoute;
     const fallbacks = lastDefined(policies.map((policy) => policy.fallbacks)) ?? [];
@@ -95,6 +84,34 @@ export class LayeredExecutionPlanResolver implements ExecutionPlanResolver {
       ...(input.task === undefined ? {} : { taskText: input.task })
     });
   }
+}
+
+/**
+ * A local engine CLI carries its own proof: admission already ran the engine's
+ * readiness probe, and an unhealthy engine never reaches here. Such a route is
+ * NATIVE-CLI, not UNMEASURED -- only an unproven engine stays UNMEASURED.
+ */
+export function agentRoute(agent: AgentAbstraction): ResolvedRoute {
+  const info = agent.getInfo();
+  if (info.kind === "fake") return { runtime: "fake", provider: "fake", model: info.id, billingMode: "fake" };
+  const proven = isNativeEngineKind(info.kind) && isHealthy(agent);
+  return {
+    runtime: proven ? NATIVE_CLI_RUNTIME : "unmeasured",
+    provider: info.kind,
+    model: info.id,
+    billingMode: proven ? "subscription" : "unmeasured"
+  };
+}
+
+export const NATIVE_CLI_RUNTIME = "native-cli";
+// Only engines whose adapters run an explicit readiness probe qualify. Hermes
+// reports optimistic health without such a proof, so it stays UNMEASURED.
+const NATIVE_ENGINE_KINDS = new Set(["claude-code", "codex"]);
+
+export function isNativeEngineKind(kind: string): boolean { return NATIVE_ENGINE_KINDS.has(kind); }
+
+function isHealthy(agent: AgentAbstraction): boolean {
+  try { return agent.checkHealth().ok; } catch { return false; }
 }
 
 export function snapshotExecutionPlan(plan: ResolvedExecutionPlan): ResolvedExecutionPlan {

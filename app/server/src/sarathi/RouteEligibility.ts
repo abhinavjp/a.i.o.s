@@ -2,6 +2,7 @@ import type { ResolvedExecutionPlan, ResolvedRoute, RouteSelection } from "@aios
 import type { SarathiStore } from "./SarathiStore.js";
 import type { RouteResilience } from "./RouteResilience.js";
 import type { AutoRouteSelector } from "./AutoRouting.js";
+import { NATIVE_CLI_RUNTIME, isNativeEngineKind } from "./ExecutionPlanResolver.js";
 
 export interface ExecutionPlanAdmissionValidator {
   validate(plan: ResolvedExecutionPlan): void;
@@ -45,6 +46,9 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
     if ((route.runtime === "unmeasured" && route.billingMode === "unmeasured") || isExplicitFakeTestRoute(route)) {
       return route.runtime === "fake" ? "fake" : "unmeasured";
     }
+    // A local engine CLI is admitted by its own readiness probe (and its own
+    // subscription login), not by a remote provider catalog.
+    if (isLocalEngineRoute(route)) return "subscription";
     const catalog = this.store.snapshot().providerCatalogs.find((candidate) => candidate.provider === route.provider);
     if (!catalog) {
       throw new IneligibleRouteError(`Route ${route.provider}:${route.model} is not in an observed provider catalog.`);
@@ -68,6 +72,10 @@ export class ProviderCatalogEligibilityValidator implements ExecutionPlanAdmissi
       `Route ${route.provider}:${route.model} qualification evidence for ${capability} is ${evidence}.`
     );
   }
+}
+
+function isLocalEngineRoute(route: ResolvedRoute): boolean {
+  return route.runtime === NATIVE_CLI_RUNTIME && route.billingMode === "subscription" && isNativeEngineKind(route.provider);
 }
 
 /** Temporary, explicit compatibility for the local deterministic fake seam. */

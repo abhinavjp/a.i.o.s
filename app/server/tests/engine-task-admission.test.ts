@@ -72,4 +72,40 @@ describe("engine task admission", () => {
       expect(taskStore.get(body.taskId)?.executedEngineRoute).toEqual(body.executedEngineRoute);
     } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
   });
+
+  test("runs an admitted native engine instead of stopping it as UNMEASURED", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-admission-native-"));
+    const engineStore = new FileEngineConfigStore(join(directory, "routing.json"));
+    const taskStore = new FileTaskStore(join(directory, "tasks.json"));
+    await engineStore.setPolicy("global", undefined, policy("claude-code"));
+    const registry = new EngineRegistry();
+    registry.registerAgent("claude-code", new StubNativeAgent());
+    const app = buildApp(new AgentManager(new AgentConfigurator(), "hermes", registry), { engineConfigStore: engineStore, taskStore });
+    try {
+      const submitted = await app.inject({ method: "POST", url: "/api/agents/active/tasks", payload: { task: "greet" } });
+      const { taskId } = submitted.json() as { taskId: string };
+      await waitFor(async () => {
+        const record = (await app.inject({ method: "GET", url: `/api/agents/active/tasks/${taskId}` })).json();
+        expect(record.status).toBe("completed");
+        expect(record.chunks).toEqual(["native output"]);
+        expect(record.resolvedExecutionPlan.route.runtime).not.toBe("unmeasured");
+      });
+    } finally { await app.close(); await rm(directory, { recursive: true, force: true }); }
+  });
 });
+
+class StubNativeAgent {
+  getInfo() { return { id: "claude-code", kind: "claude-code" as const, displayName: "Claude Code" }; }
+  checkHealth() { return { ok: true }; }
+  async checkReadiness() { return { state: "ready" as const, reason: "stub proof", checkedAt: "now" }; }
+  async *runTask() { yield "native output"; }
+  asOrchestrator() { return null; }
+}
+
+async function waitFor(assertion: () => Promise<void>): Promise<void> {
+  let lastError: unknown;
+  for (let attempt = 0; attempt < 40; attempt += 1) {
+    try { await assertion(); return; } catch (error) { lastError = error; await new Promise((resolve) => setTimeout(resolve, 25)); }
+  }
+  throw lastError;
+}

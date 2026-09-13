@@ -1,4 +1,13 @@
-import type { EngineConfigDocument, EnginePolicyOverride, EngineConsent } from "@aios/contracts";
+import type { AgentEngineKind, EngineConfigDocument, EnginePolicyOverride, EngineConsent, EngineReadiness } from "@aios/contracts";
+
+export type EngineReadinessMap = Partial<Record<AgentEngineKind, EngineReadiness>>;
+
+export async function getEngineReadiness(): Promise<EngineReadinessMap> {
+  const response = await fetch("/api/routing/readiness");
+  if (!response.ok) throw new Error("engine readiness unavailable");
+  const data = await response.json() as { engines?: EngineReadinessMap };
+  return data.engines ?? {};
+}
 
 export async function getRouting(): Promise<EngineConfigDocument> {
   const response = await fetch("/api/routing");
