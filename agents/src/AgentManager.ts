@@ -1,10 +1,14 @@
-import type { AgentAbstraction } from "@aios/contracts";
+import type { AgentAbstraction, EngineReadiness, EngineRoute, ResolvedEnginePlan, TaskOutcome } from "@aios/contracts";
 import { AgentConfigurator } from "./AgentConfigurator.js";
+import { EngineRegistry } from "./EngineRegistry.js";
+import { readinessFromHealth } from "./EngineReadiness.js";
 
 export class AgentManager {
   private activeAgent: AgentAbstraction;
+  private readonly registry?: EngineRegistry;
 
-  constructor(configurator: AgentConfigurator, defaultKind: string) {
+  constructor(configurator: AgentConfigurator, defaultKind: string, registry?: EngineRegistry) {
+    this.registry = registry;
     const resolved = configurator.resolve(defaultKind);
     const health = resolved.checkHealth();
 
@@ -21,4 +25,30 @@ export class AgentManager {
   getActiveAgent(): AgentAbstraction {
     return this.activeAgent;
   }
+
+  async resolveEngine(plan: ResolvedEnginePlan, agentId = "active-agent"): Promise<{ ok: true; agent: AgentAbstraction; readiness: EngineReadiness } | { ok: false; outcome: TaskOutcome; readiness: EngineReadiness }> {
+    const route = plan.primary;
+    const agent = this.registry?.create(route, { agentId });
+    if (!agent) {
+      const readiness = { state: "unavailable", reason: `${route.engine} engine is not registered`, checkedAt: new Date().toISOString() } as EngineReadiness;
+      return { ok: false, readiness, outcome: { status: "unavailable", message: readiness.reason } };
+    }
+    const readinessProbe = agent as AgentAbstraction & { checkReadiness?: () => Promise<EngineReadiness> };
+    let readiness: EngineReadiness;
+    try {
+      readiness = readinessProbe.checkReadiness ? await readinessProbe.checkReadiness() : readinessFromHealth(agent.checkHealth());
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "engine readiness probe failed";
+      readiness = { state: "unavailable", reason, checkedAt: new Date().toISOString() };
+    }
+    if (readiness.state !== "ready") {
+      return { ok: false, readiness, outcome: { status: "unavailable", message: readiness.reason } };
+    }
+    const health = agent.checkHealth();
+    return health.ok
+      ? { ok: true, agent, readiness }
+      : { ok: false, readiness, outcome: { status: "unavailable", message: health.reason } };
+  }
+
+  getEngineRegistry(): EngineRegistry | undefined { return this.registry; }
 }

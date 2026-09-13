@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { dirname } from "node:path";
 import type {
   CanonicalHistoryEntry, CanonicalHistoryEvent, NormalizedRuntimeEvent,
-  ResolvedExecutionPlan, RuntimeAttempt, TaskOutcome, TaskStatus
+  ResolvedExecutionPlan, RuntimeAttempt, TaskOutcome, TaskStatus, EngineReadiness, EngineRoute, ResolvedEnginePlan
 } from "@aios/contracts";
 
 export interface StoredTask {
@@ -14,6 +14,12 @@ export interface StoredTask {
   outcome: TaskOutcome | null;
   createdAt: string;
   updatedAt: string;
+  resolvedEnginePlan?: ResolvedEnginePlan;
+  executedEngineRoute?: EngineRoute;
+  attemptedEngineRoutes?: EngineRoute[];
+  readiness?: EngineReadiness;
+  routingSource?: string;
+  nativeSessionIds?: Record<string, string>;
   resolvedExecutionPlan?: ResolvedExecutionPlan;
   attempts?: RuntimeAttempt[];
   canonicalHistory?: CanonicalHistoryEntry[];
@@ -23,6 +29,7 @@ export interface TaskStore {
   get(taskId: string): StoredTask | undefined;
   list(): StoredTask[];
   create(task: StoredTask): void;
+  setNativeSessionId?(taskId: string, engine: string, sessionId: string): void;
   applyRuntimeEvent(taskId: string, event: NormalizedRuntimeEvent, terminalTask?: boolean): void;
   appendHistory(taskId: string, event: CanonicalHistoryEvent): void;
   startAttempt(taskId: string, attempt: RuntimeAttempt): void;
@@ -133,6 +140,13 @@ export class FileTaskStore implements TaskStore {
     }
     if (!record.attempts?.length) for (const text of record.chunks) this.append(record, { type: "message", role: "assistant", text });
     if (record.outcome) this.append(record, { type: "outcome", outcome: record.outcome });
+  }
+
+  setNativeSessionId(taskId: string, engine: string, sessionId: string): void {
+    const record = this.require(taskId);
+    record.nativeSessionIds = { ...(record.nativeSessionIds ?? {}), [engine]: sessionId };
+    record.updatedAt = new Date().toISOString();
+    this.persist();
   }
 
   private load(): void {

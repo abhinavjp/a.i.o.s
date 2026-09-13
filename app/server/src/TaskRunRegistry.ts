@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import type { AgentAbstraction, ResolvedExecutionPlan, RoutePolicyOverride, RuntimeAttempt, RuntimeRouter, TaskOutcome, ToolExecutionContext, ToolExecutionResult, ToolIntent } from "@aios/contracts";
+import type { AgentAbstraction, EngineReadiness, EngineRoute, ResolvedEnginePlan, ResolvedExecutionPlan, RoutePolicyOverride, RuntimeAttempt, RuntimeRouter, TaskOutcome, ToolExecutionContext, ToolExecutionResult, ToolIntent } from "@aios/contracts";
 import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import { DefaultExecutionPlanResolver, snapshotExecutionPlan, type ExecutionPlanResolver } from "./sarathi/ExecutionPlanResolver.js";
 import { needsReconciliation, type StoredTask, type TaskStore } from "./TaskStore.js";
@@ -11,6 +11,15 @@ export interface TaskExecutionObserver { record(task: StoredTask): void }
 export interface TaskToolMediator { execute(intent: ToolIntent, context?: ToolExecutionContext): Promise<ToolExecutionResult> }
 type Execution = { taskId: string; task: string; sessionKey: string; plan: ResolvedExecutionPlan; agent: AgentAbstraction; signal: AbortSignal };
 
+export interface TaskAdmissionMetadata {
+  resolvedEnginePlan?: ResolvedEnginePlan;
+  executedEngineRoute?: EngineRoute;
+  attemptedEngineRoutes?: EngineRoute[];
+  readiness?: EngineReadiness;
+  routingSource?: string;
+  nativeSessionIds?: Record<string, string>;
+  initialOutcome?: TaskOutcome;
+}
 /** Sarathi owns durable boundaries, tool authority, retries and cancellation. */
 export class TaskRunRegistry {
   private readonly listeners = new Map<string, TaskListener>();
@@ -28,7 +37,8 @@ export class TaskRunRegistry {
   ) {}
 
   async start(agent: AgentAbstraction, task: string, sessionKey: string,
-    routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride } = {}): Promise<string> {
+    routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride } = {},
+    metadata: TaskAdmissionMetadata = {}): Promise<string> {
     const taskId = randomUUID();
     const now = new Date(this.clock.now()).toISOString();
     const resolved = this.planResolver.resolve({ taskId, task, agent, ...routing });
@@ -37,8 +47,15 @@ export class TaskRunRegistry {
     this.planAdmissionValidator?.validate(plan);
     this.assertSelectedAgentHealthy(agent, plan);
     this.store.create({ taskId, task, sessionKey, chunks: [], status: "running", outcome: null,
-      createdAt: now, updatedAt: now, resolvedExecutionPlan: plan, attempts: [this.attempt(plan)] });
+      createdAt: now, updatedAt: now, resolvedExecutionPlan: plan, attempts: [this.attempt(plan)],
+      resolvedEnginePlan: metadata.resolvedEnginePlan, readiness: metadata.readiness,
+      routingSource: metadata.routingSource, nativeSessionIds: metadata.nativeSessionIds,
+      executedEngineRoute: metadata.executedEngineRoute, attemptedEngineRoutes: metadata.attemptedEngineRoutes });
     this.notify(taskId);
+    if (metadata.initialOutcome) {
+      this.finish(taskId, metadata.initialOutcome);
+      return taskId;
+    }
     const controller = new AbortController();
     const execution = { controller, completion: Promise.resolve() };
     this.active.set(taskId, execution);

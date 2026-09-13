@@ -11,6 +11,7 @@ import { AgentConfigurator } from "../src/AgentConfigurator.js";
 import { CustomAgent } from "../src/strategies/CustomAgent.js";
 import { FakeAgent } from "../src/strategies/FakeAgent.js";
 import { NullAgent } from "../src/strategies/NullAgent.js";
+import { EngineRegistry } from "../src/EngineRegistry.js";
 
 /** Test-only double whose checkHealth() result is controlled by the test. */
 class TestDoubleAgent implements AgentAbstraction {
@@ -103,5 +104,36 @@ describe("AgentManager", () => {
     const manager = new AgentManager(configurator, "custom");
 
     expect(manager.getActiveAgent()).toBe(custom);
+  });
+
+  test("does not admit a healthy executable while qualified readiness is unmeasured", async () => {
+    const configurator = new AgentConfigurator();
+    const registry = new EngineRegistry();
+    const agent = Object.assign(new TestDoubleAgent({ ok: true }), {
+      checkReadiness: async () => ({ state: "unmeasured", reason: "live proof missing", checkedAt: "now" } as const)
+    });
+    registry.registerAgent("codex", agent);
+    const manager = new AgentManager(configurator, "missing", registry);
+    const result = await manager.resolveEngine({
+      primary: { engine: "codex", configuration: "default", billingMode: "subscription" },
+      fallbacks: [], source: "global", configurationVersions: { task: null, workflow: null, agent: null, global: 1 }
+    });
+    expect(result.ok).toBe(false);
+    expect(result.readiness.state).toBe("unmeasured");
+  });
+
+  test("converts a failed qualified readiness probe into an unavailable outcome", async () => {
+    const configurator = new AgentConfigurator();
+    const registry = new EngineRegistry();
+    const agent = Object.assign(new TestDoubleAgent({ ok: true }), {
+      checkReadiness: async () => { throw new Error("probe failed"); }
+    });
+    registry.registerAgent("codex", agent);
+    const manager = new AgentManager(configurator, "missing", registry);
+    const result = await manager.resolveEngine({
+      primary: { engine: "codex", configuration: "default", billingMode: "subscription" },
+      fallbacks: [], source: "global", configurationVersions: { task: null, workflow: null, agent: null, global: 1 }
+    });
+    expect(result).toMatchObject({ ok: false, readiness: { state: "unavailable", reason: "probe failed" } });
   });
 });

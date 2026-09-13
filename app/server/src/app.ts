@@ -10,6 +10,9 @@ import { FileTaskStore } from "./TaskStore.js";
 import type { TaskStore } from "./TaskStore.js";
 import { FileSarathiStore } from "./sarathi/SarathiStore.js";
 import type { SarathiStore } from "./sarathi/SarathiStore.js";
+import { FileEngineConfigStore } from "./engine/EngineConfigStore.js";
+import type { EngineConfigStore } from "./engine/EngineConfigStore.js";
+import { registerEngineRoutes } from "./engine/routes.js";
 import { ProviderCatalogManager } from "./sarathi/ProviderCatalog.js";
 import { ProviderCatalogEligibilityValidator } from "./sarathi/RouteEligibility.js";
 import { PermissionEngine } from "./sarathi/PermissionEngine.js";
@@ -23,6 +26,7 @@ import { OptInProofHarness, type LiveProofHarness } from "./sarathi/ProofHarness
 export interface BuildAppOptions {
   taskStore?: TaskStore;
   sarathiStore?: SarathiStore;
+  engineConfigStore?: EngineConfigStore;
   runtimeRouter?: RuntimeRouter;
   /** Explicit provider/runtime adapters. Missing live adapters remain UNMEASURED. */
   runtimeAdapters?: ReadonlyArray<RuntimeAdapterRegistration>;
@@ -42,6 +46,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const taskStore = options.taskStore ?? new FileTaskStore(join(process.cwd(), ".data", "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
   const sarathiStore =
     options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
+  const engineConfigStore =
+    options.engineConfigStore ?? new FileEngineConfigStore(join(process.cwd(), ".data", "engine-routing.json"));
   const providerAdapters = options.providerAdapters ?? [];
   const providerCatalogManager = new ProviderCatalogManager([
     ...(options.providerCatalogAdapters ?? []),
@@ -71,7 +77,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     fixedRouteSelector: routeEligibility,
     toolMediator: permissionEngine,
     resilience
-  });
+  }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness());
+  registerEngineRoutes(app, engineConfigStore);
   return app;
 }

@@ -1,5 +1,5 @@
 import { spawn } from "node:child_process";
-import type { ProcessRunner } from "./ProcessRunner.js";
+import type { HermesProcessOptions, ProcessRunner } from "./ProcessRunner.js";
 
 /**
  * RealProcessRunner shells out to the actual `hermes` CLI binary via
@@ -7,9 +7,12 @@ import type { ProcessRunner } from "./ProcessRunner.js";
  * ProcessRunner; it is not exercised by unit tests (see FakeProcessRunner).
  */
 export class RealProcessRunner implements ProcessRunner {
-  async runOneShot(task: string): Promise<string> {
+  async runOneShot(task: string, options: HermesProcessOptions = {}): Promise<string> {
     return new Promise((resolve, reject) => {
-      const child = spawn("hermes", ["-z", task, "--pass-session-id"]);
+      const child = spawn("hermes", ["-z", task, "--profile", options.profile ?? "default", "--pass-session-id"], {
+        shell: false,
+        env: hermesEnv(options)
+      });
 
       let stdout = "";
       let stderr = "";
@@ -35,10 +38,10 @@ export class RealProcessRunner implements ProcessRunner {
     });
   }
 
-  async checkVersion(): Promise<boolean> {
+  async checkVersion(options: HermesProcessOptions = {}): Promise<boolean> {
     return new Promise((resolve) => {
       try {
-        const child = spawn("hermes", ["--version"]);
+        const child = spawn("hermes", ["--version", "--profile", options.profile ?? "default"], { shell: false, env: hermesEnv(options) });
 
         child.on("error", () => {
           resolve(false);
@@ -53,15 +56,16 @@ export class RealProcessRunner implements ProcessRunner {
     });
   }
 
-  tailLogs(onLine: (line: string) => void): { stop(): void } {
+  tailLogs(onLine: (line: string) => void, options: HermesProcessOptions = {}): { stop(): void } {
     // Bare `hermes logs -f` dumps its default ~50-line backlog before
     // following (`--since 1s` avoids that); it also logs ~25 lines of plugin
     // registration chatter from the `cli` component on EVERY fresh `hermes`
     // process (confirmed live -- this isn't stale backlog, it's genuine
     // per-invocation startup noise from Hermes' own plugin loader). Scoping
-    // to `--component agent` keeps the tail to the agent's own activity,
-    // which is what a per-task stream should actually show.
-    const child = spawn("hermes", ["logs", "-f", "--since", "1s", "--component", "agent"]);
+    // Component-wide tails cannot attribute output to a task. The explicit
+    // profile/home is the isolation boundary; native session attribution is
+    // retained when the CLI exposes it.
+    const child = spawn("hermes", ["logs", "-f", "--since", "1s"], { shell: false, env: hermesEnv(options) });
 
     let buffer = "";
     child.stdout.on("data", (chunk: Buffer) => {
@@ -83,4 +87,8 @@ export class RealProcessRunner implements ProcessRunner {
       }
     };
   }
+}
+
+function hermesEnv(options: HermesProcessOptions): NodeJS.ProcessEnv {
+  return options.homeDir ? { ...process.env, HERMES_HOME: options.homeDir } : process.env;
 }
