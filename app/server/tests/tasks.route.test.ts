@@ -262,11 +262,11 @@ describe("GET /api/agents/active/tasks/:taskId/stream", () => {
       });
 
       store.applyRuntimeEvent(taskId, { type: "progress", text: "durable progress" });
-      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject([{
+      expect(JSON.parse(await readFile(path, "utf8"))).toMatchObject({ schemaVersion: 1, records: [{
         status: "running",
         chunks: ["durable progress"],
         attempts: [{ events: [{ type: "progress", text: "durable progress" }] }]
-      }]);
+      }] });
 
       store.applyRuntimeEvent(taskId, {
         type: "terminal",

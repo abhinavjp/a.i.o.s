@@ -107,6 +107,8 @@ export interface SarathiStore {
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
+const SCHEMA_VERSION = 1;
+
 export class FileSarathiStore implements SarathiStore {
   private state: SarathiDashboard;
 
@@ -313,13 +315,19 @@ export class FileSarathiStore implements SarathiStore {
     if (!existsSync(this.filePath)) {
       return defaultDashboard();
     }
-    return normalizeDashboard(JSON.parse(readFileSync(this.filePath, "utf8")) as SarathiDashboard);
+    const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object") throw new Error(`Invalid Sarathi store document: ${this.filePath}`);
+    const document = parsed as SarathiDashboard | { schemaVersion: number; dashboard: SarathiDashboard };
+    const schemaVersion = "schemaVersion" in document ? document.schemaVersion : 1;
+    if (!Number.isInteger(schemaVersion)) throw new Error(`Invalid Sarathi store schema version: ${this.filePath}`);
+    if (schemaVersion > SCHEMA_VERSION) throw new Error(`Sarathi store schema version ${schemaVersion} is newer than supported version ${SCHEMA_VERSION}`);
+    return normalizeDashboard(("dashboard" in document ? document.dashboard : document) as SarathiDashboard);
   }
 
   private persist(): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
-    writeFileSync(temporaryPath, JSON.stringify(this.state, null, 2));
+    writeFileSync(temporaryPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION, dashboard: this.state }, null, 2));
     renameSync(temporaryPath, this.filePath);
   }
 }

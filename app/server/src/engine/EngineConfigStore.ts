@@ -13,6 +13,7 @@ export interface StoredEnginePolicy extends EnginePolicyOverride {
 }
 
 export interface EngineConfigDocument {
+  schemaVersion: 1;
   version: 1;
   global: StoredEnginePolicy;
   workflows: Record<string, StoredEnginePolicy>;
@@ -76,6 +77,9 @@ export class FileEngineConfigStore implements EngineConfigStore {
       return migrated;
     }
     const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
+    const schemaVersion = (parsed as { schemaVersion?: unknown })?.schemaVersion ?? 1;
+    if (typeof schemaVersion !== "number" || !Number.isInteger(schemaVersion)) throw new Error(`Invalid engine config schema version: ${this.filePath}`);
+    if (schemaVersion > 1) throw new Error(`Engine config schema version ${schemaVersion} is newer than supported version 1`);
     if (!isDocument(parsed)) throw new Error(`Invalid engine config document: ${this.filePath}`);
     const migrated = migrateDocument(parsed);
     validatePolicy(migrated.global);
@@ -115,6 +119,7 @@ function rejectSecrets(value: unknown): void {
 
 function defaultDocument(): EngineConfigDocument {
   return {
+    schemaVersion: 1,
     version: 1,
     global: { version: 1, primary: { engine: "hermes", configuration: "default", billingMode: "subscription" }, fallbacks: [], fallbackEnabled: false },
     workflows: {},
@@ -139,6 +144,7 @@ function migrateDocument(value: EngineConfigDocument): EngineConfigDocument {
     return [key, { version, ...policy }];
   }));
   return {
+    schemaVersion: 1,
     version: 1,
     global: { version: globalVersion, ...globalPolicy },
     workflows,

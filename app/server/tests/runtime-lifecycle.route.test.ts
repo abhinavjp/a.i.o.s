@@ -98,7 +98,7 @@ describe("durable runtime lifecycle through Fastify", () => {
         yield { type: "terminal", outcome: { status: "failed", failure: { kind: "transient" } } };
       } else {
         // Input history is the durable continuation, independent of a provider session.
-        const durable = JSON.parse(readFileSync(f.taskPath, "utf8")).find((task: any) => task.taskId === input.taskId);
+        const durable = JSON.parse(readFileSync(f.taskPath, "utf8")).records.find((task: any) => task.taskId === input.taskId);
         expect(durable.attempts).toHaveLength(4);
         expect(input.canonicalHistory.filter((event) => event.type === "attempt-finished")).toHaveLength(3);
         expect(input.canonicalHistory).toContainEqual(expect.objectContaining({ type: "tool-result", result: expect.objectContaining({ output: "already read" }) }));

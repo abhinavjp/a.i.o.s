@@ -1,5 +1,5 @@
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test, vi } from "vitest";
@@ -63,5 +63,21 @@ describe("default server stores", () => {
     createDefaultStoreTestApp(manager());
 
     expect(existsSync(dataDirectory)).toBe(true);
+  });
+
+  test.each([
+    ["tasks.json", { schemaVersion: 2, records: [] }],
+    ["sarathi.json", { schemaVersion: 2, dashboard: {} }],
+    ["engine-routing.json", { schemaVersion: 2, version: 1, global: {}, workflows: {}, agents: {}, consent: {} }]
+  ])("refuses a newer schema version in %s without changing the file", async (fileName, document) => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "adhisthana-newer-schema-"));
+    directories.push(dataDirectory);
+    vi.stubEnv("AIOS_DATA_DIR", dataDirectory);
+    const path = join(dataDirectory, fileName);
+    const original = JSON.stringify(document);
+    await writeFile(path, original, "utf8");
+
+    expect(() => createDefaultStoreTestApp(manager())).toThrow("schema version 2 is newer than supported version 1");
+    expect(await readFile(path, "utf8")).toBe(original);
   });
 });

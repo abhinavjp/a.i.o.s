@@ -25,6 +25,9 @@ export interface StoredTask {
   canonicalHistory?: CanonicalHistoryEntry[];
 }
 
+const SCHEMA_VERSION = 1;
+interface TaskStoreDocument { schemaVersion: number; records: StoredTask[]; }
+
 export interface TaskStore {
   get(taskId: string): StoredTask | undefined;
   list(): StoredTask[];
@@ -152,9 +155,11 @@ export class FileTaskStore implements TaskStore {
   private load(): void {
     if (!existsSync(this.filePath)) return;
     const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
-    if (!Array.isArray(parsed)) throw new Error(`Task store must contain an array: ${this.filePath}`);
+    const document = Array.isArray(parsed) ? { schemaVersion: 1, records: parsed } : parsed as TaskStoreDocument;
+    if (!Number.isInteger(document?.schemaVersion) || !Array.isArray(document.records)) throw new Error(`Invalid task store document: ${this.filePath}`);
+    if (document.schemaVersion > SCHEMA_VERSION) throw new Error(`Task store schema version ${document.schemaVersion} is newer than supported version ${SCHEMA_VERSION}`);
     let recovered = false;
-    for (const value of parsed) {
+    for (const value of document.records) {
       const task = clone(value as StoredTask);
       if (!task.canonicalHistory) { this.seedHistory(task); recovered = true; }
       this.records.set(task.taskId, task);
@@ -190,7 +195,7 @@ export class FileTaskStore implements TaskStore {
   private persist(): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
-    writeFileSync(temporaryPath, JSON.stringify([...this.records.values()], null, 2));
+    writeFileSync(temporaryPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION, records: [...this.records.values()] }, null, 2));
     renameSync(temporaryPath, this.filePath);
   }
 }
