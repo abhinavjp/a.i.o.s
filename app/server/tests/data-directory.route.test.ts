@@ -80,4 +80,16 @@ describe("default server stores", () => {
     expect(() => createDefaultStoreTestApp(manager())).toThrow("schema version 2 is newer than supported version 1");
     expect(await readFile(path, "utf8")).toBe(original);
   });
+
+  test("upgrades an older task-store document when the server opens it", async () => {
+    const dataDirectory = await mkdtemp(join(tmpdir(), "adhisthana-old-schema-"));
+    directories.push(dataDirectory);
+    vi.stubEnv("AIOS_DATA_DIR", dataDirectory);
+    const path = join(dataDirectory, "tasks.json");
+    await writeFile(path, JSON.stringify({ schemaVersion: 0, records: [] }), "utf8");
+
+    createDefaultStoreTestApp(manager());
+
+    expect(JSON.parse(await readFile(path, "utf8"))).toEqual({ schemaVersion: 1, records: [] });
+  });
 });

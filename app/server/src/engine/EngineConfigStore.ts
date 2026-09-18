@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import { runMigrations, type StoreMigration } from "../StoreMigrations.js";
 import type {
   AgentEngineKind,
   EngineConsent,
@@ -13,7 +14,7 @@ export interface StoredEnginePolicy extends EnginePolicyOverride {
 }
 
 export interface EngineConfigDocument {
-  schemaVersion: 1;
+  schemaVersion: number;
   version: 1;
   global: StoredEnginePolicy;
   workflows: Record<string, StoredEnginePolicy>;
@@ -29,14 +30,19 @@ export interface EngineConfigStore {
 }
 
 const ENGINES: AgentEngineKind[] = ["hermes", "codex", "claude-code"];
+const MIGRATIONS: ReadonlyArray<StoreMigration<EngineConfigDocument>> = [
+  { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) }
+];
 const ENV_NAME = /^[A-Z][A-Z0-9_]*$/;
 const SECRET_KEY = /apikey|token|secret|password/i;
 
 export class FileEngineConfigStore implements EngineConfigStore {
   private document: EngineConfigDocument;
+  private migratedOnOpen = false;
 
   constructor(private readonly filePath: string) {
     this.document = this.load();
+    if (this.migratedOnOpen) this.persist();
   }
 
   snapshot(): EngineConfigDocument {
@@ -80,8 +86,10 @@ export class FileEngineConfigStore implements EngineConfigStore {
     const schemaVersion = (parsed as { schemaVersion?: unknown })?.schemaVersion ?? 1;
     if (typeof schemaVersion !== "number" || !Number.isInteger(schemaVersion)) throw new Error(`Invalid engine config schema version: ${this.filePath}`);
     if (schemaVersion > 1) throw new Error(`Engine config schema version ${schemaVersion} is newer than supported version 1`);
-    if (!isDocument(parsed)) throw new Error(`Invalid engine config document: ${this.filePath}`);
-    const migrated = migrateDocument(parsed);
+    if (!parsed || typeof parsed !== "object") throw new Error(`Invalid engine config document: ${this.filePath}`);
+    this.migratedOnOpen = schemaVersion < 1;
+    const migrated = migrateDocument(runMigrations({ ...(parsed as EngineConfigDocument), schemaVersion }, 1, MIGRATIONS));
+    if (!isDocument(migrated)) throw new Error(`Invalid engine config document: ${this.filePath}`);
     validatePolicy(migrated.global);
     for (const policy of Object.values(migrated.workflows)) validatePolicy(policy);
     for (const policy of Object.values(migrated.agents)) validatePolicy(policy);

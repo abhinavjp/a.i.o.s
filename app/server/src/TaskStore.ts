@@ -1,5 +1,6 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
+import { runMigrations, type StoreMigration } from "./StoreMigrations.js";
 import type {
   CanonicalHistoryEntry, CanonicalHistoryEvent, NormalizedRuntimeEvent,
   ResolvedExecutionPlan, RuntimeAttempt, TaskOutcome, TaskStatus, EngineReadiness, EngineRoute, ResolvedEnginePlan
@@ -27,6 +28,9 @@ export interface StoredTask {
 
 const SCHEMA_VERSION = 1;
 interface TaskStoreDocument { schemaVersion: number; records: StoredTask[]; }
+const MIGRATIONS: ReadonlyArray<StoreMigration<TaskStoreDocument>> = [
+  { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) }
+];
 
 export interface TaskStore {
   get(taskId: string): StoredTask | undefined;
@@ -158,8 +162,10 @@ export class FileTaskStore implements TaskStore {
     const document = Array.isArray(parsed) ? { schemaVersion: 1, records: parsed } : parsed as TaskStoreDocument;
     if (!Number.isInteger(document?.schemaVersion) || !Array.isArray(document.records)) throw new Error(`Invalid task store document: ${this.filePath}`);
     if (document.schemaVersion > SCHEMA_VERSION) throw new Error(`Task store schema version ${document.schemaVersion} is newer than supported version ${SCHEMA_VERSION}`);
+    const migrationRequired = document.schemaVersion < SCHEMA_VERSION;
+    const migrated = runMigrations(document, SCHEMA_VERSION, MIGRATIONS);
     let recovered = false;
-    for (const value of document.records) {
+    for (const value of migrated.records) {
       const task = clone(value as StoredTask);
       if (!task.canonicalHistory) { this.seedHistory(task); recovered = true; }
       this.records.set(task.taskId, task);
@@ -181,7 +187,7 @@ export class FileTaskStore implements TaskStore {
       this.complete(task, outcome);
       recovered = true;
     }
-    if (recovered) this.persist();
+    if (migrationRequired || recovered) this.persist();
   }
 
   private timestamp(): string { return new Date(this.now()).toISOString(); }

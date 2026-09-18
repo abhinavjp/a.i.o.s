@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
+import { runMigrations, type StoreMigration } from "../StoreMigrations.js";
 import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
@@ -108,12 +109,18 @@ export interface SarathiStore {
 }
 
 const SCHEMA_VERSION = 1;
+interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
+const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
+  { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) }
+];
 
 export class FileSarathiStore implements SarathiStore {
   private state: SarathiDashboard;
+  private migratedOnOpen = false;
 
   constructor(private readonly filePath: string) {
     this.state = this.load();
+    if (this.migratedOnOpen) this.persist();
   }
 
   snapshot(): SarathiDashboard {
@@ -317,11 +324,14 @@ export class FileSarathiStore implements SarathiStore {
     }
     const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
     if (!parsed || typeof parsed !== "object") throw new Error(`Invalid Sarathi store document: ${this.filePath}`);
-    const document = parsed as SarathiDashboard | { schemaVersion: number; dashboard: SarathiDashboard };
+    const document = "dashboard" in parsed
+      ? parsed as SarathiStoreDocument
+      : { schemaVersion: 1, dashboard: parsed as SarathiDashboard };
     const schemaVersion = "schemaVersion" in document ? document.schemaVersion : 1;
     if (!Number.isInteger(schemaVersion)) throw new Error(`Invalid Sarathi store schema version: ${this.filePath}`);
     if (schemaVersion > SCHEMA_VERSION) throw new Error(`Sarathi store schema version ${schemaVersion} is newer than supported version ${SCHEMA_VERSION}`);
-    return normalizeDashboard(("dashboard" in document ? document.dashboard : document) as SarathiDashboard);
+    this.migratedOnOpen = document.schemaVersion < SCHEMA_VERSION;
+    return normalizeDashboard(runMigrations(document, SCHEMA_VERSION, MIGRATIONS).dashboard);
   }
 
   private persist(): void {
