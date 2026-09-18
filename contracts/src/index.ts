@@ -417,3 +417,33 @@ export interface EngineConfigDocument {
   agents: Record<string, EnginePolicyOverride & { version: number }>;
   consent: EngineConsent;
 }
+
+export type StageKind =
+  | "functional-analysis"
+  | "technical-analysis"
+  | "spec-and-eval"
+  | "plan"
+  | "implementation"
+  | "final-review"
+  | "merge";
+
+export type StageState = "not-started" | "running" | "waiting" | "blocked" | "done" | "skipped";
+
+export interface Track {
+  stages: ReadonlyArray<StageKind>;
+}
+
+export interface Stage {
+  kind: StageKind;
+  state: StageState;
+  artifacts: ReadonlyArray<unknown>;
+}
+
+export interface WorkItem {
+  id: string;
+  title: string;
+  workSourceKey: string | null;
+  repositories: ReadonlyArray<string>;
+  track: Track | null;
+  createdAt: string;
+}
