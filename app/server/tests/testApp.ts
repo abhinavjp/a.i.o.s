@@ -7,8 +7,8 @@ import { buildApp, type BuildAppOptions } from "../src/app.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 
-// Public-boundary tests isolate both stores; parallel files must never share .data.
-const apps: Array<{ app: ReturnType<typeof buildApp>; directory: string }> = [];
+// Public-boundary tests inject stores so parallel files never share persisted state.
+const apps: Array<{ app: ReturnType<typeof buildApp>; directory?: string }> = [];
 export function createTestApp(manager: Parameters<typeof buildApp>[0], options: BuildAppOptions = {}) {
   const directory = mkdtempSync(join(tmpdir(), "sarathi-app-test-"));
   const app = buildApp(manager, { taskStore: new FileTaskStore(join(directory, "tasks.json")),
@@ -16,9 +16,15 @@ export function createTestApp(manager: Parameters<typeof buildApp>[0], options: 
   apps.push({ app, directory });
   return app;
 }
+
+export function createDefaultStoreTestApp(manager: Parameters<typeof buildApp>[0], options: BuildAppOptions = {}) {
+  const app = buildApp(manager, options);
+  apps.push({ app });
+  return app;
+}
 afterEach(async () => {
   for (const { app, directory } of apps.splice(0)) {
     await app.close();
-    await rm(directory, { recursive: true, force: true });
+    if (directory) await rm(directory, { recursive: true, force: true });
   }
 });

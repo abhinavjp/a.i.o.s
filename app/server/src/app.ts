@@ -1,4 +1,5 @@
 import Fastify from "fastify";
+import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentManager } from "@aios/agents";
 import type { PermissionSemanticClassifier, ProviderCatalogAdapter, RuntimeClock, RuntimeRouter, SarathiToolExecutor } from "@aios/contracts";
@@ -22,6 +23,7 @@ import { RuntimeRouterRegistry, type RuntimeAdapterRegistration } from "./sarath
 import type { ProviderRuntimeAdapter } from "./sarathi/ProviderAdapters.js";
 import { AutoRouteSelector, type AutoRoutingOptions } from "./sarathi/AutoRouting.js";
 import { OptInProofHarness, type LiveProofHarness } from "./sarathi/ProofHarness.js";
+import { applicationDataDirectory } from "./ApplicationDataDirectory.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
@@ -43,11 +45,13 @@ export interface BuildAppOptions {
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const app = Fastify();
   registerAgentsRoute(app, manager);
-  const taskStore = options.taskStore ?? new FileTaskStore(join(process.cwd(), ".data", "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
+  const dataDirectory = applicationDataDirectory();
+  mkdirSync(dataDirectory, { recursive: true });
+  const taskStore = options.taskStore ?? new FileTaskStore(join(dataDirectory, "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
   const sarathiStore =
-    options.sarathiStore ?? new FileSarathiStore(join(process.cwd(), ".data", "sarathi.json"));
+    options.sarathiStore ?? new FileSarathiStore(join(dataDirectory, "sarathi.json"));
   const engineConfigStore =
-    options.engineConfigStore ?? new FileEngineConfigStore(join(process.cwd(), ".data", "engine-routing.json"));
+    options.engineConfigStore ?? new FileEngineConfigStore(join(dataDirectory, "engine-routing.json"));
   const providerAdapters = options.providerAdapters ?? [];
   const providerCatalogManager = new ProviderCatalogManager([
     ...(options.providerCatalogAdapters ?? []),
