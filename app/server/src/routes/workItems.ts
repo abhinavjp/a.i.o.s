@@ -1,9 +1,10 @@
 import type { FastifyInstance } from "fastify";
 import type { WorkItemStore } from "../WorkItemStore.js";
-import type { StageKind } from "@aios/contracts";
+import type { StageKind, StageState } from "@aios/contracts";
 
 interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
+interface SetStageStateBody { state?: unknown; }
 
 const STARTING_POINTS: Record<string, StageKind[]> = {
   full: ["functional-analysis", "technical-analysis", "spec-and-eval", "plan", "implementation", "final-review", "merge"],
@@ -11,6 +12,7 @@ const STARTING_POINTS: Record<string, StageKind[]> = {
   fast: ["plan", "implementation", "merge"],
   "analysis-only": ["functional-analysis", "technical-analysis"]
 };
+const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocked", "done", "skipped"];
 
 export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
@@ -34,5 +36,13 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
     } catch (error) {
       reply.code(400); return { error: error instanceof Error ? error.message : "track could not be approved" };
     }
+  });
+  app.put<{ Params: { workItemId: string; stageKind: StageKind }; Body: SetStageStateBody }>("/api/work-items/:workItemId/stages/:stageKind", async (request, reply) => {
+    const state = request.body?.state;
+    if (typeof state !== "string" || !STAGE_STATES.includes(state as StageState)) {
+      reply.code(400); return { error: "state must be not-started, running, waiting, blocked, done, or skipped" };
+    }
+    try { return { workItem: store.setStageState(request.params.workItemId, request.params.stageKind, state as StageState) }; }
+    catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "stage could not be updated" }; }
   });
 }

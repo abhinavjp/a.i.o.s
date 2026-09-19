@@ -93,4 +93,25 @@ describe("work-item API", () => {
     apps.push(restarted);
     expect((await restarted.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0].stages).toHaveLength(3);
   });
+
+  test("changes an approved stage state, persists it, and rejects invalid stages or states", async () => {
+    const { app, directory } = await createApp();
+    const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } })).json().workItem.id as string;
+    await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track`, payload: { startingPoint: "fast" } });
+    const changed = await app.inject({ method: "PUT", url: `/api/work-items/${workItemId}/stages/plan`, payload: { state: "running" } });
+    expect(changed.statusCode).toBe(200);
+    expect(changed.json().workItem.stages[0]).toMatchObject({ kind: "plan", state: "running" });
+    expect((await app.inject({ method: "PUT", url: `/api/work-items/${workItemId}/stages/merge`, payload: { state: "unknown" } })).json()).toEqual({ error: "state must be not-started, running, waiting, blocked, done, or skipped" });
+    expect((await app.inject({ method: "PUT", url: `/api/work-items/${workItemId}/stages/final-review`, payload: { state: "done" } })).json()).toEqual({ error: "stage final-review is not in this work item's track" });
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+    const configurator = new AgentConfigurator();
+    configurator.register("fake", new FakeAgent());
+    const restarted = buildApp(new AgentManager(configurator, "fake"), {
+      taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
+      engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")), workItemStore: new FileWorkItemStore(join(directory, "work-items.json"))
+    });
+    apps.push(restarted);
+    expect((await restarted.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0].stages[0].state).toBe("running");
+  });
 });

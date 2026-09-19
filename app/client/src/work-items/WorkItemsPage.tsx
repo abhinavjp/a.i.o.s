@@ -32,6 +32,13 @@ export function WorkItemsPage() {
     setWorkItems((current) => current.map((workItem) => workItem.id === workItemId ? data.workItem : workItem));
   }
 
+  async function setStageState(workItemId: string, stageKind: string, state: string) {
+    const response = await fetch(`/api/work-items/${workItemId}/stages/${stageKind}`, { method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ state }) });
+    const data = await response.json();
+    if (!response.ok || !data.workItem) { setMessage(data.error ?? "Stage could not be updated."); return; }
+    setWorkItems((current) => current.map((workItem) => workItem.id === workItemId ? data.workItem : workItem));
+  }
+
   return <section className="panel work-items-panel">
     <div className="panel-heading"><div><span className="eyebrow">Delivery pipeline</span><h2>Work items</h2></div></div>
     <form className="specialist-form" onSubmit={addWorkItem}>
@@ -40,6 +47,6 @@ export function WorkItemsPage() {
       <button className="specialist-submit" type="submit">Add work item</button>
     </form>
     {message && <p role="alert" className="specialist-message">{message}</p>}
-    <div className="work-item-list">{workItems.length === 0 ? <p className="empty-state">No work items yet.</p> : workItems.map((workItem) => <article className="work-item-row" key={workItem.id}><strong>{workItem.title}</strong><small>{workItem.repositories.join(", ") || "No repositories"}</small>{workItem.track ? <ol className="stage-list">{workItem.stages.map((stage) => <li key={stage.kind}>{stage.kind} — {stage.state}</li>)}</ol> : <div className="track-approval"><span>Needs a track</span><select aria-label={`Starting point for ${workItem.title}`} defaultValue="standard"><option value="full">Full</option><option value="standard">Standard</option><option value="fast">Fast</option><option value="analysis-only">Analysis only</option></select><button type="button" onClick={(event) => { const select = event.currentTarget.previousElementSibling as HTMLSelectElement; void approveTrack(workItem.id, select.value); }}>Approve track</button></div>}</article>)}</div>
+    <div className="work-item-list">{workItems.length === 0 ? <p className="empty-state">No work items yet.</p> : workItems.map((workItem) => <article className="work-item-row" key={workItem.id}><strong>{workItem.title}</strong><small>{workItem.repositories.join(", ") || "No repositories"}</small>{workItem.track ? <ol className="stage-list">{workItem.stages.map((stage) => <li key={stage.kind}>{stage.kind} <select aria-label={`State for ${stage.kind}`} value={stage.state} onChange={(event) => void setStageState(workItem.id, stage.kind, event.target.value)}>{["not-started", "running", "waiting", "blocked", "done", "skipped"].map((state) => <option key={state}>{state}</option>)}</select></li>)}</ol> : <div className="track-approval"><span>Needs a track</span><select aria-label={`Starting point for ${workItem.title}`} defaultValue="standard"><option value="full">Full</option><option value="standard">Standard</option><option value="fast">Fast</option><option value="analysis-only">Analysis only</option></select><button type="button" onClick={(event) => { const select = event.currentTarget.previousElementSibling as HTMLSelectElement; void approveTrack(workItem.id, select.value); }}>Approve track</button></div>}</article>)}</div>
   </section>;
 }

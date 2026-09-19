@@ -1,7 +1,7 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { Stage, StageKind, WorkItem } from "@aios/contracts";
+import type { Stage, StageKind, StageState, WorkItem } from "@aios/contracts";
 import { runMigrations, type StoreMigration } from "./StoreMigrations.js";
 
 interface WorkItemDocument { schemaVersion: number; workItems: WorkItem[]; }
@@ -14,6 +14,7 @@ export interface WorkItemStore {
   list(): WorkItem[];
   create(input: { title: string; repositories: string[] }): WorkItem;
   approveTrack(workItemId: string, stages: StageKind[]): WorkItem;
+  setStageState(workItemId: string, stageKind: StageKind, state: StageState): WorkItem;
 }
 
 export class FileWorkItemStore implements WorkItemStore {
@@ -45,6 +46,17 @@ export class FileWorkItemStore implements WorkItemStore {
     this.workItems[index] = approved;
     this.persist();
     return clone(approved);
+  }
+
+  setStageState(workItemId: string, stageKind: StageKind, state: StageState): WorkItem {
+    const index = this.workItems.findIndex((workItem) => workItem.id === workItemId);
+    if (index < 0) throw new Error("work item was not found");
+    const current = this.workItems[index];
+    if (!current.track?.stages.includes(stageKind)) throw new Error(`stage ${stageKind} is not in this work item's track`);
+    const updated = { ...current, stages: current.stages.map((stage) => stage.kind === stageKind ? { ...stage, state } : stage) };
+    this.workItems[index] = updated;
+    this.persist();
+    return clone(updated);
   }
 
   private load(): WorkItem[] {
