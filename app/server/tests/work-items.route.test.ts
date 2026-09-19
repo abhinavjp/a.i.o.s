@@ -178,4 +178,24 @@ describe("work-item API", () => {
     expect(JSON.parse(await readFile(join(directory, "phases.json"), "utf8")).phases[0].phase).toEqual(expect.objectContaining({ taskIds: ["task-1"] }));
     expect((await app.inject({ method: "GET", url: "/api/work-items/work-1/phases" })).json()).toEqual({ phases: [{ workItemId: "work-1", stageKind: "implementation", phase: { number: 1, name: "Build", state: "running", demoSentence: "Show the build.", taskIds: ["task-1"] }, tasks: [{ taskId: "task-1", name: "Implement the export", agent: "codex", status: "completed" }] }] });
   });
+
+  test("returns only evidenced progress counts and keeps missing sources unknown", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-counted-progress-")); directories.push(directory);
+    const artifactStore = new FileArtifactStore(join(directory, "artifacts.json")); let evidenceBranch = "";
+    const codeHost: CodeHost = {
+      async listMergeRequests(branch) { return branch === evidenceBranch ? [{ repository: "payroll-api", number: 42, title: "Repair export batching", branch, state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] : []; },
+      async readPipeline() { return null; },
+      async readFile(_branch, path) { return path === "plan.md" ? { available: true, content: "- [x] Build\n- [ ] Verify" } : path === "eval.md" ? { available: true, content: "- [x] Unit test\n- [ ] Contract test\n- [ ] Smoke test" } : { available: false, content: null }; },
+      async readDiffSummary(branch) { return branch === evidenceBranch ? { available: true, filesChanged: 4, linesAdded: 26, linesRemoved: 8 } : { available: false, filesChanged: 0, linesAdded: 0, linesRemoved: 0 }; }
+    };
+    const configurator = new AgentConfigurator(); configurator.register("fake", new FakeAgent());
+    const app = buildApp(new AgentManager(configurator, "fake"), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")), workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), artifactStore, phaseStore: new FilePhaseStore(join(directory, "phases.json")), codeHost }); apps.push(app);
+    const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } })).json().workItem.id as string;
+    evidenceBranch = workItemId;
+    artifactStore.save({ id: "plan", workItemId, stageKind: "plan", name: "plan.md", version: 1, approvalState: "approved", kind: "authored", branch: workItemId, filePath: "plan.md" });
+    artifactStore.save({ id: "eval", workItemId, stageKind: "spec-and-eval", name: "eval.md", version: 1, approvalState: "approved", kind: "authored", branch: workItemId, filePath: "eval.md" });
+    expect((await app.inject({ method: "GET", url: `/api/work-items/${workItemId}/progress` })).json()).toEqual({ progress: { tasks: { completed: 1, total: 2 }, checks: { completed: 1, total: 3 }, diff: { filesChanged: 4, linesAdded: 26, linesRemoved: 8 }, pipelineJobs: { completed: 3, total: 5 } } });
+    const emptyId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "No evidence", repositories: [] } })).json().workItem.id as string;
+    expect((await app.inject({ method: "GET", url: `/api/work-items/${emptyId}/progress` })).json()).toEqual({ progress: { tasks: null, checks: null, diff: null, pipelineJobs: null } });
+  });
 });

@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { WorkItemStore } from "../WorkItemStore.js";
-import type { StageKind, StageState, TaskStatus } from "@aios/contracts";
+import type { AuthoredArtifactReference, StageKind, StageState, TaskStatus } from "@aios/contracts";
 import type { CodeHost, WorkSource } from "@aios/connectors";
 import type { ArtifactStore } from "../ArtifactStore.js";
 import type { PhaseStore } from "../PhaseStore.js";
@@ -10,6 +10,7 @@ interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
 interface SetStageStateBody { state?: unknown; }
 interface AddPhaseTaskBody { taskId?: unknown; }
+type CompletionCount = { completed: number; total: number } | null;
 
 const STARTING_POINTS: Record<string, StageKind[]> = {
   full: ["functional-analysis", "technical-analysis", "spec-and-eval", "plan", "implementation", "final-review", "merge"],
@@ -46,6 +47,22 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
     const task = taskStore.get(taskId);
     return task ? { taskId: task.taskId, name: task.task, agent: task.resolvedExecutionPlan?.route.runtime ?? task.executedEngineRoute?.engine ?? "unknown", status: task.status } : null;
   }).filter((task): task is { taskId: string; name: string; agent: string; status: TaskStatus } => task !== null) })) }));
+  app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/progress", async (request, reply) => {
+    const workItem = store.list().find((candidate) => candidate.id === request.params.workItemId);
+    if (!workItem) { reply.code(404); return { error: "work item was not found" }; }
+    const artifacts = artifactStore?.list(workItem.id) ?? [];
+    const checklistCount = async (stageKind: StageKind): Promise<CompletionCount> => {
+      const references = latestAuthoredArtifacts(artifacts.filter((artifact) => artifact.stageKind === stageKind));
+      const contents = await Promise.all(references.map((artifact) => codeHost?.readFile(artifact.branch, artifact.filePath)));
+      const counts = contents.flatMap((content) => content?.available && content.content ? [countChecklist(content.content)] : []).filter((count): count is NonNullable<CompletionCount> => count !== null);
+      return counts.length === 0 ? null : counts.reduce((total, count) => ({ completed: total.completed + count.completed, total: total.total + count.total }), { completed: 0, total: 0 });
+    };
+    const [tasks, checks, diff, mergeRequests] = await Promise.all([
+      checklistCount("plan"), checklistCount("spec-and-eval"), codeHost?.readDiffSummary(workItem.id), codeHost?.listMergeRequests(workItem.id) ?? []
+    ]);
+    const pipelineJobs = mergeRequests.length === 0 ? null : mergeRequests.reduce((total, mergeRequest) => ({ completed: total.completed + mergeRequest.jobsCompleted, total: total.total + mergeRequest.jobsTotal }), { completed: 0, total: 0 });
+    return { progress: { tasks, checks, diff: diff?.available ? { filesChanged: diff.filesChanged, linesAdded: diff.linesAdded, linesRemoved: diff.linesRemoved } : null, pipelineJobs } };
+  });
   app.post<{ Params: { workItemId: string; phaseNumber: string }; Body: AddPhaseTaskBody }>("/api/work-items/:workItemId/phases/:phaseNumber/tasks", async (request, reply) => {
     const { taskId } = request.body ?? {};
     const phaseNumber = Number(request.params.phaseNumber);
@@ -84,4 +101,18 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
     try { return { workItem: store.setStageState(request.params.workItemId, request.params.stageKind, state as StageState) }; }
     catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "stage could not be updated" }; }
   });
+}
+
+function countChecklist(content: string): CompletionCount {
+  const entries = [...content.matchAll(/^\s*[-*+]\s+\[([ xX])\]\s+/gm)];
+  return entries.length === 0 ? null : { completed: entries.filter((entry) => entry[1].toLowerCase() === "x").length, total: entries.length };
+}
+
+function latestAuthoredArtifacts(artifacts: ReturnType<ArtifactStore["list"]>): AuthoredArtifactReference[] {
+  const latest = new Map<string, AuthoredArtifactReference>();
+  for (const artifact of artifacts) if (artifact.kind === "authored") {
+    const current = latest.get(artifact.name);
+    if (!current || artifact.version > current.version) latest.set(artifact.name, artifact);
+  }
+  return [...latest.values()];
 }
