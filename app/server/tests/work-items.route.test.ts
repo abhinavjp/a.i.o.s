@@ -8,6 +8,7 @@ import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 import { FileEngineConfigStore } from "../src/engine/EngineConfigStore.js";
 import { FileWorkItemStore } from "../src/WorkItemStore.js";
+import { FakeWorkSource, type WorkSource } from "@aios/connectors";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const directories: string[] = [];
@@ -16,7 +17,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-async function createApp() {
+async function createApp(workSource?: WorkSource) {
   const directory = await mkdtemp(join(tmpdir(), "aios-work-items-"));
   directories.push(directory);
   const configurator = new AgentConfigurator();
@@ -25,7 +26,7 @@ async function createApp() {
     taskStore: new FileTaskStore(join(directory, "tasks.json")),
     sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
     engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")),
-    workItemStore: new FileWorkItemStore(join(directory, "work-items.json"))
+    workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), workSource
   });
   apps.push(result);
   return { app: result, directory };
@@ -36,6 +37,18 @@ describe("work-item API", () => {
     const { app } = await createApp();
     const response = await app.inject({ method: "GET", url: "/api/work-items" });
     expect(response.json()).toEqual({ workItems: [] });
+  });
+
+  test("imports fake tickets once, then reports duplicates as skipped", async () => {
+    const { app } = await createApp(new FakeWorkSource());
+    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 2, skipped: 0 });
+    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 0, skipped: 2 });
+    expect((await app.inject({ method: "GET", url: "/api/work-items" })).json().workItems).toMatchObject([{ workSourceKey: "OPS-101", track: null }, { workSourceKey: "OPS-102", track: null }]);
+  });
+
+  test("imports nothing from the null work source", async () => {
+    const { app } = await createApp();
+    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 0, skipped: 0, workItems: [] });
   });
 
   test("creates and persists a directly-added work item", async () => {

@@ -13,6 +13,7 @@ const MIGRATIONS: ReadonlyArray<StoreMigration<WorkItemDocument>> = [
 export interface WorkItemStore {
   list(): WorkItem[];
   create(input: { title: string; repositories: string[] }): WorkItem;
+  import(input: { workSourceKey: string; title: string }): WorkItem | null;
   approveTrack(workItemId: string, stages: StageKind[]): WorkItem;
   setStageState(workItemId: string, stageKind: StageKind, state: StageState): WorkItem;
 }
@@ -34,6 +35,12 @@ export class FileWorkItemStore implements WorkItemStore {
     this.workItems.push(workItem);
     this.persist();
     return clone(workItem);
+  }
+
+  import(input: { workSourceKey: string; title: string }): WorkItem | null {
+    if (this.workItems.some((workItem) => workItem.workSourceKey === input.workSourceKey)) return null;
+    const workItem: WorkItem = { id: randomUUID(), title: input.title, repositories: [], workSourceKey: input.workSourceKey, track: null, stages: [], createdAt: new Date().toISOString() };
+    this.workItems.push(workItem); this.persist(); return clone(workItem);
   }
 
   approveTrack(workItemId: string, stageKinds: StageKind[]): WorkItem {

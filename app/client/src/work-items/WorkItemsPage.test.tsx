@@ -39,4 +39,16 @@ describe("WorkItemsPage", () => {
     expect(await screen.findByDisplayValue("running")).toBeTruthy();
     expect(fetchMock).toHaveBeenLastCalledWith("/api/work-items/work-1/stages/plan", expect.objectContaining({ method: "PUT" }));
   });
+
+  test("imports assigned tickets and refreshes the list", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ workItems: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ imported: 1, skipped: 0, workItems: [{ id: "work-2", title: "Repair payroll export", repositories: [], workSourceKey: "OPS-101", track: null, stages: [], createdAt: "2026-09-19T00:00:00.000Z" }] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorkItemsPage />);
+    await screen.findByText("No work items yet.");
+    fireEvent.click(screen.getByRole("button", { name: "Import assigned tickets" }));
+    expect(await screen.findByText("Repair payroll export")).toBeTruthy();
+    expect(fetchMock).toHaveBeenLastCalledWith("/api/work-items/import", { method: "POST" });
+  });
 });

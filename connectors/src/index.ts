@@ -1,6 +1,7 @@
+export interface WorkSourceTicket { key: string; title: string; type: string; status: string; description: string; }
 export interface WorkSource {
-  listAssignedTickets(): Promise<ReadonlyArray<unknown>>;
-  readTicket(ticketKey: string): Promise<unknown | null>;
+  listAssignedTickets(): Promise<ReadonlyArray<WorkSourceTicket>>;
+  readTicket(ticketKey: string): Promise<WorkSourceTicket | null>;
 }
 
 export interface CodeHost {
@@ -10,8 +11,17 @@ export interface CodeHost {
 }
 
 export class NullWorkSource implements WorkSource {
-  async listAssignedTickets(): Promise<ReadonlyArray<unknown>> { return []; }
-  async readTicket(_ticketKey: string): Promise<unknown | null> { return null; }
+  async listAssignedTickets(): Promise<ReadonlyArray<WorkSourceTicket>> { return []; }
+  async readTicket(_ticketKey: string): Promise<WorkSourceTicket | null> { return null; }
+}
+
+export class FakeWorkSource implements WorkSource {
+  private readonly tickets: ReadonlyArray<WorkSourceTicket> = [
+    { key: "OPS-101", title: "Repair payroll export", type: "bug", status: "open", description: "Exports time out for large teams." },
+    { key: "OPS-102", title: "Add audit retention", type: "feature", status: "open", description: "Retain approval decisions." }
+  ];
+  async listAssignedTickets(): Promise<ReadonlyArray<WorkSourceTicket>> { return this.tickets; }
+  async readTicket(ticketKey: string): Promise<WorkSourceTicket | null> { return this.tickets.find((ticket) => ticket.key === ticketKey) ?? null; }
 }
 
 export class NullCodeHost implements CodeHost {

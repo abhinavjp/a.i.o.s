@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { WorkItemStore } from "../WorkItemStore.js";
 import type { StageKind, StageState } from "@aios/contracts";
+import type { WorkSource } from "@aios/connectors";
 
 interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
@@ -14,8 +15,13 @@ const STARTING_POINTS: Record<string, StageKind[]> = {
 };
 const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocked", "done", "skipped"];
 
-export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore): void {
+export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource?: WorkSource): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
+  app.post("/api/work-items/import", async () => {
+    const tickets = await workSource?.listAssignedTickets() ?? [];
+    const imported = tickets.map((ticket) => store.import({ workSourceKey: ticket.key, title: ticket.title })).filter(Boolean);
+    return { imported: imported.length, skipped: tickets.length - imported.length, workItems: store.list() };
+  });
   app.post<{ Body: CreateWorkItemBody }>("/api/work-items", async (request, reply) => {
     const { title, repositories } = request.body ?? {};
     if (typeof title !== "string" || !title.trim()) { reply.code(400); return { error: "title is required" }; }

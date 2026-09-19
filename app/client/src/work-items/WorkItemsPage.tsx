@@ -22,6 +22,14 @@ export function WorkItemsPage() {
     setTitle(""); setRepositories("");
   }
 
+  async function importTickets() {
+    const response = await fetch("/api/work-items/import", { method: "POST" });
+    const data = await response.json();
+    if (!response.ok) { setMessage(data.error ?? "Tickets could not be imported."); return; }
+    setWorkItems(data.workItems ?? []);
+    setMessage(`${data.imported} imported, ${data.skipped} skipped.`);
+  }
+
   async function approveTrack(workItemId: string, startingPoint: string) {
     setMessage(null);
     const response = await fetch(`/api/work-items/${workItemId}/track`, {
@@ -40,7 +48,7 @@ export function WorkItemsPage() {
   }
 
   return <section className="panel work-items-panel">
-    <div className="panel-heading"><div><span className="eyebrow">Delivery pipeline</span><h2>Work items</h2></div></div>
+    <div className="panel-heading"><div><span className="eyebrow">Delivery pipeline</span><h2>Work items</h2></div><button type="button" onClick={() => void importTickets()}>Import assigned tickets</button></div>
     <form className="specialist-form" onSubmit={addWorkItem}>
       <label>Title<input aria-label="Title" value={title} onChange={(event) => setTitle(event.target.value)} required /></label>
       <label>Repositories<input aria-label="Repositories" value={repositories} onChange={(event) => setRepositories(event.target.value)} placeholder="payroll-api, web-console" /></label>
