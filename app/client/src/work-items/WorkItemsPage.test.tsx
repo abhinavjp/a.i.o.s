@@ -57,11 +57,14 @@ describe("WorkItemsPage", () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ workItems: [workItem] }) })
       .mockResolvedValueOnce({ ok: true, json: async () => ({ mergeRequests: [{ repository: "payroll-api", number: 42, title: "Repair export batching", state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ artifacts: [] }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ artifacts: [] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ phases: [{ phase: { number: 1, name: "Build", demoSentence: "Show export batching." }, tasks: [{ taskId: "task-1", name: "Implement batching", agent: "codex", status: "completed" }] }, { phase: { number: 2, name: "Verify", demoSentence: "Show checks." }, tasks: [] }] }) });
     vi.stubGlobal("fetch", fetchMock);
     render(<WorkItemsPage />);
     await screen.findByText("Repair payroll export");
     fireEvent.click(screen.getByRole("button", { name: "Open work item" }));
     expect(await screen.findByText("payroll-api !42 — opened — running — 3/5")).toBeTruthy();
+    expect(await screen.findByText("Implement batching — codex — completed")).toBeTruthy();
+    expect(screen.getByText("No tasks in this phase.")).toBeTruthy();
   });
 });

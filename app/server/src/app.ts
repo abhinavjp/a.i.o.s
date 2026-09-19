@@ -109,6 +109,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
   });
   registerEngineRoutes(app, engineConfigStore, manager);
-  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore);
+  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore);
   return app;
 }

@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, test } from "vitest";
@@ -9,6 +9,7 @@ import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 import { FileEngineConfigStore } from "../src/engine/EngineConfigStore.js";
 import { FileWorkItemStore } from "../src/WorkItemStore.js";
 import { FileArtifactStore } from "../src/ArtifactStore.js";
+import { FilePhaseStore } from "../src/PhaseStore.js";
 import { FakeCodeHost, FakeWorkSource, type CodeHost, type WorkSource } from "@aios/connectors";
 
 const apps: ReturnType<typeof buildApp>[] = [];
@@ -27,7 +28,7 @@ async function createApp(workSource?: WorkSource, codeHost?: CodeHost) {
     taskStore: new FileTaskStore(join(directory, "tasks.json")),
     sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
     engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")),
-    workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), artifactStore: new FileArtifactStore(join(directory, "artifacts.json")), workSource, codeHost
+    workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), artifactStore: new FileArtifactStore(join(directory, "artifacts.json")), phaseStore: new FilePhaseStore(join(directory, "phases.json")), workSource, codeHost
   });
   apps.push(result);
   return { app: result, directory };
@@ -159,5 +160,22 @@ describe("work-item API", () => {
     });
     apps.push(restarted);
     expect((await restarted.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0].stages[0].state).toBe("running");
+  });
+
+  test("links phase task ids and reads task details from the existing task store", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-phase-tasks-")); directories.push(directory);
+    const taskStore = new FileTaskStore(join(directory, "tasks.json"));
+    const phaseStore = new FilePhaseStore(join(directory, "phases.json"));
+    phaseStore.create({ workItemId: "work-1", stageKind: "implementation", phase: { number: 1, name: "Build", state: "running", demoSentence: "Show the build.", taskIds: [] } });
+    taskStore.create({ taskId: "task-1", task: "Implement the export", sessionKey: "session", chunks: [], status: "completed", outcome: { status: "completed" }, createdAt: "2026-09-19T00:00:00.000Z", updatedAt: "2026-09-19T00:00:00.000Z", resolvedExecutionPlan: { planId: "plan", taskId: "task-1", route: { runtime: "codex", provider: "openai", model: "gpt", billingMode: "fake" }, fallbackRoutes: [], configurationVersions: { task: "task", workflow: "workflow", specialist: "specialist", global: "global" }, configurationSnapshots: { task: { version: "task", policy: {} }, workflow: { version: "workflow", policy: {} }, specialist: { version: "specialist", policy: {} }, global: { version: "global", policy: {} } }, resolvedAt: "2026-09-19T00:00:00.000Z" }, attempts: [] });
+    const configurator = new AgentConfigurator(); configurator.register("fake", new FakeAgent());
+    const app = buildApp(new AgentManager(configurator, "fake"), { taskStore, sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")), workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), artifactStore: new FileArtifactStore(join(directory, "artifacts.json")), phaseStore }); apps.push(app);
+
+    const missing = await app.inject({ method: "POST", url: "/api/work-items/work-1/phases/1/tasks", payload: { taskId: "missing" } });
+    expect(missing.statusCode).toBe(400);
+    expect(missing.json()).toEqual({ error: "task was not found: missing" });
+    expect((await app.inject({ method: "POST", url: "/api/work-items/work-1/phases/1/tasks", payload: { taskId: "task-1" } })).statusCode).toBe(200);
+    expect(JSON.parse(await readFile(join(directory, "phases.json"), "utf8")).phases[0].phase).toEqual(expect.objectContaining({ taskIds: ["task-1"] }));
+    expect((await app.inject({ method: "GET", url: "/api/work-items/work-1/phases" })).json()).toEqual({ phases: [{ workItemId: "work-1", stageKind: "implementation", phase: { number: 1, name: "Build", state: "running", demoSentence: "Show the build.", taskIds: ["task-1"] }, tasks: [{ taskId: "task-1", name: "Implement the export", agent: "codex", status: "completed" }] }] });
   });
 });
