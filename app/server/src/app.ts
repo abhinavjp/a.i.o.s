@@ -17,6 +17,7 @@ import { registerEngineRoutes } from "./engine/routes.js";
 import { ProviderCatalogManager } from "./sarathi/ProviderCatalog.js";
 import { ProviderCatalogEligibilityValidator } from "./sarathi/RouteEligibility.js";
 import { PermissionEngine } from "./sarathi/PermissionEngine.js";
+import { withDeliveryPipelineTools } from "./sarathi/DeliveryPipelineTools.js";
 import { RouteResilience } from "./sarathi/RouteResilience.js";
 import { AgentRuntimeRouter } from "./sarathi/AgentRuntimeRouter.js";
 import { RuntimeRouterRegistry, type RuntimeAdapterRegistration } from "./sarathi/RuntimeAdapters.js";
@@ -76,7 +77,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     : undefined);
   const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore, resilience, autoSelector);
   const permissionEngine = options.permissionTools
-    ? new PermissionEngine(sarathiStore, options.permissionTools, options.permissionSemanticClassifier)
+    ? new PermissionEngine(sarathiStore, withDeliveryPipelineTools(options.permissionTools), options.permissionSemanticClassifier)
     : undefined;
   app.addHook("onReady", async () => providerCatalogManager.refreshAll());
   // Task history is authoritative if the dashboard projection lagged a crash.

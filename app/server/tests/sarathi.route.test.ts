@@ -45,6 +45,22 @@ class HealthChangingFakeAgent implements AgentAbstraction {
 }
 
 describe("Sarathi dashboard routes", () => {
+  test("registers delivery-pipeline intents without admitting undefined intents", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), {
+        sarathiStore: new FileSarathiStore(path),
+        permissionTools: { definitions: [], async execute() { return { output: "executed" }; } }
+      });
+      const registered = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { tool: "delivery-pipeline", operation: "track.change", target: "work-1", context: {} } });
+      expect(registered.statusCode).not.toBe(403);
+      expect(registered.json().reason).not.toBe("Sarathi has not defined this tool operation");
+      const undefinedOperation = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { tool: "delivery-pipeline", operation: "undefined.operation", target: "work-1", context: {} } });
+      expect(undefinedOperation.statusCode).toBe(403);
+      expect(undefinedOperation.json()).toMatchObject({ decision: { reason: "Sarathi has not defined this tool operation" } });
+      await app.close();
+    });
+  });
+
   test("hard denies an injected Sarathi tool before any executor receives it", async () => {
     await withStore(async (path) => {
       const executed: string[] = [];
