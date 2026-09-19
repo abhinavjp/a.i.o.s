@@ -5,6 +5,7 @@
   "workspaces": [
     "contracts",
     "agents",
+    "connectors",
     "app/server",
     "app/client"
   ],
