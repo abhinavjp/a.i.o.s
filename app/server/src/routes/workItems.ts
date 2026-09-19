@@ -1,7 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { WorkItemStore } from "../WorkItemStore.js";
 import type { StageKind, StageState } from "@aios/contracts";
-import type { WorkSource } from "@aios/connectors";
+import type { CodeHost, WorkSource } from "@aios/connectors";
 
 interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
@@ -15,12 +15,17 @@ const STARTING_POINTS: Record<string, StageKind[]> = {
 };
 const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocked", "done", "skipped"];
 
-export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource?: WorkSource): void {
+export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource?: WorkSource, codeHost?: CodeHost): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
   app.post("/api/work-items/import", async () => {
     const tickets = await workSource?.listAssignedTickets() ?? [];
     const imported = tickets.map((ticket) => store.import({ workSourceKey: ticket.key, title: ticket.title })).filter(Boolean);
     return { imported: imported.length, skipped: tickets.length - imported.length, workItems: store.list() };
+  });
+  app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/merge-requests", async (request, reply) => {
+    const workItem = store.list().find((candidate) => candidate.id === request.params.workItemId);
+    if (!workItem) { reply.code(404); return { error: "work item was not found" }; }
+    return { mergeRequests: await codeHost?.listMergeRequests(workItem.id) ?? [] };
   });
   app.post<{ Body: CreateWorkItemBody }>("/api/work-items", async (request, reply) => {
     const { title, repositories } = request.body ?? {};

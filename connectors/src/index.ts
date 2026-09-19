@@ -4,8 +4,9 @@ export interface WorkSource {
   readTicket(ticketKey: string): Promise<WorkSourceTicket | null>;
 }
 
+export interface MergeRequest { repository: string; number: number; title: string; branch: string; state: string; pipelineResult: "passed" | "failed" | "running"; jobsCompleted: number; jobsTotal: number; }
 export interface CodeHost {
-  listMergeRequests(branch: string): Promise<ReadonlyArray<unknown>>;
+  listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>>;
   readPipeline(pipelineId: string): Promise<unknown | null>;
   readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }>;
 }
@@ -25,7 +26,13 @@ export class FakeWorkSource implements WorkSource {
 }
 
 export class NullCodeHost implements CodeHost {
-  async listMergeRequests(_branch: string): Promise<ReadonlyArray<unknown>> { return []; }
+  async listMergeRequests(_branch: string): Promise<ReadonlyArray<MergeRequest>> { return []; }
+  async readPipeline(_pipelineId: string): Promise<unknown | null> { return null; }
+  async readFile(_branch: string, _path: string): Promise<{ available: boolean; content: string | null }> { return { available: false, content: null }; }
+}
+
+export class FakeCodeHost implements CodeHost {
+  async listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>> { return branch ? [{ repository: "payroll-api", number: 42, title: "Repair export batching", branch, state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] : []; }
   async readPipeline(_pipelineId: string): Promise<unknown | null> { return null; }
   async readFile(_branch: string, _path: string): Promise<{ available: boolean; content: string | null }> { return { available: false, content: null }; }
 }

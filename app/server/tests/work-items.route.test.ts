@@ -8,7 +8,7 @@ import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 import { FileEngineConfigStore } from "../src/engine/EngineConfigStore.js";
 import { FileWorkItemStore } from "../src/WorkItemStore.js";
-import { FakeWorkSource, type WorkSource } from "@aios/connectors";
+import { FakeCodeHost, FakeWorkSource, type CodeHost, type WorkSource } from "@aios/connectors";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const directories: string[] = [];
@@ -17,7 +17,7 @@ afterEach(async () => {
   await Promise.all(directories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
 });
 
-async function createApp(workSource?: WorkSource) {
+async function createApp(workSource?: WorkSource, codeHost?: CodeHost) {
   const directory = await mkdtemp(join(tmpdir(), "aios-work-items-"));
   directories.push(directory);
   const configurator = new AgentConfigurator();
@@ -26,7 +26,7 @@ async function createApp(workSource?: WorkSource) {
     taskStore: new FileTaskStore(join(directory, "tasks.json")),
     sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
     engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")),
-    workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), workSource
+    workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), workSource, codeHost
   });
   apps.push(result);
   return { app: result, directory };
@@ -49,6 +49,18 @@ describe("work-item API", () => {
   test("imports nothing from the null work source", async () => {
     const { app } = await createApp();
     expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 0, skipped: 0, workItems: [] });
+  });
+
+  test("returns code-host merge requests without calculating their job counts", async () => {
+    const { app } = await createApp(undefined, new FakeCodeHost());
+    const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } })).json().workItem.id as string;
+    expect((await app.inject({ method: "GET", url: `/api/work-items/${workItemId}/merge-requests` })).json()).toEqual({ mergeRequests: [{ repository: "payroll-api", number: 42, title: "Repair export batching", branch: workItemId, state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] });
+  });
+
+  test("returns no merge requests from the null code host", async () => {
+    const { app } = await createApp();
+    const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } })).json().workItem.id as string;
+    expect((await app.inject({ method: "GET", url: `/api/work-items/${workItemId}/merge-requests` })).json()).toEqual({ mergeRequests: [] });
   });
 
   test("creates and persists a directly-added work item", async () => {

@@ -26,7 +26,7 @@ import { OptInProofHarness, type LiveProofHarness } from "./sarathi/ProofHarness
 import { applicationDataDirectory } from "./ApplicationDataDirectory.js";
 import { FileWorkItemStore, type WorkItemStore } from "./WorkItemStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
-import type { WorkSource } from "@aios/connectors";
+import type { CodeHost, WorkSource } from "@aios/connectors";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
@@ -34,6 +34,7 @@ export interface BuildAppOptions {
   engineConfigStore?: EngineConfigStore;
   workItemStore?: WorkItemStore;
   workSource?: WorkSource;
+  codeHost?: CodeHost;
   runtimeRouter?: RuntimeRouter;
   /** Explicit provider/runtime adapters. Missing live adapters remain UNMEASURED. */
   runtimeAdapters?: ReadonlyArray<RuntimeAdapterRegistration>;
@@ -91,6 +92,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness());
   registerEngineRoutes(app, engineConfigStore, manager);
-  registerWorkItemRoutes(app, workItemStore, options.workSource);
+  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost);
   return app;
 }

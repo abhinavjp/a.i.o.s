@@ -51,4 +51,16 @@ describe("WorkItemsPage", () => {
     expect(await screen.findByText("Repair payroll export")).toBeTruthy();
     expect(fetchMock).toHaveBeenLastCalledWith("/api/work-items/import", { method: "POST" });
   });
+
+  test("opens a work item and shows code-host merge request fields", async () => {
+    const workItem = { id: "work-3", title: "Repair payroll export", repositories: [], workSourceKey: null, track: null, stages: [], createdAt: "2026-09-19T00:00:00.000Z" };
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ workItems: [workItem] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ mergeRequests: [{ repository: "payroll-api", number: 42, title: "Repair export batching", state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] }) });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<WorkItemsPage />);
+    await screen.findByText("Repair payroll export");
+    fireEvent.click(screen.getByRole("button", { name: "Open work item" }));
+    expect(await screen.findByText("payroll-api !42 — opened — running — 3/5")).toBeTruthy();
+  });
 });
