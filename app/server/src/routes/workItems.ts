@@ -30,7 +30,12 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
   });
   app.get<{ Params: { artifactId: string } }>("/api/artifacts/:artifactId/content", async (request, reply) => {
     const artifact = artifactStore?.get(request.params.artifactId);
-    if (!artifact || artifact.kind !== "authored") { reply.code(404); return { available: false }; }
+    if (!artifact) { reply.code(404); return { available: false }; }
+    if (artifact.kind === "derived") {
+      if (artifact.codeHostView === "phase-diff") return codeHost?.readDiffSummary(artifact.workItemId) ?? { available: false };
+      const mergeRequests = await codeHost?.listMergeRequests(artifact.workItemId) ?? [];
+      return { available: mergeRequests.length > 0, mergeRequests };
+    }
     return codeHost?.readFile(artifact.branch, artifact.filePath) ?? { available: false, content: null };
   });
   app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/artifacts", async (request) => ({ artifacts: artifactStore?.list(request.params.workItemId) ?? [] }));

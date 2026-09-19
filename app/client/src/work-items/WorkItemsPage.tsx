@@ -60,7 +60,7 @@ export function WorkItemsPage() {
     setArtifacts((current) => ({ ...current, [workItemId]: artifactData.artifacts ?? [] }));
   }
 
-  async function previewArtifact(artifact: Artifact) { setPreview(null); const response = await fetch(`/api/artifacts/${artifact.id}/content`); const data = await response.json(); setPreview(data.available ? data.content : "Artifact unavailable."); }
+  async function previewArtifact(artifact: Artifact) { setPreview(null); const response = await fetch(`/api/artifacts/${artifact.id}/content`); const data = await response.json(); setPreview(!data.available ? "Artifact unavailable." : artifact.kind === "derived" ? (data.filesChanged !== undefined ? `${data.filesChanged} files changed · ${data.linesAdded} added · ${data.linesRemoved} removed` : (data.mergeRequests ?? []).map((mergeRequest: MergeRequest) => `${mergeRequest.repository}: ${mergeRequest.state}`).join("\n")) : data.content); }
 
   return <section className="panel work-items-panel">
     <div className="panel-heading"><div><span className="eyebrow">Delivery pipeline</span><h2>Work items</h2></div><button type="button" onClick={() => void importTickets()}>Import assigned tickets</button></div>

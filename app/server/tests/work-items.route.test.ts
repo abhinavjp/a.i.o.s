@@ -73,6 +73,17 @@ describe("work-item API", () => {
     expect((await app.inject({ method: "GET", url: "/api/artifacts/artifact-1/content" })).json()).toEqual({ available: true, content: "# plan.md\n\nPreview from work/one." });
   });
 
+  test("reads derived diff and merge views from the code host without storing content", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-derived-preview-")); directories.push(directory);
+    const artifactStore = new FileArtifactStore(join(directory, "artifacts.json"));
+    artifactStore.save({ id: "diff", workItemId: "work", stageKind: "plan", name: "Phase diff", version: 1, approvalState: "approved", kind: "derived", codeHostView: "phase-diff" });
+    artifactStore.save({ id: "merge", workItemId: "work", stageKind: "merge", name: "Merge result", version: 1, approvalState: "approved", kind: "derived", codeHostView: "merge-result" });
+    const configurator = new AgentConfigurator(); configurator.register("fake", new FakeAgent());
+    const app = buildApp(new AgentManager(configurator, "fake"), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")), workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), artifactStore, codeHost: new FakeCodeHost() }); apps.push(app);
+    expect((await app.inject({ method: "GET", url: "/api/artifacts/diff/content" })).json()).toEqual({ available: true, filesChanged: 4, linesAdded: 26, linesRemoved: 8 });
+    expect((await app.inject({ method: "GET", url: "/api/artifacts/merge/content" })).json().mergeRequests[0]).toMatchObject({ repository: "payroll-api", number: 42 });
+  });
+
   test("creates and persists a directly-added work item", async () => {
     const first = await createApp();
     const created = await first.app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: ["payroll-api"] } });
