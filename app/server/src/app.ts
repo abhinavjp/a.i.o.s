@@ -27,6 +27,7 @@ import { OptInProofHarness, type LiveProofHarness } from "./sarathi/ProofHarness
 import { applicationDataDirectory } from "./ApplicationDataDirectory.js";
 import { FileWorkItemStore, type WorkItemStore } from "./WorkItemStore.js";
 import { FileArtifactStore, type ArtifactStore } from "./ArtifactStore.js";
+import { FilePhaseStore, type PhaseStore } from "./PhaseStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
 import type { CodeHost, WorkSource } from "@aios/connectors";
 
@@ -36,6 +37,7 @@ export interface BuildAppOptions {
   engineConfigStore?: EngineConfigStore;
   workItemStore?: WorkItemStore;
   artifactStore?: ArtifactStore;
+  phaseStore?: PhaseStore;
   workSource?: WorkSource;
   codeHost?: CodeHost;
   runtimeRouter?: RuntimeRouter;
@@ -54,7 +56,7 @@ export interface BuildAppOptions {
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const app = Fastify();
   registerAgentsRoute(app, manager);
-  const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore || !options.artifactStore;
+  const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore || !options.artifactStore || !options.phaseStore;
   const dataDirectory = needsDefaultStore ? applicationDataDirectory() : "";
   if (needsDefaultStore) mkdirSync(dataDirectory, { recursive: true });
   const taskStore = options.taskStore ?? new FileTaskStore(join(dataDirectory, "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
@@ -64,6 +66,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     options.engineConfigStore ?? new FileEngineConfigStore(join(dataDirectory, "engine-routing.json"));
   const workItemStore = options.workItemStore ?? new FileWorkItemStore(join(dataDirectory, "work-items.json"));
   const artifactStore = options.artifactStore ?? new FileArtifactStore(join(dataDirectory, "artifacts.json"));
+  const phaseStore = options.phaseStore ?? new FilePhaseStore(join(dataDirectory, "phases.json"));
   const providerAdapters = options.providerAdapters ?? [];
   const providerCatalogManager = new ProviderCatalogManager([
     ...(options.providerCatalogAdapters ?? []),
@@ -106,6 +109,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
   });
   registerEngineRoutes(app, engineConfigStore, manager);
-  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore);
+  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore);
   return app;
 }
