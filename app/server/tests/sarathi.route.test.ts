@@ -86,6 +86,21 @@ describe("Sarathi dashboard routes", () => {
     });
   });
 
+  test("approves or declines an ask exactly once with an audit record", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [], async execute() { return { output: "executed" }; } } });
+      const intent = { tool: "delivery-pipeline", operation: "track.change", target: "work-1", context: { workItemId: "work-1" } };
+      await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent });
+      const askId = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0].id;
+      expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${askId}/decide`, payload: { decision: "approved" } })).statusCode).toBe(200);
+      expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent })).statusCode).toBe(200);
+      expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { ...intent, context: { workItemId: "other" } } })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${askId}/decide`, payload: { decision: "approved" } })).json()).toEqual({ error: "ask was already decided or does not exist" });
+      expect((await app.inject({ method: "GET", url: "/api/sarathi/dashboard" })).json().askAudit).toMatchObject([{ askId, decision: "approved", createdAt: expect.any(String) }]);
+      await app.close();
+    });
+  });
+
   test("hard denies an injected Sarathi tool before any executor receives it", async () => {
     await withStore(async (path) => {
       const executed: string[] = [];

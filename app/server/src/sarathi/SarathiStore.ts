@@ -53,9 +53,11 @@ export interface DiscoveryState {
 }
 
 export interface PendingAsk { id: string; kind: string; workItemId: string | null; intent: ToolIntent; createdAt: string; }
+export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
 
 export interface SarathiDashboard {
   asks: PendingAsk[];
+  askAudit: AskAuditEntry[];
   runtime: RuntimeStatus;
   routing: { policies: RoutePolicyRecord[] };
   permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
@@ -109,14 +111,16 @@ export interface SarathiStore {
   consumeApproval(id: string): void;
   recordCircuit(circuit: RouteCircuit): void;
   addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt">): PendingAsk;
+  decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
   { fromVersion: 1, migrate: (document) => ({ ...document, schemaVersion: 2, dashboard: { ...document.dashboard, asks: document.dashboard.asks ?? [] } }) }
+  , { fromVersion: 2, migrate: (document) => ({ ...document, schemaVersion: 3, dashboard: { ...document.dashboard, askAudit: document.dashboard.askAudit ?? [] } }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -137,6 +141,14 @@ export class FileSarathiStore implements SarathiStore {
     if (existing) return clone(existing);
     const ask = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
     this.state.asks.push(ask); this.persist(); return clone(ask);
+  }
+
+  decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined {
+    const index = this.state.asks.findIndex((ask) => ask.id === id);
+    if (index < 0) return undefined;
+    const [ask] = this.state.asks.splice(index, 1);
+    this.state.askAudit.push({ askId: id, decision, createdAt: new Date().toISOString() });
+    this.persist(); return clone(ask);
   }
 
   setPaused(paused: boolean): SarathiDashboard {
@@ -380,6 +392,7 @@ const TICKET_TITLES: ReadonlyArray<[string, string]> = [
 function defaultDashboard(): SarathiDashboard {
   return {
     asks: [],
+    askAudit: [],
     runtime: {
       name: "Hermes",
       state: "unavailable",
@@ -427,6 +440,7 @@ function defaultDashboard(): SarathiDashboard {
 
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks ??= [];
+  state.askAudit ??= [];
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
   state.routeCircuits ??= [];

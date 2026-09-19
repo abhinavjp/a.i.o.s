@@ -116,6 +116,14 @@ export function registerSarathiRoutes(
   });
 
   app.get("/api/sarathi/asks", async () => ({ asks: store.snapshot().asks }));
+  app.post<{ Params: { askId: string }; Body: { decision?: string } }>("/api/sarathi/asks/:askId/decide", async (request, reply) => {
+    if (!permissionEngine || (request.body?.decision !== "approved" && request.body?.decision !== "declined")) { reply.code(400); return { error: "decision must be approved or declined" }; }
+    const ask = store.decideAsk(request.params.askId, request.body.decision);
+    if (!ask) { reply.code(409); return { error: "ask was already decided or does not exist" }; }
+    if (request.body.decision === "approved") permissionEngine.approve(ask.intent, "once");
+    else permissionEngine.saveRule({ decision: "deny", tool: ask.intent.tool, operation: ask.intent.operation, target: ask.intent.target, context: ask.intent.context, lifetime: "once" });
+    return { ask, decision: request.body.decision };
+  });
 
   app.get("/api/sarathi/providers/catalogs", async () => store.snapshot().providerCatalogs);
 
