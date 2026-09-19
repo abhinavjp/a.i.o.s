@@ -47,7 +47,9 @@ export function registerSarathiRoutes(
   permissionEngine?: PermissionEngine,
   resilience?: RouteResilience,
   runtimeRouter?: RuntimeRouter,
-  proofHarness?: LiveProofHarness
+  proofHarness?: LiveProofHarness,
+  onAskDecision?: (intent: ToolIntent, decision: "approved" | "declined", note?: string) => void,
+  onArtifactAwait?: (artifactId: string) => ToolIntent | undefined
 ): void {
   app.get("/api/sarathi/dashboard", async () => store.snapshot());
 
@@ -116,10 +118,19 @@ export function registerSarathiRoutes(
   });
 
   app.get("/api/sarathi/asks", async () => ({ asks: store.snapshot().asks }));
-  app.post<{ Params: { askId: string }; Body: { decision?: string } }>("/api/sarathi/asks/:askId/decide", async (request, reply) => {
+  app.post<{ Params: { artifactId: string } }>("/api/sarathi/artifacts/:artifactId/await", async (request, reply) => {
+    if (!permissionEngine) { reply.code(400); return { error: "permission engine is unavailable" }; }
+    const intent = onArtifactAwait?.(request.params.artifactId);
+    if (!intent) { reply.code(400); return { error: "artifact must be in draft or rejected state" }; }
+    const result = await permissionEngine.execute(intent);
+    reply.code(result.decision.outcome === "requires_approval" ? 202 : result.decision.outcome === "allowed" ? 200 : 403);
+    return result;
+  });
+  app.post<{ Params: { askId: string }; Body: { decision?: string; note?: string } }>("/api/sarathi/asks/:askId/decide", async (request, reply) => {
     if (!permissionEngine || (request.body?.decision !== "approved" && request.body?.decision !== "declined")) { reply.code(400); return { error: "decision must be approved or declined" }; }
     const ask = store.decideAsk(request.params.askId, request.body.decision);
     if (!ask) { reply.code(409); return { error: "ask was already decided or does not exist" }; }
+    onAskDecision?.(ask.intent, request.body.decision, request.body.note);
     if (request.body.decision === "approved") permissionEngine.approve(ask.intent, "once");
     else permissionEngine.saveRule({ decision: "deny", tool: ask.intent.tool, operation: ask.intent.operation, target: ask.intent.target, context: ask.intent.context, lifetime: "once" });
     return { ask, decision: request.body.decision };

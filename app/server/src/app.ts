@@ -94,7 +94,17 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     toolMediator: permissionEngine,
     resilience
   }, engineConfigStore);
-  registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness());
+  registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness(), (intent, decision, note) => {
+    if (intent.tool !== "delivery-pipeline" || intent.operation !== "artifact.approve") return;
+    const artifact = artifactStore.get(intent.target);
+    if (!artifact || artifact.approvalState !== "awaiting") return;
+    artifactStore.update(artifact.id, decision === "approved" ? { approvalState: "approved" } : { approvalState: "rejected", rejectionNote: note });
+  }, (artifactId) => {
+    const artifact = artifactStore.get(artifactId);
+    if (!artifact || (artifact.approvalState !== "draft" && artifact.approvalState !== "rejected")) return undefined;
+    artifactStore.update(artifactId, { approvalState: "awaiting", rejectionNote: undefined });
+    return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
+  });
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore);
   return app;

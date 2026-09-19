@@ -8,6 +8,7 @@ import type { AgentAbstraction, AgentInfo, HealthStatus, TaskStream } from "@aio
 import { createTestApp as buildApp } from "./testApp.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
+import { FileArtifactStore } from "../src/ArtifactStore.js";
 
 async function withStore<T>(run: (path: string) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), "sarathi-"));
@@ -108,6 +109,19 @@ describe("Sarathi dashboard routes", () => {
       store.addPendingAsk({ kind: "track.change", workItemId: null, intent: { tool: "t", operation: "track.change", target: "track", context: {} } });
       store.addPendingAsk({ kind: "artifact.approve", workItemId: null, intent: { tool: "t", operation: "artifact.approve", target: "old", context: {} } });
       expect(store.snapshot().asks.map((ask) => ask.kind)).toEqual(["track.change", "artifact.approve", "question"]);
+    });
+  });
+
+  test("submits an artifact for approval and applies the ask decision to only that artifact", async () => {
+    await withStore(async (path) => {
+      const artifactStore = new FileArtifactStore(join(dirname(path), "artifacts.json"));
+      artifactStore.save({ id: "artifact-1", workItemId: "work-1", stageKind: "plan", name: "plan.md", version: 1, approvalState: "draft", kind: "authored", branch: "work/one", filePath: "plan.md" });
+      const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), artifactStore, permissionTools: { definitions: [], async execute() { return { output: "executed" }; } } });
+      expect((await app.inject({ method: "POST", url: "/api/sarathi/artifacts/artifact-1/await" })).statusCode).toBe(202);
+      const askId = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0].id;
+      await app.inject({ method: "POST", url: `/api/sarathi/asks/${askId}/decide`, payload: { decision: "declined", note: "Need clearer scope" } });
+      expect(artifactStore.get("artifact-1")).toMatchObject({ approvalState: "rejected", rejectionNote: "Need clearer scope" });
+      await app.close();
     });
   });
 

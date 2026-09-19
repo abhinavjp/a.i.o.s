@@ -440,7 +440,7 @@ export interface Stage {
 }
 
 export type ArtifactApprovalState = "draft" | "awaiting" | "approved" | "rejected";
-export interface ArtifactReferenceBase { id: string; workItemId: string; stageKind: StageKind; name: string; version: number; approvalState: ArtifactApprovalState; }
+export interface ArtifactReferenceBase { id: string; workItemId: string; stageKind: StageKind; name: string; version: number; approvalState: ArtifactApprovalState; rejectionNote?: string; }
 export interface AuthoredArtifactReference extends ArtifactReferenceBase { kind: "authored"; branch: string; filePath: string; }
 export interface DerivedArtifactReference extends ArtifactReferenceBase { kind: "derived"; codeHostView: string; }
 export type ArtifactReference = AuthoredArtifactReference | DerivedArtifactReference;
