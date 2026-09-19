@@ -1,6 +1,7 @@
 import type { FastifyInstance } from "fastify";
 import type { ApprovalLifetime, LiveProofRoute, PermissionRuleDecision, ResolvedRoute, RoutePolicyOverride, RuntimeRouter, ToolIntent } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
+import { randomUUID } from "node:crypto";
 import { isRoutePolicyOverride } from "./RoutePolicy.js";
 import type { ProviderCatalogManager } from "./ProviderCatalog.js";
 import { isApprovalLifetime, isPermissionRuleDecision, isToolIntent, PermissionEngine } from "./PermissionEngine.js";
@@ -39,6 +40,7 @@ interface ApprovalBody {
   intent: ToolIntent;
   lifetime: ApprovalLifetime;
 }
+interface StandingRuleBody { label?: unknown; askKind?: unknown; scope?: unknown; }
 
 export function registerSarathiRoutes(
   app: FastifyInstance,
@@ -77,6 +79,22 @@ export function registerSarathiRoutes(
   });
 
   app.get("/api/sarathi/permissions", async () => store.snapshot().permissions);
+  app.get("/api/sarathi/standing-rules", async () => ({ rules: store.snapshot().standingRules }));
+  app.post<{ Body: StandingRuleBody }>("/api/sarathi/standing-rules", async (request, reply) => {
+    const { label, askKind, scope } = request.body ?? {};
+    if (!permissionEngine || typeof label !== "string" || !label.trim() || typeof askKind !== "string" || !askKind.trim() || (scope !== "all" && typeof scope !== "string")) { reply.code(400); return { error: "label, askKind, and scope are required" }; }
+    const operation = askKind.trim();
+    try {
+      const permissionRule = permissionEngine.buildStandingRule(operation, scope);
+      const rule = store.addStandingRule({ id: randomUUID(), label: label.trim(), askKind: operation, scope, enabled: true, firedCount: 0, permissionRule });
+      reply.code(201); return { rule };
+    } catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "standing rule could not be saved" }; }
+  });
+  app.put<{ Params: { ruleId: string }; Body: { enabled?: boolean } }>("/api/sarathi/standing-rules/:ruleId", async (request, reply) => {
+    if (typeof request.body?.enabled !== "boolean") { reply.code(400); return { error: "enabled must be a boolean" }; }
+    const rule = store.setStandingRuleEnabled(request.params.ruleId, request.body.enabled);
+    if (!rule) { reply.code(404); return { error: "standing rule was not found" }; } return { rule };
+  });
 
   app.post<{ Body: PermissionRuleBody }>("/api/sarathi/permissions/rules", async (request, reply) => {
     const body = request.body;

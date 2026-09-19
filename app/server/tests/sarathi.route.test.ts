@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -1222,6 +1222,116 @@ describe("Sarathi dashboard routes", () => {
       expect(approveResponse.statusCode).toBe(200);
       expect(approveResponse.json().specialist.status).toBe("active");
       await app.close();
+    });
+  });
+
+  describe("standing rules", () => {
+    const tools = { definitions: [
+      { tool: "delivery-pipeline", operations: ["track.change"] }, { tool: "code-host", operations: ["push"] }, { tool: "work-source", operations: ["close"] }, { tool: "system-update", operations: ["apply"] }
+    ], async execute() { return { output: "executed" }; } };
+    const change = (repository: string) => ({ tool: "delivery-pipeline", operation: "track.change", target: "work-1", context: { repository } });
+    const create = (app: ReturnType<typeof buildApp>, payload: object) => app.inject({ method: "POST", url: "/api/sarathi/standing-rules", payload });
+
+    test("stores a rule and lists it", async () => {
+      await withStore(async (path) => {
+        const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: tools });
+        const created = await create(app, { label: "Track changes in web", askKind: "track.change", scope: "web" });
+        expect(created.statusCode).toBe(201);
+        expect(created.json().rule).toMatchObject({ label: "Track changes in web", askKind: "track.change", scope: "web", enabled: true, firedCount: 0 });
+        expect((await app.inject({ method: "GET", url: "/api/sarathi/standing-rules" })).json().rules).toMatchObject([{ id: created.json().rule.id, label: "Track changes in web" }]);
+        await app.close();
+      });
+    });
+
+    test("decides a matching ask automatically, leaves a non-matching one pending, and counts each firing", async () => {
+      await withStore(async (path) => {
+        const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: tools });
+        await create(app, { label: "Track changes in web", askKind: "track.change", scope: "web" });
+        expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("web") })).statusCode).toBe(200);
+        expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("web") })).statusCode).toBe(200);
+        expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json()).toEqual({ asks: [] });
+        expect((await app.inject({ method: "GET", url: "/api/sarathi/standing-rules" })).json().rules[0].firedCount).toBe(2);
+        expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("api") })).statusCode).toBe(409);
+        expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toHaveLength(1);
+        await app.close();
+      });
+    });
+
+    test("covers every work item when the scope is all, and asks again once switched off", async () => {
+      await withStore(async (path) => {
+        const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: tools });
+        const id = (await create(app, { label: "All track changes", askKind: "track.change", scope: "all" })).json().rule.id;
+        expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("api") })).statusCode).toBe(200);
+        const off = await app.inject({ method: "PUT", url: `/api/sarathi/standing-rules/${id}`, payload: { enabled: false } });
+        expect(off.json().rule.enabled).toBe(false);
+        expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("api") })).statusCode).toBe(409);
+        expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toHaveLength(1);
+        expect((await app.inject({ method: "PUT", url: `/api/sarathi/standing-rules/${id}`, payload: { enabled: true } })).json().rule.enabled).toBe(true);
+        expect((await app.inject({ method: "PUT", url: "/api/sarathi/standing-rules/missing", payload: { enabled: true } })).statusCode).toBe(404);
+        await app.close();
+      });
+    });
+
+    test("rejects a rule that would cover a floor action, and the floor still asks with every rule on", async () => {
+      await withStore(async (path) => {
+        const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: tools });
+        for (const askKind of ["push", "close", "apply", "worksource.transition", "irreversible", "transition", "update.apply", "merge", "delete", "publish"]) {
+          const rejected = await create(app, { label: "Automate " + askKind, askKind, scope: "all" });
+          expect(rejected.statusCode).toBe(400);
+          expect(rejected.json().error).toMatch(/floor/);
+        }
+        expect((await app.inject({ method: "GET", url: "/api/sarathi/standing-rules" })).json().rules).toEqual([]);
+        await create(app, { label: "All track changes", askKind: "track.change", scope: "all" });
+        for (const intent of [
+          { tool: "code-host", operation: "push", target: "shared/release", context: { repository: "web" } },
+          { tool: "work-source", operation: "close", target: "OPS-101", context: { repository: "web" } },
+          { tool: "system-update", operation: "apply", target: "installation", context: {} }
+        ]) {
+          const response = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent });
+          expect(response.statusCode).toBe(409);
+          expect(response.json().decision).toEqual({ outcome: "requires_approval", reason: "floor action requires operator approval" });
+        }
+        await app.close();
+      });
+    });
+
+    test("counts only real firings and refuses generic edits of a standing rule's permission rule", async () => {
+      await withStore(async (path) => {
+        const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: tools });
+        const created = (await create(app, { label: "Track changes in web", askKind: "track.change", scope: "web" })).json().rule;
+        await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("api") });
+        await app.inject({ method: "PUT", url: `/api/sarathi/standing-rules/${created.id}`, payload: { enabled: false } });
+        await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("web") });
+        expect((await app.inject({ method: "GET", url: "/api/sarathi/standing-rules" })).json().rules[0].firedCount).toBe(0);
+        await app.inject({ method: "PUT", url: `/api/sarathi/standing-rules/${created.id}`, payload: { enabled: true } });
+        const permissionId = created.permissionRule.id;
+        const edit = await app.inject({ method: "PUT", url: `/api/sarathi/permissions/rules/${permissionId}`, payload: { decision: "deny", tool: "*", operation: "track.change", target: "*", lifetime: "global" } });
+        expect(edit.statusCode).toBe(400);
+        expect((await app.inject({ method: "DELETE", url: `/api/sarathi/permissions/rules/${permissionId}` })).statusCode).toBe(400);
+        expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("web") })).statusCode).toBe(200);
+        await app.close();
+      });
+    });
+
+    test("opens a store file written before standing rules existed", async () => {
+      await withStore(async (path) => {
+        new FileSarathiStore(path).setPaused(false);
+        const document = JSON.parse(readFileSync(path, "utf8"));
+        delete document.dashboard.standingRules;
+        writeFileSync(path, JSON.stringify(document));
+        expect(new FileSarathiStore(path).snapshot().standingRules).toEqual([]);
+      });
+    });
+
+    test("keeps rules across a restart", async () => {
+      await withStore(async (path) => {
+        const first = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: tools });
+        await create(first, { label: "Track changes in web", askKind: "track.change", scope: "web" });
+        await first.close();
+        const second = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: tools });
+        expect((await second.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: change("web") })).statusCode).toBe(200);
+        await second.close();
+      });
     });
   });
 });

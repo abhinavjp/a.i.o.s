@@ -55,10 +55,12 @@ export interface DiscoveryState {
 
 export interface PendingAsk { id: string; kind: string; workItemId: string | null; intent: ToolIntent; createdAt: string; }
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
+export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
 export interface SarathiDashboard {
   asks: PendingAsk[];
   askAudit: AskAuditEntry[];
+  standingRules: StandingRule[];
   runtime: RuntimeStatus;
   routing: { policies: RoutePolicyRecord[] };
   permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
@@ -109,11 +111,14 @@ export interface SarathiStore {
   updatePermissionRule(id: string, update: PermissionRule): PermissionRule | undefined;
   deletePermissionRule(id: string): PermissionRule | undefined;
   matchAndConsumePermissionRule(intent: ToolIntent, decision: PermissionRule["decision"]): PermissionRule | undefined;
+  matchAndConsumeStandingRule(intent: ToolIntent): StandingRule | undefined;
   addApproval(approval: ActionBoundApproval): ActionBoundApproval;
   findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
   consumeApproval(id: string): void;
   recordCircuit(circuit: RouteCircuit): void;
   addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt">): PendingAsk;
+  addStandingRule(rule: StandingRule): StandingRule;
+  setStandingRuleEnabled(id: string, enabled: boolean): StandingRule | undefined;
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
@@ -147,6 +152,23 @@ export class FileSarathiStore implements SarathiStore {
     if (existing) return clone(existing);
     const ask = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
     this.state.asks.push(ask); this.persist(); return clone(ask);
+  }
+
+  addStandingRule(rule: StandingRule): StandingRule {
+    this.state.standingRules.push(clone(rule));
+    this.state.permissions.rules.push(clone(rule.permissionRule));
+    this.persist();
+    return clone(rule);
+  }
+
+  setStandingRuleEnabled(id: string, enabled: boolean): StandingRule | undefined {
+    const rule = this.state.standingRules.find((candidate) => candidate.id === id);
+    if (!rule) return undefined;
+    rule.enabled = enabled;
+    this.state.permissions.rules = this.state.permissions.rules.filter((candidate) => candidate.id !== rule.permissionRule.id);
+    if (enabled) this.state.permissions.rules.push(clone(rule.permissionRule));
+    this.persist();
+    return clone(rule);
   }
 
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined {
@@ -302,6 +324,7 @@ export class FileSarathiStore implements SarathiStore {
     const index = this.state.permissions.rules.findIndex((rule) => rule.id === id);
     if (index < 0) return undefined;
     if (isFloorRule(this.state.permissions.rules[index]!)) throw new Error("floor rules cannot be edited");
+    if (this.isStandingRuleId(id)) throw new Error("standing rules are managed through standing rules");
     this.state.permissions.rules[index] = clone(update); this.persist(); return clone(update);
   }
 
@@ -310,7 +333,20 @@ export class FileSarathiStore implements SarathiStore {
     if (index < 0) return undefined;
     const rule = this.state.permissions.rules[index]!;
     if (isFloorRule(rule)) throw new Error("floor rules cannot be deleted");
+    if (this.isStandingRuleId(id)) throw new Error("standing rules are managed through standing rules");
     this.state.permissions.rules.splice(index, 1); this.persist(); return clone(rule);
+  }
+
+  private isStandingRuleId(permissionRuleId: string): boolean {
+    return this.state.standingRules.some((rule) => rule.permissionRule.id === permissionRuleId);
+  }
+
+  matchAndConsumeStandingRule(intent: ToolIntent): StandingRule | undefined {
+    const standing = this.state.standingRules.find((rule) => rule.enabled && matchesPermissionRule(rule.permissionRule, intent));
+    if (!standing) return undefined;
+    standing.firedCount += 1;
+    this.persist();
+    return clone(standing);
   }
 
   matchAndConsumePermissionRule(intent: ToolIntent, decision: PermissionRule["decision"]): PermissionRule | undefined {
@@ -413,7 +449,7 @@ const TICKET_TITLES: ReadonlyArray<[string, string]> = [
 function defaultDashboard(): SarathiDashboard {
   return {
     asks: [],
-    askAudit: [],
+    askAudit: [], standingRules: [],
     runtime: {
       name: "Hermes",
       state: "unavailable",
@@ -462,6 +498,7 @@ function defaultDashboard(): SarathiDashboard {
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks ??= [];
   state.askAudit ??= [];
+  state.standingRules ??= [];
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
   state = withFloorRules(state);
@@ -537,9 +574,14 @@ function sameIntent(left: ToolIntent, right: ToolIntent): boolean {
     JSON.stringify(sorted(left.context)) === JSON.stringify(sorted(right.context));
 }
 
-function matchesPermissionRule(rule: PermissionRule, intent: ToolIntent): boolean {
-  if (rule.remainingUses === 0 || rule.tool !== intent.tool || rule.operation !== intent.operation || rule.target !== intent.target) return false;
+export function matchesPermissionRule(rule: PermissionRule, intent: ToolIntent): boolean {
+  if (rule.remainingUses === 0 || rule.operation !== intent.operation) return false;
+  if (!matchesField(rule.tool, intent.tool) || !matchesField(rule.target, intent.target)) return false;
   return Object.entries(rule.context).every(([key, value]) => intent.context[key] === value);
+}
+
+function matchesField(ruleValue: string, intentValue: string): boolean {
+  return ruleValue === "*" || ruleValue === intentValue;
 }
 
 function sorted(context: Readonly<Record<string, string>>): Record<string, string> {

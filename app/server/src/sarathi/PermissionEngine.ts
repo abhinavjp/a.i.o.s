@@ -11,8 +11,8 @@ import type {
   ToolExecutionContext,
   ToolIntent
 } from "@aios/contracts";
-import type { SarathiStore } from "./SarathiStore.js";
-import { isFloorIntent, wouldAllowFloorAction } from "./DecisionFloor.js";
+import { matchesPermissionRule, type SarathiStore } from "./SarathiStore.js";
+import { isFloorAskKind, isFloorIntent, wouldAllowFloorAction } from "./DecisionFloor.js";
 
 export class PermissionEngine {
   constructor(
@@ -49,13 +49,24 @@ export class PermissionEngine {
   }
 
   saveRule(input: Omit<PermissionRule, "id" | "remainingUses" | "createdAt">): PermissionRule {
+    return this.store.addPermissionRule(this.buildRule(input));
+  }
+
+  /** A standing rule is an allow rule for one ask kind; the floor refuses to be covered. */
+  buildStandingRule(askKind: string, scope: string | "all"): PermissionRule {
+    if (isFloorAskKind(askKind)) throw new Error("floor actions cannot be covered by a standing rule");
+    return this.buildRule({ decision: "allow", tool: "*", operation: askKind, target: "*", lifetime: "global", context: scope === "all" ? {} : { repository: scope } });
+  }
+
+  /** Validates a rule against the floor and returns it without storing it. */
+  buildRule(input: Omit<PermissionRule, "id" | "remainingUses" | "createdAt">): PermissionRule {
     if (wouldAllowFloorAction(input)) throw new Error("floor actions cannot be allowed by a rule");
-    return this.store.addPermissionRule({
+    return {
       ...input,
       id: randomUUID(),
       remainingUses: input.lifetime === "once" ? 1 : null,
       createdAt: new Date().toISOString()
-    });
+    };
   }
 
   approve(intent: ToolIntent, lifetime: ApprovalLifetime): ActionBoundApproval {
@@ -73,7 +84,7 @@ export class PermissionEngine {
       const approval = this.store.findMatchingApproval(intent);
       return approval ? this.useApproval(approval, "floor approval") : { outcome: "requires_approval", reason: "floor action requires operator approval" };
     }
-    const rules = this.store.snapshot().permissions.rules.filter((rule) => matchesRule(rule, intent));
+    const rules = this.store.snapshot().permissions.rules.filter((rule) => matchesPermissionRule(rule, intent));
     if (rules.some((rule) => rule.decision === "deny")) {
       return { outcome: "denied", reason: "hard deny" };
     }
@@ -82,6 +93,10 @@ export class PermissionEngine {
     const approval = this.store.findMatchingApproval(intent);
     if (ask) {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "scoped ask" };
+    }
+    // Floor intents returned above, so a standing rule can never settle one.
+    if (this.store.matchAndConsumeStandingRule(intent)) {
+      return { outcome: "allowed", reason: "standing rule" };
     }
     if (isConsequential(intent)) {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "operator approval required" };
@@ -141,11 +156,6 @@ export function isToolIntent(value: unknown): value is ToolIntent {
   return ["tool", "operation", "target"].every((key) => typeof candidate[key] === "string" && candidate[key].trim()) &&
     Boolean(candidate.context) && typeof candidate.context === "object" && !Array.isArray(candidate.context) &&
     Object.values(candidate.context as Record<string, unknown>).every((entry) => typeof entry === "string");
-}
-
-function matchesRule(rule: PermissionRule, intent: ToolIntent): boolean {
-  if (rule.remainingUses === 0 || rule.tool !== intent.tool || rule.operation !== intent.operation || rule.target !== intent.target) return false;
-  return Object.entries(rule.context).every(([key, value]) => intent.context[key] === value);
 }
 
 function isDeterministicallySafe(intent: ToolIntent): boolean {

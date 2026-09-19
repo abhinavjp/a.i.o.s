@@ -29,3 +29,10 @@ export function wouldAllowFloorAction(rule: Omit<PermissionRule, "id" | "remaini
 function floorRule(id: string, tool: string, operation: string, target: string): PermissionRule {
   return { id: `floor:${id}`, decision: "ask", tool, operation, target, lifetime: "global", context: {}, remainingUses: null, createdAt: "permanent" };
 }
+
+const FLOOR_TOOLS = ["code-host", "repository", "work-source", "worksource", "delivery-pipeline", "system-update"];
+
+/** True when an ask of this kind reaches the floor under any tool, so no standing rule may cover it. */
+export function isFloorAskKind(askKind: string): boolean {
+  return FLOOR_TOOLS.some((tool) => isFloorIntent({ tool, operation: askKind, target: "shared", context: {} }));
+}
