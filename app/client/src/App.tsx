@@ -15,6 +15,7 @@ import type {
   RuntimeUsage
 } from "@aios/contracts";
 import { RoutingPage } from "./routing/RoutingPage.js";
+import { WorkItemsPage } from "./work-items/WorkItemsPage.js";
 import "./App.css";
 
 type AgentListItem = AgentInfo & { health: HealthStatus };
@@ -223,7 +224,7 @@ export function App() {
     runtime: "unselected"
   });
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
-  const [view, setView] = useState<"command" | "routing">("command");
+  const [view, setView] = useState<"command" | "routing" | "work-items">("command");
   const [taskEngine, setTaskEngine] = useState<"inherit" | AgentEngineKind>("inherit");
   const [taskConfiguration, setTaskConfiguration] = useState("default");
   const [taskModel, setTaskModel] = useState("");
@@ -469,6 +470,7 @@ export function App() {
   const todayLabel = formatToday();
 
   if (view === "routing") return <div className="sarathi-shell"><aside className="rail"><div className="brand-lockup"><span className="brand-mark" aria-hidden="true">✳</span><div><strong>Sarathi</strong><span>local command center</span></div></div><nav className="primary-nav" aria-label="Primary navigation"><button className="nav-item" type="button" onClick={() => setView("command")}><span>01</span>Command</button><button className="nav-item active" type="button"><span>05</span>Routing</button></nav></aside><main className="dashboard"><RoutingPage /></main></div>;
+  if (view === "work-items") return <div className="sarathi-shell"><aside className="rail"><div className="brand-lockup"><span className="brand-mark" aria-hidden="true">✳</span><div><strong>Sarathi</strong><span>local command center</span></div></div><nav className="primary-nav" aria-label="Primary navigation"><button className="nav-item" type="button" onClick={() => setView("command")}><span>01</span>Command</button><button className="nav-item active" type="button"><span>02</span>Work items</button></nav></aside><main className="dashboard"><WorkItemsPage /></main></div>;
 
     return (
       <div className="sarathi-shell">
@@ -483,6 +485,7 @@ export function App() {
           <a className="nav-item" href="#review"><span>03</span>Review queue</a>
           <a className="nav-item" href="#knowledge"><span>04</span>Knowledge</a>
           <a className="nav-item" href="#routing" onClick={(event) => { event.preventDefault(); setView("routing"); }}><span>05</span>Routing</a>
+          <button className="nav-item" type="button" onClick={() => setView("work-items")}><span>06</span>Work items</button>
         </nav>
         <div className="rail-footer">
           <div className="rail-caption">Current host</div>

@@ -24,11 +24,14 @@ import type { ProviderRuntimeAdapter } from "./sarathi/ProviderAdapters.js";
 import { AutoRouteSelector, type AutoRoutingOptions } from "./sarathi/AutoRouting.js";
 import { OptInProofHarness, type LiveProofHarness } from "./sarathi/ProofHarness.js";
 import { applicationDataDirectory } from "./ApplicationDataDirectory.js";
+import { FileWorkItemStore, type WorkItemStore } from "./WorkItemStore.js";
+import { registerWorkItemRoutes } from "./routes/workItems.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
   sarathiStore?: SarathiStore;
   engineConfigStore?: EngineConfigStore;
+  workItemStore?: WorkItemStore;
   runtimeRouter?: RuntimeRouter;
   /** Explicit provider/runtime adapters. Missing live adapters remain UNMEASURED. */
   runtimeAdapters?: ReadonlyArray<RuntimeAdapterRegistration>;
@@ -45,13 +48,15 @@ export interface BuildAppOptions {
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const app = Fastify();
   registerAgentsRoute(app, manager);
-  const dataDirectory = applicationDataDirectory();
-  mkdirSync(dataDirectory, { recursive: true });
+  const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore;
+  const dataDirectory = needsDefaultStore ? applicationDataDirectory() : "";
+  if (needsDefaultStore) mkdirSync(dataDirectory, { recursive: true });
   const taskStore = options.taskStore ?? new FileTaskStore(join(dataDirectory, "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
   const sarathiStore =
     options.sarathiStore ?? new FileSarathiStore(join(dataDirectory, "sarathi.json"));
   const engineConfigStore =
     options.engineConfigStore ?? new FileEngineConfigStore(join(dataDirectory, "engine-routing.json"));
+  const workItemStore = options.workItemStore ?? new FileWorkItemStore(join(dataDirectory, "work-items.json"));
   const providerAdapters = options.providerAdapters ?? [];
   const providerCatalogManager = new ProviderCatalogManager([
     ...(options.providerCatalogAdapters ?? []),
@@ -84,5 +89,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness());
   registerEngineRoutes(app, engineConfigStore, manager);
+  registerWorkItemRoutes(app, workItemStore);
   return app;
 }
