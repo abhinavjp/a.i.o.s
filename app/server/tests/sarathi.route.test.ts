@@ -61,6 +61,31 @@ describe("Sarathi dashboard routes", () => {
     });
   });
 
+  test("persists one pending ask for an approval-required delivery intent", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [], async execute() { return { output: "executed" }; } } });
+      const intent = { tool: "delivery-pipeline", operation: "track.change", target: "work-1", context: { workItemId: "work-1" } };
+      expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent })).statusCode).toBe(409);
+      expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent })).statusCode).toBe(409);
+      const asks = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks;
+      expect(asks).toHaveLength(1);
+      expect(asks[0]).toMatchObject({ kind: "track.change", workItemId: "work-1", intent, id: expect.any(String), createdAt: expect.any(String) });
+      await app.close();
+      const restarted = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [], async execute() { return { output: "executed" }; } } });
+      expect((await restarted.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toHaveLength(1);
+      await restarted.close();
+    });
+  });
+
+  test("does not record an ask for an allowed read", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [{ tool: "files", operations: ["read"] }], async execute() { return { output: "read" }; } } });
+      expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { tool: "files", operation: "read", target: "notes.md", context: {} } })).statusCode).toBe(200);
+      expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json()).toEqual({ asks: [] });
+      await app.close();
+    });
+  });
+
   test("hard denies an injected Sarathi tool before any executor receives it", async () => {
     await withStore(async (path) => {
       const executed: string[] = [];

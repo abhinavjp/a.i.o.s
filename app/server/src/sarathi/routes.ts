@@ -115,6 +115,8 @@ export function registerSarathiRoutes(
     return result;
   });
 
+  app.get("/api/sarathi/asks", async () => ({ asks: store.snapshot().asks }));
+
   app.get("/api/sarathi/providers/catalogs", async () => store.snapshot().providerCatalogs);
 
   app.post<{ Params: { provider: string } }>(

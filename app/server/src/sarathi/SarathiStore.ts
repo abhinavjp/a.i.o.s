@@ -52,7 +52,10 @@ export interface DiscoveryState {
   }>;
 }
 
+export interface PendingAsk { id: string; kind: string; workItemId: string | null; intent: ToolIntent; createdAt: string; }
+
 export interface SarathiDashboard {
+  asks: PendingAsk[];
   runtime: RuntimeStatus;
   routing: { policies: RoutePolicyRecord[] };
   permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
@@ -105,13 +108,15 @@ export interface SarathiStore {
   findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
   consumeApproval(id: string): void;
   recordCircuit(circuit: RouteCircuit): void;
+  addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt">): PendingAsk;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
-  { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) }
+  { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
+  { fromVersion: 1, migrate: (document) => ({ ...document, schemaVersion: 2, dashboard: { ...document.dashboard, asks: document.dashboard.asks ?? [] } }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -125,6 +130,13 @@ export class FileSarathiStore implements SarathiStore {
 
   snapshot(): SarathiDashboard {
     return clone(this.state);
+  }
+
+  addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt">): PendingAsk {
+    const existing = this.state.asks.find((ask) => ask.intent.tool === input.intent.tool && ask.intent.operation === input.intent.operation && ask.intent.target === input.intent.target && JSON.stringify(ask.intent.context) === JSON.stringify(input.intent.context));
+    if (existing) return clone(existing);
+    const ask = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
+    this.state.asks.push(ask); this.persist(); return clone(ask);
   }
 
   setPaused(paused: boolean): SarathiDashboard {
@@ -367,6 +379,7 @@ const TICKET_TITLES: ReadonlyArray<[string, string]> = [
 
 function defaultDashboard(): SarathiDashboard {
   return {
+    asks: [],
     runtime: {
       name: "Hermes",
       state: "unavailable",
@@ -413,6 +426,7 @@ function defaultDashboard(): SarathiDashboard {
 }
 
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
+  state.asks ??= [];
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
   state.routeCircuits ??= [];

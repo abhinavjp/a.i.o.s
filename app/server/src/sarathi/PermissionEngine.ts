@@ -30,6 +30,9 @@ export class PermissionEngine {
     context?.signal.throwIfAborted();
     const decision = await this.evaluate(intent, context?.signal);
     context?.onDecision(decision);
+    if (decision.outcome === "requires_approval") {
+      this.store.addPendingAsk({ kind: intent.operation, workItemId: intent.context.workItemId ?? null, intent });
+    }
     if (decision.outcome !== "allowed") {
       return { decision };
     }
