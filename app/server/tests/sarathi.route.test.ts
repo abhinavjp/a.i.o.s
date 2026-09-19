@@ -101,6 +101,16 @@ describe("Sarathi dashboard routes", () => {
     });
   });
 
+  test("ranks asks by kind then longest waiting first", async () => {
+    await withStore(async (path) => {
+      const store = new FileSarathiStore(path);
+      store.addPendingAsk({ kind: "question", workItemId: null, intent: { tool: "t", operation: "question", target: "new", context: {} } });
+      store.addPendingAsk({ kind: "track.change", workItemId: null, intent: { tool: "t", operation: "track.change", target: "track", context: {} } });
+      store.addPendingAsk({ kind: "artifact.approve", workItemId: null, intent: { tool: "t", operation: "artifact.approve", target: "old", context: {} } });
+      expect(store.snapshot().asks.map((ask) => ask.kind)).toEqual(["track.change", "artifact.approve", "question"]);
+    });
+  });
+
   test("hard denies an injected Sarathi tool before any executor receives it", async () => {
     await withStore(async (path) => {
       const executed: string[] = [];

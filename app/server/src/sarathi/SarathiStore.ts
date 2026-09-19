@@ -133,7 +133,9 @@ export class FileSarathiStore implements SarathiStore {
   }
 
   snapshot(): SarathiDashboard {
-    return clone(this.state);
+    const snapshot = clone(this.state);
+    snapshot.asks.sort((left, right) => askPriority(left.kind) - askPriority(right.kind) || left.createdAt.localeCompare(right.createdAt));
+    return snapshot;
   }
 
   addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt">): PendingAsk {
@@ -458,6 +460,15 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
     state.routing.policies.push(defaultPolicy("global"));
   }
   return state;
+}
+
+function askPriority(kind: string): number {
+  if (kind.includes("recovery")) return 0;
+  if (kind.includes("review")) return 1;
+  if (kind === "track.change") return 2;
+  if (kind.includes("approve") || kind.includes("approval")) return 3;
+  if (kind.includes("question")) return 4;
+  return 5;
 }
 
 function defaultPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord {
