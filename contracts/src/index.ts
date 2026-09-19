@@ -445,5 +445,6 @@ export interface WorkItem {
   workSourceKey: string | null;
   repositories: ReadonlyArray<string>;
   track: Track | null;
+  stages: ReadonlyArray<Stage>;
   createdAt: string;
 }

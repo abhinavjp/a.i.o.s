@@ -62,4 +62,35 @@ describe("work-item API", () => {
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ error: "title is required" });
   });
+
+  test("approves a starting point once and persists its plain track and stages", async () => {
+    const { app, directory } = await createApp();
+    const created = await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } });
+    const workItemId = created.json().workItem.id as string;
+
+    const approved = await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track`, payload: { startingPoint: "fast" } });
+    expect(approved.statusCode).toBe(200);
+    expect(approved.json()).toMatchObject({ workItem: {
+      track: { stages: ["plan", "implementation", "merge"] },
+      stages: [
+        { kind: "plan", state: "not-started", artifacts: [] },
+        { kind: "implementation", state: "not-started", artifacts: [] },
+        { kind: "merge", state: "not-started", artifacts: [] }
+      ]
+    } });
+    const secondApproval = await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track`, payload: { startingPoint: "full" } });
+    expect(secondApproval.statusCode).toBe(400);
+    expect(secondApproval.json()).toEqual({ error: "a track has already been approved for this work item" });
+    await app.close();
+    apps.splice(apps.indexOf(app), 1);
+
+    const configurator = new AgentConfigurator();
+    configurator.register("fake", new FakeAgent());
+    const restarted = buildApp(new AgentManager(configurator, "fake"), {
+      taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
+      engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")), workItemStore: new FileWorkItemStore(join(directory, "work-items.json"))
+    });
+    apps.push(restarted);
+    expect((await restarted.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0].stages).toHaveLength(3);
+  });
 });

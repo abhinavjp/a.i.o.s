@@ -1,13 +1,19 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
-import type { WorkItem } from "@aios/contracts";
+import type { Stage, StageKind, WorkItem } from "@aios/contracts";
+import { runMigrations, type StoreMigration } from "./StoreMigrations.js";
 
 interface WorkItemDocument { schemaVersion: number; workItems: WorkItem[]; }
+const SCHEMA_VERSION = 2;
+const MIGRATIONS: ReadonlyArray<StoreMigration<WorkItemDocument>> = [
+  { fromVersion: 1, migrate: (document) => ({ ...document, schemaVersion: 2, workItems: document.workItems.map((workItem) => ({ ...workItem, stages: workItem.stages ?? [] })) }) }
+];
 
 export interface WorkItemStore {
   list(): WorkItem[];
   create(input: { title: string; repositories: string[] }): WorkItem;
+  approveTrack(workItemId: string, stages: StageKind[]): WorkItem;
 }
 
 export class FileWorkItemStore implements WorkItemStore {
@@ -22,26 +28,42 @@ export class FileWorkItemStore implements WorkItemStore {
   create(input: { title: string; repositories: string[] }): WorkItem {
     const workItem: WorkItem = {
       id: randomUUID(), title: input.title.trim(), repositories: [...input.repositories],
-      workSourceKey: null, track: null, createdAt: new Date().toISOString()
+      workSourceKey: null, track: null, stages: [], createdAt: new Date().toISOString()
     };
     this.workItems.push(workItem);
     this.persist();
     return clone(workItem);
   }
 
+  approveTrack(workItemId: string, stageKinds: StageKind[]): WorkItem {
+    const index = this.workItems.findIndex((workItem) => workItem.id === workItemId);
+    if (index < 0) throw new Error("work item was not found");
+    const current = this.workItems[index];
+    if (current.track) throw new Error("a track has already been approved for this work item");
+    const stages: Stage[] = stageKinds.map((kind) => ({ kind, state: "not-started", artifacts: [] }));
+    const approved = { ...current, track: { stages: [...stageKinds] }, stages };
+    this.workItems[index] = approved;
+    this.persist();
+    return clone(approved);
+  }
+
   private load(): WorkItem[] {
     if (!existsSync(this.filePath)) return [];
     const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as WorkItemDocument;
     if (!parsed || typeof parsed.schemaVersion !== "number" || !Array.isArray(parsed.workItems)) throw new Error(`Invalid work-item store document: ${this.filePath}`);
-    if (parsed.schemaVersion > 1) throw new Error(`Work-item store schema version ${parsed.schemaVersion} is newer than supported version 1`);
-    if (parsed.schemaVersion !== 1) throw new Error(`Invalid work-item store document: ${this.filePath}`);
-    return clone(parsed.workItems);
+    if (parsed.schemaVersion > SCHEMA_VERSION) throw new Error(`Work-item store schema version ${parsed.schemaVersion} is newer than supported version ${SCHEMA_VERSION}`);
+    const migrated = runMigrations(parsed, SCHEMA_VERSION, MIGRATIONS);
+    if (migrated.schemaVersion !== parsed.schemaVersion) {
+      this.workItems = clone(migrated.workItems);
+      this.persist();
+    }
+    return clone(migrated.workItems);
   }
 
   private persist(): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
-    writeFileSync(temporaryPath, JSON.stringify({ schemaVersion: 1, workItems: this.workItems }, null, 2));
+    writeFileSync(temporaryPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION, workItems: this.workItems }, null, 2));
     renameSync(temporaryPath, this.filePath);
   }
 }
