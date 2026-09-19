@@ -84,16 +84,18 @@ export function registerSarathiRoutes(
       reply.code(400);
       return { error: "provide a narrow deny, ask, or allow rule with tool, operation, target, and lifetime" };
     }
-    const rule = permissionEngine.saveRule({
-      decision: body.decision,
-      tool: body.tool.trim(),
-      operation: body.operation.trim(),
-      target: body.target.trim(),
-      lifetime: body.lifetime,
-      context: body.context ?? {}
-    });
-    reply.code(201);
-    return { rule };
+    try {
+      const rule = permissionEngine.saveRule({
+        decision: body.decision,
+        tool: body.tool.trim(),
+        operation: body.operation.trim(),
+        target: body.target.trim(),
+        lifetime: body.lifetime,
+        context: body.context ?? {}
+      });
+      reply.code(201);
+      return { rule };
+    } catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "permission rule could not be saved" }; }
   });
 
   app.post<{ Body: ApprovalBody }>("/api/sarathi/permissions/approvals", async (request, reply) => {
@@ -115,6 +117,18 @@ export function registerSarathiRoutes(
     const result = await permissionEngine.execute(normalizeIntent(request.body));
     reply.code(result.decision.outcome === "allowed" ? 200 : result.decision.outcome === "denied" ? 403 : 409);
     return result;
+  });
+  app.put<{ Params: { ruleId: string }; Body: PermissionRuleBody }>("/api/sarathi/permissions/rules/:ruleId", async (request, reply) => {
+    if (!permissionEngine || !isPermissionRuleBody(request.body)) { reply.code(400); return { error: "provide a valid permission rule" }; }
+    try {
+      const rule = store.updatePermissionRule(request.params.ruleId, { id: request.params.ruleId, remainingUses: request.body.lifetime === "once" ? 1 : null, createdAt: new Date().toISOString(), decision: request.body.decision, tool: request.body.tool, operation: request.body.operation, target: request.body.target, lifetime: request.body.lifetime, context: request.body.context ?? {} });
+      if (!rule) { reply.code(404); return { error: "permission rule was not found" }; }
+      return { rule };
+    } catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "permission rule could not be edited" }; }
+  });
+  app.delete<{ Params: { ruleId: string } }>("/api/sarathi/permissions/rules/:ruleId", async (request, reply) => {
+    try { const rule = store.deletePermissionRule(request.params.ruleId); if (!rule) { reply.code(404); return { error: "permission rule was not found" }; } return { rule }; }
+    catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "permission rule could not be deleted" }; }
   });
 
   app.get("/api/sarathi/asks", async () => ({ asks: store.snapshot().asks }));

@@ -67,7 +67,7 @@ describe("default server stores", () => {
 
   test.each([
     ["tasks.json", { schemaVersion: 2, records: [] }],
-    ["sarathi.json", { schemaVersion: 4, dashboard: {} }],
+    ["sarathi.json", { schemaVersion: 5, dashboard: {} }],
     ["engine-routing.json", { schemaVersion: 2, version: 1, global: {}, workflows: {}, agents: {}, consent: {} }]
   ])("refuses a newer schema version in %s without changing the file", async (fileName, document) => {
     const dataDirectory = await mkdtemp(join(tmpdir(), "adhisthana-newer-schema-"));
@@ -77,7 +77,7 @@ describe("default server stores", () => {
     const original = JSON.stringify(document);
     await writeFile(path, original, "utf8");
 
-    expect(() => createDefaultStoreTestApp(manager())).toThrow(fileName === "sarathi.json" ? "schema version 4 is newer than supported version 3" : "schema version 2 is newer than supported version 1");
+    expect(() => createDefaultStoreTestApp(manager())).toThrow(fileName === "sarathi.json" ? "schema version 5 is newer than supported version 4" : "schema version 2 is newer than supported version 1");
     expect(await readFile(path, "utf8")).toBe(original);
   });
 

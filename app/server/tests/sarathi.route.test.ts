@@ -87,6 +87,35 @@ describe("Sarathi dashboard routes", () => {
     });
   });
 
+  test("keeps every decision-floor action asking and refuses floor-rule mutations", async () => {
+    await withStore(async (path) => {
+      const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [
+        { tool: "code-host", operations: ["push"] }, { tool: "work-source", operations: ["close"] }, { tool: "system-update", operations: ["apply"] }, { tool: "repository", operations: ["irreversible"] }
+      ], async execute() { return { output: "executed" }; } } });
+      const floor = (await app.inject({ method: "GET", url: "/api/sarathi/permissions" })).json().rules;
+      expect(floor.map((rule: { id: string }) => rule.id)).toEqual(expect.arrayContaining(["floor:shared-repository-push", "floor:work-source-transition", "floor:apply-update", "floor:irreversible-outside-adhisthana"]));
+      const intents = [
+        { tool: "code-host", operation: "push", target: "shared/release", context: {} },
+        { tool: "delivery-pipeline", operation: "worksource.transition", target: "OPS-101", context: {} },
+        { tool: "work-source", operation: "close", target: "OPS-101", context: {} },
+        { tool: "system-update", operation: "apply", target: "installation", context: {} },
+        { tool: "repository", operation: "irreversible", target: "shared/release", context: {} }
+      ];
+      for (const intent of intents) {
+        const response = await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent });
+        expect(response.statusCode).toBe(409);
+        expect(response.json().decision).toEqual({ outcome: "requires_approval", reason: "floor action requires operator approval" });
+      }
+      const allow = await app.inject({ method: "POST", url: "/api/sarathi/permissions/rules", payload: { decision: "allow", tool: "system-update", operation: "apply", target: "installation", lifetime: "global" } });
+      expect(allow.statusCode).toBe(400); expect(allow.json()).toEqual({ error: "floor actions cannot be allowed by a rule" });
+      const update = await app.inject({ method: "PUT", url: "/api/sarathi/permissions/rules/floor:apply-update", payload: { decision: "allow", tool: "system-update", operation: "apply", target: "installation", lifetime: "global" } });
+      expect(update.statusCode).toBe(400); expect(update.json()).toEqual({ error: "floor rules cannot be edited" });
+      const deleted = await app.inject({ method: "DELETE", url: "/api/sarathi/permissions/rules/floor:apply-update" });
+      expect(deleted.statusCode).toBe(400); expect(deleted.json()).toEqual({ error: "floor rules cannot be deleted" });
+      await app.close();
+    });
+  });
+
   test("approves or declines an ask exactly once with an audit record", async () => {
     await withStore(async (path) => {
       const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [], async execute() { return { output: "executed" }; } } });
@@ -382,7 +411,7 @@ describe("Sarathi dashboard routes", () => {
       await app.close();
 
       const restored = new FileSarathiStore(path).snapshot();
-      expect(restored.permissions.rules[0]?.remainingUses).toBe(0);
+      expect(restored.permissions.rules.find((rule) => rule.tool === "workspace")?.remainingUses).toBe(0);
       const restarted = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), permissionTools: { definitions: [{ tool: "workspace", operations: ["format_file"] }], async execute() { executions += 1; return { output: "must not run" }; } } });
       const afterRestart = await restarted.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent });
       expect(afterRestart.statusCode).toBe(409);

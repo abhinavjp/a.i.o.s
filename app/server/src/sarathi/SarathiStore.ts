@@ -5,6 +5,7 @@ import { runMigrations, type StoreMigration } from "../StoreMigrations.js";
 import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
+import { FLOOR_RULES, isFloorRule } from "./DecisionFloor.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
 export type SpecialistStatus = "pending_approval" | "active";
@@ -105,6 +106,8 @@ export interface SarathiStore {
   recordProviderCatalog(catalog: ProviderCatalog): SarathiDashboard;
   markProviderCatalogStale(provider: string, refreshError: string): ProviderCatalog | null;
   addPermissionRule(rule: PermissionRule): PermissionRule;
+  updatePermissionRule(id: string, update: PermissionRule): PermissionRule | undefined;
+  deletePermissionRule(id: string): PermissionRule | undefined;
   matchAndConsumePermissionRule(intent: ToolIntent, decision: PermissionRule["decision"]): PermissionRule | undefined;
   addApproval(approval: ActionBoundApproval): ActionBoundApproval;
   findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
@@ -115,12 +118,13 @@ export interface SarathiStore {
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
   { fromVersion: 1, migrate: (document) => ({ ...document, schemaVersion: 2, dashboard: { ...document.dashboard, asks: document.dashboard.asks ?? [] } }) }
   , { fromVersion: 2, migrate: (document) => ({ ...document, schemaVersion: 3, dashboard: { ...document.dashboard, askAudit: document.dashboard.askAudit ?? [] } }) }
+  , { fromVersion: 3, migrate: (document) => ({ ...document, schemaVersion: 4, dashboard: withFloorRules(document.dashboard) }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -294,6 +298,21 @@ export class FileSarathiStore implements SarathiStore {
     return clone(rule);
   }
 
+  updatePermissionRule(id: string, update: PermissionRule): PermissionRule | undefined {
+    const index = this.state.permissions.rules.findIndex((rule) => rule.id === id);
+    if (index < 0) return undefined;
+    if (isFloorRule(this.state.permissions.rules[index]!)) throw new Error("floor rules cannot be edited");
+    this.state.permissions.rules[index] = clone(update); this.persist(); return clone(update);
+  }
+
+  deletePermissionRule(id: string): PermissionRule | undefined {
+    const index = this.state.permissions.rules.findIndex((rule) => rule.id === id);
+    if (index < 0) return undefined;
+    const rule = this.state.permissions.rules[index]!;
+    if (isFloorRule(rule)) throw new Error("floor rules cannot be deleted");
+    this.state.permissions.rules.splice(index, 1); this.persist(); return clone(rule);
+  }
+
   matchAndConsumePermissionRule(intent: ToolIntent, decision: PermissionRule["decision"]): PermissionRule | undefined {
     const index = [...this.state.permissions.rules].reverse().findIndex((rule) => rule.decision === decision && matchesPermissionRule(rule, intent));
     if (index < 0) return undefined;
@@ -402,7 +421,7 @@ function defaultDashboard(): SarathiDashboard {
       reason: "Native runtime launch is not verified on this host."
     },
     routing: { policies: [defaultPolicy("global")] },
-    permissions: { rules: [], approvals: [] },
+    permissions: { rules: FLOOR_RULES.map(clone), approvals: [] },
     providerCatalogs: [],
     routeCircuits: [],
     proofs: proofDefaults(),
@@ -445,6 +464,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.askAudit ??= [];
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
+  state = withFloorRules(state);
   state.routeCircuits ??= [];
   state.proofs ??= proofDefaults();
   state.providerCatalogs = (state.providerCatalogs ?? []).map((catalog) => ({
@@ -459,6 +479,12 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   if (!state.routing.policies.some((policy) => policy.scope === "global")) {
     state.routing.policies.push(defaultPolicy("global"));
   }
+  return state;
+}
+
+function withFloorRules(state: SarathiDashboard): SarathiDashboard {
+  state.permissions ??= { rules: [], approvals: [] };
+  for (const floor of FLOOR_RULES) if (!state.permissions.rules.some((rule) => rule.id === floor.id)) state.permissions.rules.push(clone(floor));
   return state;
 }
 

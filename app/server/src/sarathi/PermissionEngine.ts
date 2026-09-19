@@ -12,6 +12,7 @@ import type {
   ToolIntent
 } from "@aios/contracts";
 import type { SarathiStore } from "./SarathiStore.js";
+import { isFloorIntent, wouldAllowFloorAction } from "./DecisionFloor.js";
 
 export class PermissionEngine {
   constructor(
@@ -48,6 +49,7 @@ export class PermissionEngine {
   }
 
   saveRule(input: Omit<PermissionRule, "id" | "remainingUses" | "createdAt">): PermissionRule {
+    if (wouldAllowFloorAction(input)) throw new Error("floor actions cannot be allowed by a rule");
     return this.store.addPermissionRule({
       ...input,
       id: randomUUID(),
@@ -67,6 +69,10 @@ export class PermissionEngine {
   }
 
   private async evaluate(intent: ToolIntent, signal?: AbortSignal): Promise<PermissionDecision> {
+    if (isFloorIntent(intent)) {
+      const approval = this.store.findMatchingApproval(intent);
+      return approval ? this.useApproval(approval, "floor approval") : { outcome: "requires_approval", reason: "floor action requires operator approval" };
+    }
     const rules = this.store.snapshot().permissions.rules.filter((rule) => matchesRule(rule, intent));
     if (rules.some((rule) => rule.decision === "deny")) {
       return { outcome: "denied", reason: "hard deny" };
