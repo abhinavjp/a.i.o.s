@@ -26,6 +26,7 @@ import { AutoRouteSelector, type AutoRoutingOptions } from "./sarathi/AutoRoutin
 import { OptInProofHarness, type LiveProofHarness } from "./sarathi/ProofHarness.js";
 import { applicationDataDirectory } from "./ApplicationDataDirectory.js";
 import { FileWorkItemStore, type WorkItemStore } from "./WorkItemStore.js";
+import { FileArtifactStore, type ArtifactStore } from "./ArtifactStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
 import type { CodeHost, WorkSource } from "@aios/connectors";
 
@@ -34,6 +35,7 @@ export interface BuildAppOptions {
   sarathiStore?: SarathiStore;
   engineConfigStore?: EngineConfigStore;
   workItemStore?: WorkItemStore;
+  artifactStore?: ArtifactStore;
   workSource?: WorkSource;
   codeHost?: CodeHost;
   runtimeRouter?: RuntimeRouter;
@@ -52,7 +54,7 @@ export interface BuildAppOptions {
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const app = Fastify();
   registerAgentsRoute(app, manager);
-  const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore;
+  const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore || !options.artifactStore;
   const dataDirectory = needsDefaultStore ? applicationDataDirectory() : "";
   if (needsDefaultStore) mkdirSync(dataDirectory, { recursive: true });
   const taskStore = options.taskStore ?? new FileTaskStore(join(dataDirectory, "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
@@ -61,6 +63,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const engineConfigStore =
     options.engineConfigStore ?? new FileEngineConfigStore(join(dataDirectory, "engine-routing.json"));
   const workItemStore = options.workItemStore ?? new FileWorkItemStore(join(dataDirectory, "work-items.json"));
+  const artifactStore = options.artifactStore ?? new FileArtifactStore(join(dataDirectory, "artifacts.json"));
   const providerAdapters = options.providerAdapters ?? [];
   const providerCatalogManager = new ProviderCatalogManager([
     ...(options.providerCatalogAdapters ?? []),
@@ -93,6 +96,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness());
   registerEngineRoutes(app, engineConfigStore, manager);
-  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost);
+  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore);
   return app;
 }

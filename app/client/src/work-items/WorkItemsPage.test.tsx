@@ -56,7 +56,8 @@ describe("WorkItemsPage", () => {
     const workItem = { id: "work-3", title: "Repair payroll export", repositories: [], workSourceKey: null, track: null, stages: [], createdAt: "2026-09-19T00:00:00.000Z" };
     const fetchMock = vi.fn()
       .mockResolvedValueOnce({ ok: true, json: async () => ({ workItems: [workItem] }) })
-      .mockResolvedValueOnce({ ok: true, json: async () => ({ mergeRequests: [{ repository: "payroll-api", number: 42, title: "Repair export batching", state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] }) });
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ mergeRequests: [{ repository: "payroll-api", number: 42, title: "Repair export batching", state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] }) })
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ artifacts: [] }) });
     vi.stubGlobal("fetch", fetchMock);
     render(<WorkItemsPage />);
     await screen.findByText("Repair payroll export");

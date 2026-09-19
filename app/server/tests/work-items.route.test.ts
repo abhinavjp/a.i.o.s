@@ -8,6 +8,7 @@ import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 import { FileEngineConfigStore } from "../src/engine/EngineConfigStore.js";
 import { FileWorkItemStore } from "../src/WorkItemStore.js";
+import { FileArtifactStore } from "../src/ArtifactStore.js";
 import { FakeCodeHost, FakeWorkSource, type CodeHost, type WorkSource } from "@aios/connectors";
 
 const apps: ReturnType<typeof buildApp>[] = [];
@@ -26,7 +27,7 @@ async function createApp(workSource?: WorkSource, codeHost?: CodeHost) {
     taskStore: new FileTaskStore(join(directory, "tasks.json")),
     sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
     engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")),
-    workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), workSource, codeHost
+    workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), artifactStore: new FileArtifactStore(join(directory, "artifacts.json")), workSource, codeHost
   });
   apps.push(result);
   return { app: result, directory };
@@ -61,6 +62,15 @@ describe("work-item API", () => {
     const { app } = await createApp();
     const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } })).json().workItem.id as string;
     expect((await app.inject({ method: "GET", url: `/api/work-items/${workItemId}/merge-requests` })).json()).toEqual({ mergeRequests: [] });
+  });
+
+  test("reads authored artifact content fresh from the code host", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-artifact-preview-")); directories.push(directory);
+    const artifactStore = new FileArtifactStore(join(directory, "artifacts.json"));
+    artifactStore.save({ id: "artifact-1", workItemId: "work", stageKind: "plan", name: "plan.md", version: 1, approvalState: "awaiting", kind: "authored", branch: "work/one", filePath: "plan.md" });
+    const configurator = new AgentConfigurator(); configurator.register("fake", new FakeAgent());
+    const app = buildApp(new AgentManager(configurator, "fake"), { taskStore: new FileTaskStore(join(directory, "tasks.json")), sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), engineConfigStore: new FileEngineConfigStore(join(directory, "engine.json")), workItemStore: new FileWorkItemStore(join(directory, "work-items.json")), artifactStore, codeHost: new FakeCodeHost() }); apps.push(app);
+    expect((await app.inject({ method: "GET", url: "/api/artifacts/artifact-1/content" })).json()).toEqual({ available: true, content: "# plan.md\n\nPreview from work/one." });
   });
 
   test("creates and persists a directly-added work item", async () => {

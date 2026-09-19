@@ -2,6 +2,7 @@ import type { FastifyInstance } from "fastify";
 import type { WorkItemStore } from "../WorkItemStore.js";
 import type { StageKind, StageState } from "@aios/contracts";
 import type { CodeHost, WorkSource } from "@aios/connectors";
+import type { ArtifactStore } from "../ArtifactStore.js";
 
 interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
@@ -15,7 +16,7 @@ const STARTING_POINTS: Record<string, StageKind[]> = {
 };
 const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocked", "done", "skipped"];
 
-export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource?: WorkSource, codeHost?: CodeHost): void {
+export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource?: WorkSource, codeHost?: CodeHost, artifactStore?: ArtifactStore): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
   app.post("/api/work-items/import", async () => {
     const tickets = await workSource?.listAssignedTickets() ?? [];
@@ -27,6 +28,12 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
     if (!workItem) { reply.code(404); return { error: "work item was not found" }; }
     return { mergeRequests: await codeHost?.listMergeRequests(workItem.id) ?? [] };
   });
+  app.get<{ Params: { artifactId: string } }>("/api/artifacts/:artifactId/content", async (request, reply) => {
+    const artifact = artifactStore?.get(request.params.artifactId);
+    if (!artifact || artifact.kind !== "authored") { reply.code(404); return { available: false }; }
+    return codeHost?.readFile(artifact.branch, artifact.filePath) ?? { available: false, content: null };
+  });
+  app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/artifacts", async (request) => ({ artifacts: artifactStore?.list(request.params.workItemId) ?? [] }));
   app.post<{ Body: CreateWorkItemBody }>("/api/work-items", async (request, reply) => {
     const { title, repositories } = request.body ?? {};
     if (typeof title !== "string" || !title.trim()) { reply.code(400); return { error: "title is required" }; }

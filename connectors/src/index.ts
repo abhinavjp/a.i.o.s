@@ -34,7 +34,7 @@ export class NullCodeHost implements CodeHost {
 export class FakeCodeHost implements CodeHost {
   async listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>> { return branch ? [{ repository: "payroll-api", number: 42, title: "Repair export batching", branch, state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] : []; }
   async readPipeline(_pipelineId: string): Promise<unknown | null> { return null; }
-  async readFile(_branch: string, _path: string): Promise<{ available: boolean; content: string | null }> { return { available: false, content: null }; }
+  async readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }> { return { available: true, content: `# ${path}\n\nPreview from ${branch}.` }; }
 }
 
 export class ConnectorConfigurator {
