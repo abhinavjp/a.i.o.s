@@ -10,7 +10,7 @@ import { FileEngineConfigStore } from "../src/engine/EngineConfigStore.js";
 import { FileWorkItemStore } from "../src/WorkItemStore.js";
 import { FileArtifactStore } from "../src/ArtifactStore.js";
 import { FilePhaseStore } from "../src/PhaseStore.js";
-import { FakeCodeHost, FakeWorkSource, type CodeHost, type WorkSource } from "@aios/connectors";
+import { FakeCodeHost, FakeWorkSource, JiraWorkSource, type CodeHost, type WorkSource } from "@aios/connectors";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const directories: string[] = [];
@@ -35,6 +35,23 @@ async function createApp(workSource?: WorkSource, codeHost?: CodeHost) {
 }
 
 describe("work-item API", () => {
+  test("imports Jira tickets through the existing path, reports expiry, and never persists a token", async () => {
+    const token = "jira-token-must-not-persist";
+    const source = new JiraWorkSource({ siteUrl: "https://jira.example.test", searchQuery: "assignee = currentUser()", credentialReference: "JIRA_TOKEN", credentialResolver: { resolve: async () => ({ value: token, expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { search: async () => [{ key: "OPS-301", fields: { summary: "Import Jira work", issuetype: { name: "Task" }, status: { name: "Open" }, description: "Read only" } }], read: async () => null } }, () => Date.parse("2026-09-07T00:00:00Z"));
+    const { app, directory } = await createApp(source);
+    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 1, skipped: 0, workItems: [{ workSourceKey: "OPS-301", title: "Import Jira work" }] });
+    expect((await app.inject({ method: "GET", url: "/api/work-items/connection" })).json()).toEqual({ connection: { siteUrl: "https://jira.example.test", credentialReference: "JIRA_TOKEN", daysUntilExpiry: 3, expiresSoon: true } });
+    await expect(readFile(join(directory, "work-items.json"), "utf8")).resolves.not.toContain(token);
+  });
+
+  test("reports a Jira connection failure and imports no work items", async () => {
+    const source = new JiraWorkSource({ siteUrl: "https://jira.example.test", searchQuery: "assignee = currentUser()", credentialReference: "JIRA_TOKEN", credentialResolver: { resolve: async () => ({ value: "token" }) }, transport: { search: async () => { throw new Error("Jira is unavailable"); }, read: async () => null } });
+    const { app } = await createApp(source);
+    const response = await app.inject({ method: "POST", url: "/api/work-items/import" });
+    expect(response.statusCode).toBe(502);
+    expect(response.json()).toEqual({ error: "work source import failed: Jira is unavailable" });
+    expect((await app.inject({ method: "GET", url: "/api/work-items" })).json()).toEqual({ workItems: [] });
+  });
   test("lists no work items on a fresh install", async () => {
     const { app } = await createApp();
     const response = await app.inject({ method: "GET", url: "/api/work-items" });

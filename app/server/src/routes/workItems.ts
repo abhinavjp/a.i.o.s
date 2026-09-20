@@ -22,8 +22,14 @@ const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocke
 
 export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
-  app.post("/api/work-items/import", async () => {
-    const tickets = await workSource?.listAssignedTickets() ?? [];
+  app.get("/api/work-items/connection", async (_request, reply) => {
+    try { return { connection: await workSource?.connectionStatus?.() ?? null }; }
+    catch (error) { reply.code(502); return { error: `work source connection failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
+  });
+  app.post("/api/work-items/import", async (_request, reply) => {
+    let tickets;
+    try { tickets = await workSource?.listAssignedTickets() ?? []; }
+    catch (error) { reply.code(502); return { error: `work source import failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
     const imported = tickets.map((ticket) => store.import({ workSourceKey: ticket.key, title: ticket.title })).filter(Boolean);
     return { imported: imported.length, skipped: tickets.length - imported.length, workItems: store.list() };
   });
