@@ -460,3 +460,7 @@ export interface WorkItem {
   stages: ReadonlyArray<Stage>;
   createdAt: string;
 }
+
+export const ADHISTHANA_BRANCH_PREFIX = "adhisthana/";
+export function adhisthanaBranch(workSourceKey: string, stage: string): string { return `${ADHISTHANA_BRANCH_PREFIX}${workSourceKey}/${stage}`; }
+export function isAdhisthanaBranch(branch: string): boolean { return /^adhisthana\/[^/]+\/[^/]+$/.test(branch); }

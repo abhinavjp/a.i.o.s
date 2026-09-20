@@ -1,3 +1,5 @@
+import { ADHISTHANA_BRANCH_PREFIX, adhisthanaBranch, isAdhisthanaBranch } from "@aios/contracts";
+export { ADHISTHANA_BRANCH_PREFIX, adhisthanaBranch, isAdhisthanaBranch } from "@aios/contracts";
 export interface WorkSourceTicket { key: string; title: string; type: string; status: string; description: string; }
 export interface WorkSourceConnection { siteUrl: string; credentialReference: string; daysUntilExpiry: number | null; expiresSoon: boolean; }
 export interface WorkSource {
@@ -74,7 +76,12 @@ export interface CodeHost {
   readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }>;
   readDiffSummary(branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }>;
   connectionStatus?(): Promise<WorkSourceConnection>;
+  createBranch(branch: string): Promise<void>; push(branch: string): Promise<void>; openDraftMergeRequest(branch: string): Promise<void>;
+  merge(): Promise<never>; markMergeRequestReady(): Promise<never>; deleteBranch(branch: string): Promise<void>;
 }
+
+function assertAdhisthanaBranch(branch: string): void { if (!isAdhisthanaBranch(branch)) throw new Error("code host writes require an Adhisthana branch"); }
+function forbiddenWrite(action: string): never { throw new Error(`code host permanently refuses ${action}`); }
 
 export interface GitLabMergeRequest { iid: number; title: string; source_branch: string; state: string; head_pipeline?: { status: string; detailed_status?: { details_path?: string } }; }
 export interface GitLabTransport {
@@ -93,6 +100,12 @@ export class GitLabCodeHost implements CodeHost {
   async connectionStatus(): Promise<WorkSourceConnection> { const credential = await this.credential(); await this.transport.listMergeRequests({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch: this.options.defaultBranch, token: credential.value }); const expiresAt = credential.expiresAt ? Date.parse(credential.expiresAt) : Number.NaN; const daysUntilExpiry = Number.isFinite(expiresAt) ? Math.max(0, Math.ceil((expiresAt - this.now()) / 86_400_000)) : null; return { siteUrl: this.options.siteUrl, credentialReference: this.options.credentialReference, daysUntilExpiry, expiresSoon: daysUntilExpiry !== null && daysUntilExpiry <= (this.options.expiryWarningDays ?? 7) }; }
   private credential() { return this.options.credentialResolver.resolve(this.options.credentialReference); }
   private get transport(): GitLabTransport { return this.options.transport ?? new FetchGitLabTransport(); }
+  async createBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
+  async push(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
+  async openDraftMergeRequest(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
+  async merge(): Promise<never> { return forbiddenWrite("merge"); }
+  async markMergeRequestReady(): Promise<never> { return forbiddenWrite("marking a merge request ready"); }
+  async deleteBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
 }
 export class FetchGitLabTransport implements GitLabTransport {
   private async get(siteUrl: string, path: string, token: string): Promise<Response> { const response = await fetch(`${siteUrl.replace(/\/$/, "")}${path}`, { headers: { "PRIVATE-TOKEN": token, Accept: "application/json" } }); if (!response.ok && response.status !== 404) throw new Error(`GitLab read failed (${response.status})`); return response; }
@@ -122,6 +135,8 @@ export class NullCodeHost implements CodeHost {
   async readPipeline(_pipelineId: string): Promise<unknown | null> { return null; }
   async readFile(_branch: string, _path: string): Promise<{ available: boolean; content: string | null }> { return { available: false, content: null }; }
   async readDiffSummary(_branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }> { return { available: false, filesChanged: 0, linesAdded: 0, linesRemoved: 0 }; }
+  async createBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async push(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async openDraftMergeRequest(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
+  async merge(): Promise<never> { return forbiddenWrite("merge"); } async markMergeRequestReady(): Promise<never> { return forbiddenWrite("marking a merge request ready"); } async deleteBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
 }
 
 export class FakeCodeHost implements CodeHost {
@@ -129,6 +144,8 @@ export class FakeCodeHost implements CodeHost {
   async readPipeline(_pipelineId: string): Promise<unknown | null> { return null; }
   async readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }> { return { available: true, content: `# ${path}\n\nPreview from ${branch}.` }; }
   async readDiffSummary(_branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }> { return { available: true, filesChanged: 4, linesAdded: 26, linesRemoved: 8 }; }
+  async createBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async push(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async openDraftMergeRequest(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
+  async merge(): Promise<never> { return forbiddenWrite("merge"); } async markMergeRequestReady(): Promise<never> { return forbiddenWrite("marking a merge request ready"); } async deleteBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
 }
 
 export class ConnectorConfigurator {

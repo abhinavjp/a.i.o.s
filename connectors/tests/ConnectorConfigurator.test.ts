@@ -1,7 +1,17 @@
 import { describe, expect, test, vi } from "vitest";
-import { ConnectorConfigurator, GitLabCodeHost, JiraWorkSource, NullCodeHost, NullWorkSource } from "../src/index.js";
+import { adhisthanaBranch, ConnectorConfigurator, FakeCodeHost, GitLabCodeHost, JiraWorkSource, NullCodeHost, NullWorkSource } from "../src/index.js";
 
 describe("ConnectorConfigurator", () => {
+  test("structurally refuses dangerous writes while allowing Adhisthana branch work", async () => {
+    const host = new FakeCodeHost();
+    const branch = adhisthanaBranch("OPS-33", "implementation");
+    expect(branch).toBe("adhisthana/OPS-33/implementation");
+    await expect(host.push(branch)).resolves.toBeUndefined();
+    await expect(host.push("adhisthana/OPS-33")).rejects.toThrow(/Adhisthana branch/);
+    await expect(host.merge()).rejects.toThrow(/permanently refuses/);
+    await expect(host.markMergeRequestReady()).rejects.toThrow(/permanently refuses/);
+    await expect(host.deleteBranch("operator/fix")).rejects.toThrow(/Adhisthana branch/);
+  });
   test("reads GitLab through an external credential reference over plain HTTP and reports expiry", async () => {
     const listMergeRequests = vi.fn().mockResolvedValue([{ iid: 42, title: "Fix export", source_branch: "work-1", state: "opened", head_pipeline: { status: "running", detailed_status: { details_path: "/pipelines/7" } } }]);
     const host = new GitLabCodeHost({ siteUrl: "http://gitlab.internal", projectId: "group/project", defaultBranch: "trunk", credentialReference: "GITLAB_TOKEN", credentialResolver: { resolve: async () => ({ value: "never-persisted", expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { listMergeRequests, readPipeline: async () => null, readFile: async () => null, readDiff: async () => null } }, () => Date.parse("2026-09-07T00:00:00Z"));

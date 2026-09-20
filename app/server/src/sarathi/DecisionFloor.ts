@@ -1,6 +1,5 @@
-import type { PermissionRule, ToolIntent } from "@aios/contracts";
+import { ADHISTHANA_BRANCH_PREFIX, type PermissionRule, type ToolIntent } from "@aios/contracts";
 
-const ADHISTHANA_BRANCH = "adhisthana/";
 
 /** These records are durable evidence of the actions that require a human decision. */
 export const FLOOR_RULES: ReadonlyArray<PermissionRule> = [
@@ -17,8 +16,8 @@ export function isFloorIntent(intent: ToolIntent): boolean {
   if ((intent.tool === "work-source" || intent.tool === "worksource") && /^(transition|close)$/.test(intent.operation)) return true;
   if (intent.tool === "system-update" && /^(apply|update.apply)$/.test(intent.operation)) return true;
   const branch = intent.context.branch ?? intent.target;
-  if ((intent.tool === "code-host" || intent.tool === "repository") && intent.operation === "push") return !branch.toLowerCase().startsWith(ADHISTHANA_BRANCH);
-  return /^(merge|delete|publish|irreversible)$/.test(intent.operation) && !branch.toLowerCase().startsWith(ADHISTHANA_BRANCH);
+  if ((intent.tool === "code-host" || intent.tool === "repository") && intent.operation === "push") return !branch.toLowerCase().startsWith(ADHISTHANA_BRANCH_PREFIX);
+  return /^(merge|delete|publish|irreversible)$/.test(intent.operation) && !branch.toLowerCase().startsWith(ADHISTHANA_BRANCH_PREFIX);
 }
 
 export function wouldAllowFloorAction(rule: Omit<PermissionRule, "id" | "remainingUses" | "createdAt">): boolean {
