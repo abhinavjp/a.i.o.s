@@ -1,7 +1,14 @@
 import { describe, expect, test, vi } from "vitest";
-import { ConnectorConfigurator, JiraWorkSource, NullCodeHost, NullWorkSource } from "../src/index.js";
+import { ConnectorConfigurator, GitLabCodeHost, JiraWorkSource, NullCodeHost, NullWorkSource } from "../src/index.js";
 
 describe("ConnectorConfigurator", () => {
+  test("reads GitLab through an external credential reference over plain HTTP and reports expiry", async () => {
+    const listMergeRequests = vi.fn().mockResolvedValue([{ iid: 42, title: "Fix export", source_branch: "work-1", state: "opened", head_pipeline: { status: "running", detailed_status: { details_path: "/pipelines/7" } } }]);
+    const host = new GitLabCodeHost({ siteUrl: "http://gitlab.internal", projectId: "group/project", defaultBranch: "trunk", credentialReference: "GITLAB_TOKEN", credentialResolver: { resolve: async () => ({ value: "never-persisted", expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { listMergeRequests, readPipeline: async () => null, readFile: async () => null, readDiff: async () => null } }, () => Date.parse("2026-09-07T00:00:00Z"));
+    await expect(host.listMergeRequests("work-1")).resolves.toEqual([{ repository: "group/project", number: 42, title: "Fix export", branch: "work-1", state: "opened", pipelineResult: "running", jobsCompleted: 0, jobsTotal: 0 }]);
+    await expect(host.connectionStatus()).resolves.toEqual({ siteUrl: "http://gitlab.internal", credentialReference: "GITLAB_TOKEN", daysUntilExpiry: 3, expiresSoon: true });
+    expect(listMergeRequests).toHaveBeenCalledWith({ siteUrl: "http://gitlab.internal", projectId: "group/project", branch: "work-1", token: "never-persisted" });
+  });
   test("reads Jira tickets through an external credential reference and reports token expiry", async () => {
     const search = vi.fn().mockResolvedValue([{ key: "OPS-301", fields: { summary: "Import Jira work", issuetype: { name: "Task" }, status: { name: "Open" }, description: "Read only" } }]);
     const source = new JiraWorkSource({ siteUrl: "https://jira.example.test", searchQuery: "assignee = currentUser()", credentialReference: "JIRA_TOKEN", credentialResolver: { resolve: async () => ({ value: "never-persisted", expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { search, read: async () => null } }, () => Date.parse("2026-09-07T00:00:00Z"));

@@ -73,7 +73,35 @@ export interface CodeHost {
   readPipeline(pipelineId: string): Promise<unknown | null>;
   readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }>;
   readDiffSummary(branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }>;
+  connectionStatus?(): Promise<WorkSourceConnection>;
 }
+
+export interface GitLabMergeRequest { iid: number; title: string; source_branch: string; state: string; head_pipeline?: { status: string; detailed_status?: { details_path?: string } }; }
+export interface GitLabTransport {
+  listMergeRequests(input: { siteUrl: string; projectId: string; branch: string; token: string }): Promise<ReadonlyArray<GitLabMergeRequest>>;
+  readPipeline(input: { siteUrl: string; projectId: string; pipelineId: string; token: string }): Promise<unknown | null>;
+  readFile(input: { siteUrl: string; projectId: string; branch: string; path: string; token: string }): Promise<string | null>;
+  readDiff(input: { siteUrl: string; projectId: string; baseBranch: string; branch: string; token: string }): Promise<string | null>;
+}
+export interface GitLabCodeHostOptions { siteUrl: string; projectId: string; credentialReference: string; credentialResolver: JiraCredentialResolver; defaultBranch: string; transport?: GitLabTransport; expiryWarningDays?: number; }
+export class GitLabCodeHost implements CodeHost {
+  constructor(private readonly options: GitLabCodeHostOptions, private readonly now: () => number = Date.now) {}
+  async listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>> { const credential = await this.credential(); return (await this.transport.listMergeRequests({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch, token: credential.value })).map((item) => ({ repository: this.options.projectId, number: item.iid, title: item.title, branch: item.source_branch, state: item.state, pipelineResult: pipelineResult(item.head_pipeline?.status), jobsCompleted: 0, jobsTotal: 0 })); }
+  async readPipeline(pipelineId: string): Promise<unknown | null> { const credential = await this.credential(); return this.transport.readPipeline({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, pipelineId, token: credential.value }); }
+  async readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }> { const credential = await this.credential(); const content = await this.transport.readFile({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch, path, token: credential.value }); return { available: content !== null, content }; }
+  async readDiffSummary(branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }> { const credential = await this.credential(); const diff = await this.transport.readDiff({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, baseBranch: this.options.defaultBranch, branch, token: credential.value }); if (diff === null) return { available: false, filesChanged: 0, linesAdded: 0, linesRemoved: 0 }; return { available: true, filesChanged: diff.split("\n").filter((line) => line.startsWith("diff --git")).length, linesAdded: diff.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length, linesRemoved: diff.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length }; }
+  async connectionStatus(): Promise<WorkSourceConnection> { const credential = await this.credential(); await this.transport.listMergeRequests({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch: this.options.defaultBranch, token: credential.value }); const expiresAt = credential.expiresAt ? Date.parse(credential.expiresAt) : Number.NaN; const daysUntilExpiry = Number.isFinite(expiresAt) ? Math.max(0, Math.ceil((expiresAt - this.now()) / 86_400_000)) : null; return { siteUrl: this.options.siteUrl, credentialReference: this.options.credentialReference, daysUntilExpiry, expiresSoon: daysUntilExpiry !== null && daysUntilExpiry <= (this.options.expiryWarningDays ?? 7) }; }
+  private credential() { return this.options.credentialResolver.resolve(this.options.credentialReference); }
+  private get transport(): GitLabTransport { return this.options.transport ?? new FetchGitLabTransport(); }
+}
+export class FetchGitLabTransport implements GitLabTransport {
+  private async get(siteUrl: string, path: string, token: string): Promise<Response> { const response = await fetch(`${siteUrl.replace(/\/$/, "")}${path}`, { headers: { "PRIVATE-TOKEN": token, Accept: "application/json" } }); if (!response.ok && response.status !== 404) throw new Error(`GitLab read failed (${response.status})`); return response; }
+  async listMergeRequests(input: { siteUrl: string; projectId: string; branch: string; token: string }): Promise<ReadonlyArray<GitLabMergeRequest>> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/merge_requests?${new URLSearchParams({ source_branch: input.branch })}`, input.token); if (response.status === 404) throw new Error("GitLab project read failed (404)"); return await response.json() as GitLabMergeRequest[]; }
+  async readPipeline(input: { siteUrl: string; projectId: string; pipelineId: string; token: string }): Promise<unknown | null> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/pipelines/${encodeURIComponent(input.pipelineId)}`, input.token); return response.status === 404 ? null : await response.json(); }
+  async readFile(input: { siteUrl: string; projectId: string; branch: string; path: string; token: string }): Promise<string | null> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/repository/files/${encodeURIComponent(input.path)}?${new URLSearchParams({ ref: input.branch })}`, input.token); if (response.status === 404) return null; const body = await response.json() as { content?: string }; return body.content ? Buffer.from(body.content, "base64").toString("utf8") : null; }
+  async readDiff(input: { siteUrl: string; projectId: string; baseBranch: string; branch: string; token: string }): Promise<string | null> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/repository/compare?${new URLSearchParams({ from: input.baseBranch, to: input.branch })}`, input.token); if (response.status === 404) return null; const body = await response.json() as { diffs?: Array<{ diff: string }> }; return body.diffs?.map((item) => item.diff).join("\n") ?? null; }
+}
+function pipelineResult(status: string | undefined): MergeRequest["pipelineResult"] { return status === "success" ? "passed" : status === "failed" ? "failed" : "running"; }
 
 export class NullWorkSource implements WorkSource {
   async listAssignedTickets(): Promise<ReadonlyArray<WorkSourceTicket>> { return []; }

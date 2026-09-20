@@ -22,6 +22,7 @@ const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocke
 
 export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
+  app.get("/api/code-host/connection", async (_request, reply) => { try { return { connection: await codeHost?.connectionStatus?.() ?? null }; } catch (error) { reply.code(502); return { error: `code host connection failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; } });
   app.get("/api/work-items/connection", async (_request, reply) => {
     try { return { connection: await workSource?.connectionStatus?.() ?? null }; }
     catch (error) { reply.code(502); return { error: `work source connection failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
@@ -36,17 +37,20 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
   app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/merge-requests", async (request, reply) => {
     const workItem = store.list().find((candidate) => candidate.id === request.params.workItemId);
     if (!workItem) { reply.code(404); return { error: "work item was not found" }; }
-    return { mergeRequests: await codeHost?.listMergeRequests(workItem.id) ?? [] };
+    try { return { mergeRequests: await codeHost?.listMergeRequests(workItem.id) ?? [] }; }
+    catch (error) { reply.code(502); return { mergeRequests: [], error: `code host read failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
   });
   app.get<{ Params: { artifactId: string } }>("/api/artifacts/:artifactId/content", async (request, reply) => {
     const artifact = artifactStore?.get(request.params.artifactId);
     if (!artifact) { reply.code(404); return { available: false }; }
-    if (artifact.kind === "derived") {
-      if (artifact.codeHostView === "phase-diff") return codeHost?.readDiffSummary(artifact.workItemId) ?? { available: false };
-      const mergeRequests = await codeHost?.listMergeRequests(artifact.workItemId) ?? [];
-      return { available: mergeRequests.length > 0, mergeRequests };
-    }
-    return codeHost?.readFile(artifact.branch, artifact.filePath) ?? { available: false, content: null };
+    try {
+      if (artifact.kind === "derived") {
+        if (artifact.codeHostView === "phase-diff") return codeHost?.readDiffSummary(artifact.workItemId) ?? { available: false };
+        const mergeRequests = await codeHost?.listMergeRequests(artifact.workItemId) ?? [];
+        return { available: mergeRequests.length > 0, mergeRequests };
+      }
+      return codeHost?.readFile(artifact.branch, artifact.filePath) ?? { available: false, content: null };
+    } catch (error) { reply.code(502); return { available: false, error: `code host read failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
   });
   app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/artifacts", async (request) => ({ artifacts: artifactStore?.list(request.params.workItemId) ?? [] }));
   app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/phases", async (request) => ({ phases: phaseStore.list(request.params.workItemId).map((stored) => ({ ...stored, tasks: stored.phase.taskIds.map((taskId) => {
@@ -63,11 +67,13 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
       const counts = contents.flatMap((content) => content?.available && content.content ? [countChecklist(content.content)] : []).filter((count): count is NonNullable<CompletionCount> => count !== null);
       return counts.length === 0 ? null : counts.reduce((total, count) => ({ completed: total.completed + count.completed, total: total.total + count.total }), { completed: 0, total: 0 });
     };
-    const [tasks, checks, diff, mergeRequests] = await Promise.all([
-      checklistCount("plan"), checklistCount("spec-and-eval"), codeHost?.readDiffSummary(workItem.id), codeHost?.listMergeRequests(workItem.id) ?? []
-    ]);
-    const pipelineJobs = mergeRequests.length === 0 ? null : mergeRequests.reduce((total, mergeRequest) => ({ completed: total.completed + mergeRequest.jobsCompleted, total: total.total + mergeRequest.jobsTotal }), { completed: 0, total: 0 });
-    return { progress: { tasks, checks, diff: diff?.available ? { filesChanged: diff.filesChanged, linesAdded: diff.linesAdded, linesRemoved: diff.linesRemoved } : null, pipelineJobs } };
+    try {
+      const [tasks, checks, diff, mergeRequests] = await Promise.all([
+        checklistCount("plan"), checklistCount("spec-and-eval"), codeHost?.readDiffSummary(workItem.id), codeHost?.listMergeRequests(workItem.id) ?? []
+      ]);
+      const pipelineJobs = mergeRequests.length === 0 ? null : mergeRequests.reduce((total, mergeRequest) => ({ completed: total.completed + mergeRequest.jobsCompleted, total: total.total + mergeRequest.jobsTotal }), { completed: 0, total: 0 });
+      return { progress: { tasks, checks, diff: diff?.available ? { filesChanged: diff.filesChanged, linesAdded: diff.linesAdded, linesRemoved: diff.linesRemoved } : null, pipelineJobs } };
+    } catch (error) { reply.code(502); return { progress: null, error: `code host read failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
   });
   app.post<{ Params: { workItemId: string; phaseNumber: string }; Body: AddPhaseTaskBody }>("/api/work-items/:workItemId/phases/:phaseNumber/tasks", async (request, reply) => {
     const { taskId } = request.body ?? {};

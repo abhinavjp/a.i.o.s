@@ -10,7 +10,7 @@ import { FileEngineConfigStore } from "../src/engine/EngineConfigStore.js";
 import { FileWorkItemStore } from "../src/WorkItemStore.js";
 import { FileArtifactStore } from "../src/ArtifactStore.js";
 import { FilePhaseStore } from "../src/PhaseStore.js";
-import { FakeCodeHost, FakeWorkSource, JiraWorkSource, type CodeHost, type WorkSource } from "@aios/connectors";
+import { FakeCodeHost, FakeWorkSource, GitLabCodeHost, JiraWorkSource, type CodeHost, type WorkSource } from "@aios/connectors";
 
 const apps: ReturnType<typeof buildApp>[] = [];
 const directories: string[] = [];
@@ -35,6 +35,15 @@ async function createApp(workSource?: WorkSource, codeHost?: CodeHost) {
 }
 
 describe("work-item API", () => {
+  test("reads GitLab merge requests and authored content through existing work-item paths", async () => {
+    const token = "gitlab-token-must-not-persist";
+    const host = new GitLabCodeHost({ siteUrl: "http://gitlab.internal", projectId: "group/project", defaultBranch: "trunk", credentialReference: "GITLAB_TOKEN", credentialResolver: { resolve: async () => ({ value: token, expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { listMergeRequests: async ({ branch }) => [{ iid: 42, title: "Fix export", source_branch: branch, state: "opened", head_pipeline: { status: "running" } }], readPipeline: async () => null, readFile: async () => "# Real branch", readDiff: async () => "a\nb\n" } }, () => Date.parse("2026-09-07T00:00:00Z"));
+    const { app, directory } = await createApp(undefined, host);
+    const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "GitLab work", repositories: [] } })).json().workItem.id;
+    expect((await app.inject({ method: "GET", url: `/api/work-items/${workItemId}/merge-requests` })).json().mergeRequests[0]).toMatchObject({ repository: "group/project", number: 42, pipelineResult: "running" });
+    expect((await app.inject({ method: "GET", url: "/api/code-host/connection" })).json()).toEqual({ connection: { siteUrl: "http://gitlab.internal", credentialReference: "GITLAB_TOKEN", daysUntilExpiry: 3, expiresSoon: true } });
+    await expect(readFile(join(directory, "work-items.json"), "utf8")).resolves.not.toContain(token);
+  });
   test("imports Jira tickets through the existing path, reports expiry, and never persists a token", async () => {
     const token = "jira-token-must-not-persist";
     const source = new JiraWorkSource({ siteUrl: "https://jira.example.test", searchQuery: "assignee = currentUser()", credentialReference: "JIRA_TOKEN", credentialResolver: { resolve: async () => ({ value: token, expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { search: async () => [{ key: "OPS-301", fields: { summary: "Import Jira work", issuetype: { name: "Task" }, status: { name: "Open" }, description: "Read only" } }], read: async () => null } }, () => Date.parse("2026-09-07T00:00:00Z"));
