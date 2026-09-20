@@ -6,6 +6,7 @@ import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit
 import type { StoredTask } from "../TaskStore.js";
 import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
 import { FLOOR_RULES, isFloorRule } from "./DecisionFloor.js";
+import { riskOf, type AskRisk } from "./AskRisk.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
 export type SpecialistStatus = "pending_approval" | "active";
@@ -53,7 +54,8 @@ export interface DiscoveryState {
   }>;
 }
 
-export interface PendingAsk { id: string; kind: string; workItemId: string | null; intent: ToolIntent; createdAt: string; }
+export interface PendingAsk { id: string; kind: string; risk: AskRisk; workItemId: string | null; intent: ToolIntent; createdAt: string; }
+export type Autopilot = Record<AskRisk, "ask" | "automatic">;
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
 export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
@@ -61,6 +63,7 @@ export interface SarathiDashboard {
   asks: PendingAsk[];
   askAudit: AskAuditEntry[];
   standingRules: StandingRule[];
+  autopilot: Autopilot;
   runtime: RuntimeStatus;
   routing: { policies: RoutePolicyRecord[] };
   permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
@@ -116,9 +119,11 @@ export interface SarathiStore {
   findMatchingApproval(intent: ToolIntent): ActionBoundApproval | undefined;
   consumeApproval(id: string): void;
   recordCircuit(circuit: RouteCircuit): void;
-  addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt">): PendingAsk;
+  addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt" | "risk">): PendingAsk;
   addStandingRule(rule: StandingRule): StandingRule;
   setStandingRuleEnabled(id: string, enabled: boolean): StandingRule | undefined;
+  setAutopilot(autopilot: Autopilot): Autopilot;
+  matchesAutopilot(kind: string): boolean;
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
@@ -147,10 +152,10 @@ export class FileSarathiStore implements SarathiStore {
     return snapshot;
   }
 
-  addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt">): PendingAsk {
+  addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt" | "risk">): PendingAsk {
     const existing = this.state.asks.find((ask) => ask.intent.tool === input.intent.tool && ask.intent.operation === input.intent.operation && ask.intent.target === input.intent.target && JSON.stringify(ask.intent.context) === JSON.stringify(input.intent.context));
     if (existing) return clone(existing);
-    const ask = { ...input, id: randomUUID(), createdAt: new Date().toISOString() };
+    const ask = { ...input, risk: riskOf(input.kind), id: randomUUID(), createdAt: new Date().toISOString() };
     this.state.asks.push(ask); this.persist(); return clone(ask);
   }
 
@@ -170,6 +175,8 @@ export class FileSarathiStore implements SarathiStore {
     this.persist();
     return clone(rule);
   }
+  setAutopilot(autopilot: Autopilot): Autopilot { this.state.autopilot = clone(autopilot); this.persist(); return clone(this.state.autopilot); }
+  matchesAutopilot(kind: string): boolean { return this.state.autopilot[riskOf(kind)] === "automatic"; }
 
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined {
     const index = this.state.asks.findIndex((ask) => ask.id === id);
@@ -449,7 +456,7 @@ const TICKET_TITLES: ReadonlyArray<[string, string]> = [
 function defaultDashboard(): SarathiDashboard {
   return {
     asks: [],
-    askAudit: [], standingRules: [],
+    askAudit: [], standingRules: [], autopilot: defaultAutopilot(),
     runtime: {
       name: "Hermes",
       state: "unavailable",
@@ -497,8 +504,10 @@ function defaultDashboard(): SarathiDashboard {
 
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks ??= [];
+  state.asks = state.asks.map((ask) => ({ ...ask, risk: ask.risk ?? riskOf(ask.kind) }));
   state.askAudit ??= [];
   state.standingRules ??= [];
+  state.autopilot ??= defaultAutopilot();
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
   state = withFloorRules(state);
@@ -518,6 +527,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   }
   return state;
 }
+function defaultAutopilot(): Autopilot { return { low: "ask", medium: "ask", high: "ask" }; }
 
 function withFloorRules(state: SarathiDashboard): SarathiDashboard {
   state.permissions ??= { rules: [], approvals: [] };

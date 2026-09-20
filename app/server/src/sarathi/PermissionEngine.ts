@@ -98,6 +98,9 @@ export class PermissionEngine {
     if (this.store.matchAndConsumeStandingRule(intent)) {
       return { outcome: "allowed", reason: "standing rule" };
     }
+    if (this.store.matchesAutopilot(intent.operation)) {
+      return { outcome: "allowed", reason: "autopilot" };
+    }
     if (isConsequential(intent)) {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "operator approval required" };
     }

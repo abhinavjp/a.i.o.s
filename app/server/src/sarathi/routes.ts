@@ -41,6 +41,7 @@ interface ApprovalBody {
   lifetime: ApprovalLifetime;
 }
 interface StandingRuleBody { label?: unknown; askKind?: unknown; scope?: unknown; }
+interface AutopilotBody { low?: unknown; medium?: unknown; high?: unknown; }
 
 export function registerSarathiRoutes(
   app: FastifyInstance,
@@ -80,6 +81,12 @@ export function registerSarathiRoutes(
 
   app.get("/api/sarathi/permissions", async () => store.snapshot().permissions);
   app.get("/api/sarathi/standing-rules", async () => ({ rules: store.snapshot().standingRules }));
+  app.get("/api/sarathi/autopilot", async () => store.snapshot().autopilot);
+  app.put<{ Body: AutopilotBody }>("/api/sarathi/autopilot", async (request, reply) => {
+    const body = request.body;
+    if (!body || ![body.low, body.medium, body.high].every((tier) => tier === "ask" || tier === "automatic")) { reply.code(400); return { error: "each autopilot tier must be ask or automatic" }; }
+    return store.setAutopilot({ low: body.low as "ask" | "automatic", medium: body.medium as "ask" | "automatic", high: body.high as "ask" | "automatic" });
+  });
   app.post<{ Body: StandingRuleBody }>("/api/sarathi/standing-rules", async (request, reply) => {
     const { label, askKind, scope } = request.body ?? {};
     if (!permissionEngine || typeof label !== "string" || !label.trim() || typeof askKind !== "string" || !askKind.trim() || (scope !== "all" && typeof scope !== "string")) { reply.code(400); return { error: "label, askKind, and scope are required" }; }
