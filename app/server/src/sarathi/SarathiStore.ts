@@ -26,6 +26,7 @@ export interface Specialist {
   status: SpecialistStatus;
   scope: string;
   slotLimit: number;
+  capabilityTags: string[];
 }
 
 export interface RuntimeStatus {
@@ -110,7 +111,7 @@ export interface SarathiStore {
   setPaused(paused: boolean): SarathiDashboard;
   checkDiscovery(): SarathiDashboard;
   recordTask(task: StoredTask): SarathiDashboard;
-  createSpecialist(input: { name: string; role: string; runtime: string; slotLimit?: number }): Specialist;
+  createSpecialist(input: { name: string; role: string; runtime: string; slotLimit?: number; capabilityTags?: string[] }): Specialist;
   approveSpecialist(id: string): Specialist | undefined;
   getPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord;
   setRoutePolicy(scope: "global" | "specialist" | "workflow", id: string | undefined, policy: RoutePolicyOverride): RoutePolicyRecord;
@@ -283,7 +284,7 @@ export class FileSarathiStore implements SarathiStore {
     return this.snapshot();
   }
 
-  createSpecialist(input: { name: string; role: string; runtime: string; slotLimit?: number }): Specialist {
+  createSpecialist(input: { name: string; role: string; runtime: string; slotLimit?: number; capabilityTags?: string[] }): Specialist {
     const specialist: Specialist = {
       id: randomUUID(),
       name: input.name.trim(),
@@ -291,7 +292,8 @@ export class FileSarathiStore implements SarathiStore {
       runtime: input.runtime.trim() || "unselected",
       status: "pending_approval",
       scope: "project context required",
-      slotLimit: input.slotLimit ?? 1
+      slotLimit: input.slotLimit ?? 1,
+      capabilityTags: input.capabilityTags ?? []
     };
     this.state.specialists.push(specialist);
     this.persist();
@@ -534,7 +536,8 @@ function defaultDashboard(): SarathiDashboard {
         runtime: "unselected",
         status: "active",
         scope: "local project",
-        slotLimit: 1
+        slotLimit: 1,
+        capabilityTags: []
       }
     ],
     recentTasks: [],
@@ -548,7 +551,7 @@ function defaultDashboard(): SarathiDashboard {
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks ??= [];
   state.automaticDecisions ??= [];
-  state.specialists = (state.specialists ?? []).map((specialist) => ({ ...specialist, slotLimit: specialist.slotLimit ?? 1 }));
+  state.specialists = (state.specialists ?? []).map((specialist) => ({ ...specialist, slotLimit: specialist.slotLimit ?? 1, capabilityTags: specialist.capabilityTags ?? [] }));
   state.standingRuleSuggestions ??= []; state.approvalStreak ??= null;
   state.asks = state.asks.map((ask) => ({ ...ask, risk: ask.risk ?? riskOf(ask.kind) }));
   state.askAudit ??= [];

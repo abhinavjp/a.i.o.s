@@ -82,6 +82,7 @@ type Dashboard = {
     status: "pending_approval" | "active";
     scope: string;
     slotLimit: number;
+    capabilityTags?: string[];
   }>;
   recentTasks: Array<{
     id: string;
@@ -218,7 +219,7 @@ export function App() {
   const [agentSlots, setAgentSlots] = useState<AgentSlot[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>(DEFAULT_DASHBOARD);
   const [task, setTask] = useState("");
-  const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
+  const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", capabilityTag: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
   const [status, setStatus] = useState<RunStatus>("idle");
   const [activeTaskId, setActiveTaskId] = useState<string | null>(null);
   const [isStopping, setIsStopping] = useState(false);
@@ -231,7 +232,8 @@ export function App() {
     name: "",
     role: "",
     runtime: "unselected",
-    slotLimit: 1
+    slotLimit: 1,
+    capabilityTags: ""
   });
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
   const [view, setView] = useState<"command" | "routing" | "work-items">("command");
@@ -302,13 +304,21 @@ export function App() {
 
   async function handleSubmit(event: React.FormEvent<HTMLFormElement>) {
     event.preventDefault();
+    let specialistId = taskRouting.specialistId.trim();
+    if (taskRouting.capabilityTag.trim()) {
+      const suggestion = await fetch(`/api/sarathi/agents/suggest?capabilityTag=${encodeURIComponent(taskRouting.capabilityTag.trim())}`);
+      const result = await suggestion.json() as { agent?: { id: string; name: string } | null; reason?: string | null };
+      if (!result.agent) { setExecutionMessage(result.reason ?? "No agent suggestion is available."); setStatus("unavailable"); return; }
+      if (!specialistId) specialistId = result.agent.id;
+      setExecutionMessage(`Suggested agent: ${result.agent.name}`);
+    }
     const body = taskEngine === "inherit" ? { task } : { task, engineOverride: { primary: { engine: taskEngine, configuration: taskConfiguration, billingMode: "subscription" as const, ...(taskModel ? { model: taskModel } : {}) } } };
     const response = await fetch("/api/agents/active/tasks", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         ...body,
-        ...(taskRouting.specialistId.trim() ? { specialistId: taskRouting.specialistId.trim() } : {}),
+        ...(specialistId ? { specialistId } : {}),
         ...(taskRouting.workflowId.trim() ? { workflowId: taskRouting.workflowId.trim() } : {}),
         ...(taskRouting.overridePrimary || taskRouting.overrideFallback ? {
           routePolicy: {
@@ -383,6 +393,16 @@ export function App() {
     }
   }
 
+  async function suggestAgent() {
+    const tag = taskRouting.capabilityTag.trim();
+    if (!tag) { setExecutionMessage("A capability tag is required."); return; }
+    const response = await fetch(`/api/sarathi/agents/suggest?capabilityTag=${encodeURIComponent(tag)}`);
+    const result = await response.json() as { agent?: { id: string; name: string } | null; reason?: string | null };
+    if (!result.agent) { setExecutionMessage(result.reason ?? "No agent suggestion is available."); return; }
+    setTaskRouting((current) => ({ ...current, specialistId: result.agent!.id }));
+    setExecutionMessage(`Suggested agent: ${result.agent.name}`);
+  }
+
   async function stopTask() {
     if (!activeTaskId) return;
     const source = eventSourceRef.current;
@@ -444,7 +464,7 @@ export function App() {
     const response = await fetch("/api/sarathi/specialists", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(specialistDraft)
+      body: JSON.stringify({ ...specialistDraft, capabilityTags: specialistDraft.capabilityTags.split(",").map((tag) => tag.trim()).filter(Boolean) })
     });
     const next = (await response.json()) as { specialist?: Specialist; error?: string };
     if (!response.ok || !next.specialist) {
@@ -455,7 +475,7 @@ export function App() {
       ...current,
       specialists: [...current.specialists, next.specialist!]
     }));
-    setSpecialistDraft({ name: "", role: "", runtime: "unselected", slotLimit: 1 });
+    setSpecialistDraft({ name: "", role: "", runtime: "unselected", slotLimit: 1, capabilityTags: "" });
     setIsSpecialistFormOpen(false);
     setSpecialistMessage("Specialist saved and waiting for approval.");
   }
@@ -565,6 +585,8 @@ export function App() {
 
             <section className="panel task-panel" id="knowledge"><div className="panel-heading"><div><span className="eyebrow">Direct task</span><h2>Ask the coordinator</h2></div><span className="quiet-tag">fake seam available</span></div><form className="task-form" onSubmit={handleSubmit}><div className="task-routing-fields"><label htmlFor="task-engine">Engine<select id="task-engine" aria-label="Task engine" value={taskEngine} onChange={(event) => setTaskEngine(event.target.value as "inherit" | AgentEngineKind)}><option value="inherit">Inherit</option><option value="hermes">Hermes</option><option value="codex">Codex</option><option value="claude-code">Claude Code</option></select></label>{taskEngine !== "inherit" && <><label htmlFor="task-configuration">Configuration<input id="task-configuration" value={taskConfiguration} onChange={(event) => setTaskConfiguration(event.target.value)} /></label><label htmlFor="task-model">Model<input id="task-model" value={taskModel} onChange={(event) => setTaskModel(event.target.value)} /></label></>}</div><label htmlFor="task-input">Task <span>· what should move next?</span></label><div className="task-input-row"><input id="task-input" value={task} onChange={(event) => setTask(event.target.value)} placeholder="e.g. Summarise what is waiting on me" /><button type="submit">Run task <span>↗</span></button></div><div className="task-routing"><label htmlFor="task-specialist">Specialist ID<input id="task-specialist" value={taskRouting.specialistId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, specialistId: event.target.value }))} placeholder="optional specialist id" /></label><label htmlFor="task-workflow">Workflow ID<input id="task-workflow" value={taskRouting.workflowId} onChange={(event) => setTaskRouting((draft) => ({ ...draft, workflowId: event.target.value }))} placeholder="optional workflow id" /></label><label><input type="checkbox" checked={taskRouting.overridePrimary} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override task primary</label>{taskRouting.overridePrimary && <label htmlFor="task-primary">Primary override model<input id="task-primary" value={taskRouting.primaryModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={taskRouting.overrideFallback} onChange={(event) => setTaskRouting((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override task fallback chain</label>{taskRouting.overrideFallback && <label htmlFor="task-fallback">Fallback override model (blank clears)<input id="task-fallback" value={taskRouting.fallbackModel} onChange={(event) => setTaskRouting((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}</div></form>{admission?.plan && <div className="admission-summary">Resolved: <strong>{admission.plan.primary.engine}</strong>{admission.executedEngineRoute && <span> · executed {admission.executedEngineRoute.engine}/{admission.executedEngineRoute.configuration}</span>} · readiness {admission.readiness?.state ?? "unmeasured"}</div>}{status === "running" && <button type="button" onClick={() => void stopTask()} disabled={isStopping}>{isStopping ? "Stopping…" : "Stop task"}</button>}{executionMessage && <p role="alert">{executionMessage}</p>}{output.length > 0 && <pre className="task-output">{output.join("\n")}</pre>}{status !== "idle" && <div className={`task-status ${status}`}><span className="status-dot" /> Run status: {statusLabel(status)}</div>}</section>
 
+            <section className="panel" aria-label="Agent suggestion"><div className="panel-heading"><div><span className="eyebrow">Capability tag</span><h2>Suggest an agent</h2></div></div><div className="task-routing"><label htmlFor="capability-tag">Required capability tag<input id="capability-tag" value={taskRouting.capabilityTag} onChange={(event) => setTaskRouting((draft) => ({ ...draft, capabilityTag: event.target.value }))} placeholder="e.g. Backend" /></label><label htmlFor="specialist-capability-tags">Capability tags for next specialist<input id="specialist-capability-tags" value={specialistDraft.capabilityTags} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, capabilityTags: event.target.value }))} placeholder="Planning, Backend" /></label><button type="button" onClick={() => void suggestAgent()}>Suggest agent</button></div></section>
+
             <section className="panel execution-panel" aria-label="Execution evidence">
               <div className="panel-heading"><div><span className="eyebrow">Durable execution</span><h2>Latest runtime evidence</h2></div></div>
               {dashboard.recentTasks.length === 0 ? <p className="panel-note subtle">No routed attempts recorded.</p> : <div className="gate-list">{dashboard.recentTasks.map((attempt) =>
@@ -586,7 +608,7 @@ export function App() {
           <aside className="side-column">
             <section className="panel gates-panel"><div className="panel-heading"><div><span className="eyebrow">Readiness gates</span><h2>What still needs proof</h2></div><span className="gate-count">{blockedTickets.length}</span></div><div className="gate-list">{blockedTickets.slice(0, 6).map((ticket) => <div className="gate-row" key={ticket.id}><span className="gate-index">{ticket.id}</span><div><strong>{ticket.title}</strong><small>{ticket.reason}</small></div><span className="state-chip blocked">blocked</span></div>)}</div>{blockedTickets.length > 6 && <p className="more-note">+ {blockedTickets.length - 6} more gates in the ticket map</p>}</section>
 
-            <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Inherit global after runtime proof</option><option value="hermes">Hermes (unverified)</option><option value="codex">Codex (unverified)</option><option value="claude-code">Claude Code (unverified)</option></select></label><label htmlFor="specialist-slots">Slot limit<input id="specialist-slots" type="number" min="1" value={specialistDraft.slotLimit} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, slotLimit: Number(event.target.value) }))} required /></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => { const slots = agentSlots.find((agent) => agent.id === specialist.id); return <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small><small>{slots ? `${slots.slotsInUse} / ${slots.slotLimit} slots in use` : `${specialist.slotLimit} slots configured`}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className={`state-chip ${slots?.full ? "blocked" : "ready"}`}>{slots?.full ? "full" : "active"}</span>}</div>; })}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
+            <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Inherit global after runtime proof</option><option value="hermes">Hermes (unverified)</option><option value="codex">Codex (unverified)</option><option value="claude-code">Claude Code (unverified)</option></select></label><label htmlFor="specialist-slots">Slot limit<input id="specialist-slots" type="number" min="1" value={specialistDraft.slotLimit} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, slotLimit: Number(event.target.value) }))} required /></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => { const slots = agentSlots.find((agent) => agent.id === specialist.id); return <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small><small>{slots ? `${slots.slotsInUse} / ${slots.slotLimit} slots in use` : `${specialist.slotLimit} slots configured`}</small><small>{(specialist.capabilityTags ?? []).join(" · ") || "No capability tags"}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className={`state-chip ${slots?.full ? "blocked" : "ready"}`}>{slots?.full ? "full" : "active"}</span>}</div>; })}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
 
             <section className="panel routing-panel"><div className="panel-heading"><div><span className="eyebrow">Routing policy</span><h2>New work only</h2></div></div><form className="specialist-form" onSubmit={saveRoutePolicy}><label htmlFor="route-scope">Scope<select id="route-scope" value={routeDraft.scope} onChange={(event) => setRouteDraft((draft) => ({ ...draft, scope: event.target.value as "global" | "specialist" | "workflow" }))}><option value="global">Global</option><option value="specialist">Specialist</option><option value="workflow">Workflow</option></select></label>{routeDraft.scope !== "global" && <label htmlFor="route-scope-id">Scope name<input id="route-scope-id" value={routeDraft.id} onChange={(event) => setRouteDraft((draft) => ({ ...draft, id: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overridePrimary} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override primary</label>{routeDraft.overridePrimary && <label htmlFor="route-primary">Primary model<input id="route-primary" value={routeDraft.primaryModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overrideFallback} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override fallback chain</label>{routeDraft.overrideFallback && <label htmlFor="route-fallback">Fallback model (blank clears)<input id="route-fallback" value={routeDraft.fallbackModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}<button className="specialist-submit" type="submit">Save route policy</button></form>{routeMessage && <p className="specialist-message" role="status">{routeMessage}</p>}<p className="panel-note subtle">Task overrides are recorded at admission. Later edits apply only to new tasks.</p></section>
 

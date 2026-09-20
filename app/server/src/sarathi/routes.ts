@@ -18,6 +18,7 @@ interface SpecialistBody {
   role: string;
   runtime?: string;
   slotLimit?: number;
+  capabilityTags?: unknown;
 }
 
 interface SpecialistParams {
@@ -59,6 +60,11 @@ export function registerSarathiRoutes(
 ): void {
   app.get("/api/sarathi/dashboard", async () => store.snapshot());
   app.get("/api/sarathi/agents", async () => ({ agents: agentSlots?.list() ?? [] }));
+  app.get<{ Querystring: { capabilityTag?: string } }>("/api/sarathi/agents/suggest", async (request, reply) => {
+    const capabilityTag = request.query.capabilityTag?.trim();
+    if (!capabilityTag) { reply.code(400); return { error: "capability tag is required" }; }
+    return agentSlots?.suggest(capabilityTag) ?? { agent: null, reason: `no agent with a free slot has capability tag ${capabilityTag}` };
+  });
 
   app.get("/api/sarathi/proofs", async () => store.snapshot().proofs);
   app.post<{ Params: { route: string }; Body: { optIn?: boolean } }>("/api/sarathi/proofs/:route", async (request, reply) => {
@@ -241,12 +247,12 @@ export function registerSarathiRoutes(
   app.post<{ Body: SpecialistBody }>(
     "/api/sarathi/specialists",
     async (request, reply) => {
-      const { name, role, runtime = "unselected", slotLimit } = request.body ?? {};
-      if (!name?.trim() || !role?.trim() || (slotLimit !== undefined && (!Number.isInteger(slotLimit) || slotLimit < 1))) {
+      const { name, role, runtime = "unselected", slotLimit, capabilityTags } = request.body ?? {};
+      if (!name?.trim() || !role?.trim() || (slotLimit !== undefined && (!Number.isInteger(slotLimit) || slotLimit < 1)) || !isCapabilityTags(capabilityTags)) {
         reply.code(400);
         return { error: "name, role, and a positive whole slot limit are required" };
       }
-      const specialist = store.createSpecialist({ name, role, runtime, slotLimit });
+      const specialist = store.createSpecialist({ name, role, runtime, slotLimit, capabilityTags });
       reply.code(201);
       return { specialist };
     }
@@ -263,6 +269,10 @@ export function registerSarathiRoutes(
       return { specialist };
     }
   );
+}
+
+function isCapabilityTags(value: unknown): value is string[] | undefined {
+  return value === undefined || (Array.isArray(value) && value.every((tag) => typeof tag === "string" && tag.trim()));
 }
 
 function isPolicyScope(value: string): value is PolicyParams["scope"] {

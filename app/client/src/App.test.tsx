@@ -50,16 +50,22 @@ describe("App", () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };
       if (url === "/api/sarathi/agents") return { agents: [{ id: "sarathi", slotLimit: 2, slotsInUse: 1, full: false }] };
+      if (url.startsWith("/api/sarathi/agents/suggest")) return { agent: { id: "sarathi", name: "Sarathi" }, reason: null };
       return {
         runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" },
         controls: { manualPaused: false, changedAt: null }, routing: { policies: [] }, providerCatalogs: [],
         discovery: { status: "blocked", reason: "blocked", lastCheckedAt: null, mergeRequests: [] }, tickets: [],
-        specialists: [{ id: "sarathi", name: "Sarathi", role: "coordinator", runtime: "fake", status: "active", scope: "local project", slotLimit: 2 }],
+        specialists: [{ id: "sarathi", name: "Sarathi", role: "coordinator", runtime: "fake", status: "active", scope: "local project", slotLimit: 2, capabilityTags: ["Planning", "Backend"] }],
         recentTasks: [], groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
       };
     } })));
     render(<App />);
     expect(await screen.findByText("1 / 2 slots in use")).toBeTruthy();
+    expect(screen.getByText("Planning · Backend")).toBeTruthy();
+    fireEvent.change(screen.getByLabelText("Required capability tag"), { target: { value: "Backend" } });
+    fireEvent.click(screen.getByRole("button", { name: "Suggest agent" }));
+    expect(await screen.findByText("Suggested agent: Sarathi")).toBeTruthy();
+    expect(screen.getByLabelText("Capability tags for next specialist")).toBeTruthy();
   });
 
   test("stops active work through the API and preserves partial output with cancelled status", async () => {

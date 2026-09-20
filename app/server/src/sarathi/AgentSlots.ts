@@ -30,4 +30,10 @@ export class AgentSlotManager {
     const agent = this.list().find((candidate) => candidate.id === agentId)!;
     if (agent.full) throw new NoFreeSlotError();
   }
+
+  suggest(capabilityTag: string): { agent: AgentSlotSummary | null; reason: string | null } {
+    const matches = this.list().filter((agent) => !agent.full && agent.capabilityTags.includes(capabilityTag));
+    if (matches.length === 0) return { agent: null, reason: `no agent with a free slot has capability tag ${capabilityTag}` };
+    return { agent: matches.sort((left, right) => (right.slotLimit - right.slotsInUse) - (left.slotLimit - left.slotsInUse))[0]!, reason: null };
+  }
 }

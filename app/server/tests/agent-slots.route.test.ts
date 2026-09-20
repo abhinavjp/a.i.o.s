@@ -71,4 +71,17 @@ describe("agent slots", () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
+  test("reports capability tags and suggests the matching agent with the most free slots", async () => {
+    const server = createTestApp(manager());
+    const backend = await server.inject({ method: "POST", url: "/api/sarathi/specialists", payload: { name: "Backend", role: "builder", slotLimit: 2, capabilityTags: ["Backend", "Planning"] } });
+    const largerBackend = await server.inject({ method: "POST", url: "/api/sarathi/specialists", payload: { name: "Scale", role: "builder", slotLimit: 3, capabilityTags: ["Backend"] } });
+    expect((await server.inject({ method: "GET", url: "/api/sarathi/agents" })).json().agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ id: backend.json().specialist.id, capabilityTags: ["Backend", "Planning"] })
+    ]));
+    const suggestion = await server.inject({ method: "GET", url: "/api/sarathi/agents/suggest?capabilityTag=Backend" });
+    expect(suggestion.statusCode).toBe(200);
+    expect(suggestion.json()).toMatchObject({ agent: { id: largerBackend.json().specialist.id }, reason: null });
+    expect((await server.inject({ method: "GET", url: "/api/sarathi/agents/suggest?capabilityTag=BA%20grilling" })).json()).toEqual({ agent: null, reason: "no agent with a free slot has capability tag BA grilling" });
+  });
+
 });
