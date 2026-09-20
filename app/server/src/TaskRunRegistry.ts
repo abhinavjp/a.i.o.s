@@ -5,6 +5,7 @@ import { DefaultExecutionPlanResolver, snapshotExecutionPlan, type ExecutionPlan
 import { needsReconciliation, type StoredTask, type TaskStore } from "./TaskStore.js";
 import { IneligibleRouteError, type ExecutionPlanAdmissionValidator, type FixedRouteSelector } from "./sarathi/RouteEligibility.js";
 import { systemRuntimeClock, type RouteResilience } from "./sarathi/RouteResilience.js";
+import { type AgentSlotManager } from "./sarathi/AgentSlots.js";
 
 interface TaskListener { onChunk: (chunk: string) => void; onDone: (outcome: TaskOutcome) => void }
 export interface TaskExecutionObserver { record(task: StoredTask): void }
@@ -33,11 +34,12 @@ export class TaskRunRegistry {
     private readonly planAdmissionValidator?: ExecutionPlanAdmissionValidator,
     private readonly fixedRouteSelector?: FixedRouteSelector,
     private readonly toolMediator?: TaskToolMediator,
-    private readonly resilience?: RouteResilience
+    private readonly resilience?: RouteResilience,
+    private readonly agentSlots?: AgentSlotManager
   ) {}
 
   async start(agent: AgentAbstraction, task: string, sessionKey: string,
-    routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride } = {},
+    routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride; agentId?: string } = {},
     metadata: TaskAdmissionMetadata = {}): Promise<string> {
     const taskId = randomUUID();
     const now = new Date(this.clock.now()).toISOString();
@@ -46,7 +48,9 @@ export class TaskRunRegistry {
     const plan = snapshotExecutionPlan(selected);
     this.planAdmissionValidator?.validate(plan);
     this.assertSelectedAgentHealthy(agent, plan);
-    this.store.create({ taskId, task, sessionKey, chunks: [], status: "running", outcome: null,
+    const agentId = this.agentSlots?.assignedAgentId(routing.agentId) ?? routing.agentId ?? "sarathi";
+    this.agentSlots?.assertFree(agentId);
+    this.store.create({ taskId, task, sessionKey, agentId, chunks: [], status: "running", outcome: null,
       createdAt: now, updatedAt: now, resolvedExecutionPlan: plan, attempts: [this.attempt(plan)],
       resolvedEnginePlan: metadata.resolvedEnginePlan, readiness: metadata.readiness,
       routingSource: metadata.routingSource, nativeSessionIds: metadata.nativeSessionIds,

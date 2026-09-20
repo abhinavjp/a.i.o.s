@@ -19,6 +19,7 @@ import { WorkItemsPage } from "./work-items/WorkItemsPage.js";
 import "./App.css";
 
 type AgentListItem = AgentInfo & { health: HealthStatus };
+type AgentSlot = { id: string; slotLimit: number; slotsInUse: number; full: boolean };
 type RunStatus = "idle" | "running" | TaskTerminalStatus;
 
 type Dashboard = {
@@ -80,6 +81,7 @@ type Dashboard = {
     runtime: string;
     status: "pending_approval" | "active";
     scope: string;
+    slotLimit: number;
   }>;
   recentTasks: Array<{
     id: string;
@@ -213,6 +215,7 @@ function formatToday(): string {
 
 export function App() {
   const [agents, setAgents] = useState<AgentListItem[]>([]);
+  const [agentSlots, setAgentSlots] = useState<AgentSlot[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>(DEFAULT_DASHBOARD);
   const [task, setTask] = useState("");
   const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
@@ -227,7 +230,8 @@ export function App() {
   const [specialistDraft, setSpecialistDraft] = useState({
     name: "",
     role: "",
-    runtime: "unselected"
+    runtime: "unselected",
+    slotLimit: 1
   });
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
   const [view, setView] = useState<"command" | "routing" | "work-items">("command");
@@ -269,8 +273,10 @@ export function App() {
     const generation = dashboardRefreshGeneration.current + 1;
     dashboardRefreshGeneration.current = generation;
     try {
-      const response = await fetch("/api/sarathi/dashboard");
+      const [response, slotsResponse] = await Promise.all([fetch("/api/sarathi/dashboard"), fetch("/api/sarathi/agents")]);
       const next = (await response.json()) as Partial<Dashboard>;
+      const slots = await slotsResponse.json() as { agents?: AgentSlot[] };
+      if (Array.isArray(slots.agents)) setAgentSlots(slots.agents);
       if (generation === dashboardRefreshGeneration.current && Array.isArray(next.tickets) && next.runtime && next.discovery) {
         setDashboard({ ...DEFAULT_DASHBOARD, ...next, providerCatalogs: next.providerCatalogs ?? [], proofs: next.proofs ?? DEFAULT_PROOFS });
       }
@@ -449,7 +455,7 @@ export function App() {
       ...current,
       specialists: [...current.specialists, next.specialist!]
     }));
-    setSpecialistDraft({ name: "", role: "", runtime: "unselected" });
+    setSpecialistDraft({ name: "", role: "", runtime: "unselected", slotLimit: 1 });
     setIsSpecialistFormOpen(false);
     setSpecialistMessage("Specialist saved and waiting for approval.");
   }
@@ -580,7 +586,7 @@ export function App() {
           <aside className="side-column">
             <section className="panel gates-panel"><div className="panel-heading"><div><span className="eyebrow">Readiness gates</span><h2>What still needs proof</h2></div><span className="gate-count">{blockedTickets.length}</span></div><div className="gate-list">{blockedTickets.slice(0, 6).map((ticket) => <div className="gate-row" key={ticket.id}><span className="gate-index">{ticket.id}</span><div><strong>{ticket.title}</strong><small>{ticket.reason}</small></div><span className="state-chip blocked">blocked</span></div>)}</div>{blockedTickets.length > 6 && <p className="more-note">+ {blockedTickets.length - 6} more gates in the ticket map</p>}</section>
 
-            <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Inherit global after runtime proof</option><option value="hermes">Hermes (unverified)</option><option value="codex">Codex (unverified)</option><option value="claude-code">Claude Code (unverified)</option></select></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className="state-chip ready">active</span>}</div>)}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
+            <section className="panel specialists-panel" id="specialists"><div className="panel-heading"><div><span className="eyebrow">The bench</span><h2>Specialists</h2></div><button className="icon-button" type="button" aria-label="Add specialist" aria-expanded={isSpecialistFormOpen} onClick={() => { setIsSpecialistFormOpen((open) => !open); setSpecialistMessage(null); }}>{isSpecialistFormOpen ? "×" : "+"}</button></div>{isSpecialistFormOpen && <form className="specialist-form" onSubmit={handleCreateSpecialist}><label htmlFor="specialist-name">Name<input id="specialist-name" value={specialistDraft.name} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, name: event.target.value }))} placeholder="e.g. Review analyst" required /></label><label htmlFor="specialist-role">Role<input id="specialist-role" value={specialistDraft.role} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, role: event.target.value }))} placeholder="e.g. reviewer" required /></label><label htmlFor="specialist-runtime">Runtime<select id="specialist-runtime" value={specialistDraft.runtime} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, runtime: event.target.value }))}><option value="unselected">Inherit global after runtime proof</option><option value="hermes">Hermes (unverified)</option><option value="codex">Codex (unverified)</option><option value="claude-code">Claude Code (unverified)</option></select></label><label htmlFor="specialist-slots">Slot limit<input id="specialist-slots" type="number" min="1" value={specialistDraft.slotLimit} onChange={(event) => setSpecialistDraft((draft) => ({ ...draft, slotLimit: Number(event.target.value) }))} required /></label><button className="specialist-submit" type="submit">Save pending specialist</button></form>}<div className="specialist-list">{dashboard.specialists.map((specialist) => { const slots = agentSlots.find((agent) => agent.id === specialist.id); return <div className="specialist-row" key={specialist.id}><span className="avatar">{specialist.name.slice(0, 1)}</span><div><strong>{specialist.name}</strong><small>{specialist.role} · {specialist.runtime}</small><small>{slots ? `${slots.slotsInUse} / ${slots.slotLimit} slots in use` : `${specialist.slotLimit} slots configured`}</small></div>{specialist.status === "pending_approval" ? <button className="approve-button" type="button" onClick={() => approveSpecialist(specialist.id)}>Approve</button> : <span className={`state-chip ${slots?.full ? "blocked" : "ready"}`}>{slots?.full ? "full" : "active"}</span>}</div>; })}</div>{specialistMessage && <p className="specialist-message" role="status">{specialistMessage}</p>}<p className="panel-note subtle">Permanent agents stay pending until you approve their shape and scope.</p></section>
 
             <section className="panel routing-panel"><div className="panel-heading"><div><span className="eyebrow">Routing policy</span><h2>New work only</h2></div></div><form className="specialist-form" onSubmit={saveRoutePolicy}><label htmlFor="route-scope">Scope<select id="route-scope" value={routeDraft.scope} onChange={(event) => setRouteDraft((draft) => ({ ...draft, scope: event.target.value as "global" | "specialist" | "workflow" }))}><option value="global">Global</option><option value="specialist">Specialist</option><option value="workflow">Workflow</option></select></label>{routeDraft.scope !== "global" && <label htmlFor="route-scope-id">Scope name<input id="route-scope-id" value={routeDraft.id} onChange={(event) => setRouteDraft((draft) => ({ ...draft, id: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overridePrimary} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overridePrimary: event.target.checked }))} /> Override primary</label>{routeDraft.overridePrimary && <label htmlFor="route-primary">Primary model<input id="route-primary" value={routeDraft.primaryModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, primaryModel: event.target.value }))} required /></label>}<label><input type="checkbox" checked={routeDraft.overrideFallback} onChange={(event) => setRouteDraft((draft) => ({ ...draft, overrideFallback: event.target.checked }))} /> Override fallback chain</label>{routeDraft.overrideFallback && <label htmlFor="route-fallback">Fallback model (blank clears)<input id="route-fallback" value={routeDraft.fallbackModel} onChange={(event) => setRouteDraft((draft) => ({ ...draft, fallbackModel: event.target.value }))} /></label>}<button className="specialist-submit" type="submit">Save route policy</button></form>{routeMessage && <p className="specialist-message" role="status">{routeMessage}</p>}<p className="panel-note subtle">Task overrides are recorded at admission. Later edits apply only to new tasks.</p></section>
 

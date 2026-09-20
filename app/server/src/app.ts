@@ -11,6 +11,7 @@ import { FileTaskStore } from "./TaskStore.js";
 import type { TaskStore } from "./TaskStore.js";
 import { FileSarathiStore } from "./sarathi/SarathiStore.js";
 import type { SarathiStore } from "./sarathi/SarathiStore.js";
+import { AgentSlotManager } from "./sarathi/AgentSlots.js";
 import { FileEngineConfigStore } from "./engine/EngineConfigStore.js";
 import type { EngineConfigStore } from "./engine/EngineConfigStore.js";
 import { registerEngineRoutes } from "./engine/routes.js";
@@ -62,6 +63,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const taskStore = options.taskStore ?? new FileTaskStore(join(dataDirectory, "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
   const sarathiStore =
     options.sarathiStore ?? new FileSarathiStore(join(dataDirectory, "sarathi.json"));
+  const agentSlots = new AgentSlotManager(sarathiStore, taskStore);
   const engineConfigStore =
     options.engineConfigStore ?? new FileEngineConfigStore(join(dataDirectory, "engine-routing.json"));
   const workItemStore = options.workItemStore ?? new FileWorkItemStore(join(dataDirectory, "work-items.json"));
@@ -95,7 +97,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     planAdmissionValidator: routeEligibility,
     fixedRouteSelector: routeEligibility,
     toolMediator: permissionEngine,
-    resilience
+    resilience,
+    agentSlots
   }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness(), (intent, decision, note) => {
     if (intent.tool !== "delivery-pipeline" || intent.operation !== "artifact.approve") return;
@@ -107,7 +110,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     if (!artifact || (artifact.approvalState !== "draft" && artifact.approvalState !== "rejected")) return undefined;
     artifactStore.update(artifactId, { approvalState: "awaiting", rejectionNote: undefined });
     return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
-  });
+  }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore);
   return app;

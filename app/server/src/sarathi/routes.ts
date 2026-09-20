@@ -7,6 +7,7 @@ import type { ProviderCatalogManager } from "./ProviderCatalog.js";
 import { isApprovalLifetime, isPermissionRuleDecision, isToolIntent, PermissionEngine } from "./PermissionEngine.js";
 import type { RouteResilience } from "./RouteResilience.js";
 import type { LiveProofHarness } from "./ProofHarness.js";
+import type { AgentSlotManager } from "./AgentSlots.js";
 
 interface PauseBody {
   paused: boolean;
@@ -16,6 +17,7 @@ interface SpecialistBody {
   name: string;
   role: string;
   runtime?: string;
+  slotLimit?: number;
 }
 
 interface SpecialistParams {
@@ -52,9 +54,11 @@ export function registerSarathiRoutes(
   runtimeRouter?: RuntimeRouter,
   proofHarness?: LiveProofHarness,
   onAskDecision?: (intent: ToolIntent, decision: "approved" | "declined", note?: string) => void,
-  onArtifactAwait?: (artifactId: string) => ToolIntent | undefined
+  onArtifactAwait?: (artifactId: string) => ToolIntent | undefined,
+  agentSlots?: AgentSlotManager
 ): void {
   app.get("/api/sarathi/dashboard", async () => store.snapshot());
+  app.get("/api/sarathi/agents", async () => ({ agents: agentSlots?.list() ?? [] }));
 
   app.get("/api/sarathi/proofs", async () => store.snapshot().proofs);
   app.post<{ Params: { route: string }; Body: { optIn?: boolean } }>("/api/sarathi/proofs/:route", async (request, reply) => {
@@ -237,12 +241,12 @@ export function registerSarathiRoutes(
   app.post<{ Body: SpecialistBody }>(
     "/api/sarathi/specialists",
     async (request, reply) => {
-      const { name, role, runtime = "unselected" } = request.body ?? {};
-      if (!name?.trim() || !role?.trim()) {
+      const { name, role, runtime = "unselected", slotLimit } = request.body ?? {};
+      if (!name?.trim() || !role?.trim() || (slotLimit !== undefined && (!Number.isInteger(slotLimit) || slotLimit < 1))) {
         reply.code(400);
-        return { error: "name and role are required" };
+        return { error: "name, role, and a positive whole slot limit are required" };
       }
-      const specialist = store.createSpecialist({ name, role, runtime });
+      const specialist = store.createSpecialist({ name, role, runtime, slotLimit });
       reply.code(201);
       return { specialist };
     }

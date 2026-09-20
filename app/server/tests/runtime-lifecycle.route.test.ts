@@ -47,8 +47,8 @@ async function fixture(router: RuntimeRouter, extra: BuildAppOptions = {}) {
     return app;
   };
   const app = create();
-  const submit = (fallbacks = [fallback]) => app.inject({ method: "POST", url: root,
-    payload: { task: "canonical work", routePolicy: { primary, fallbacks } } });
+  const submit = (fallbacks = [fallback], specialistId?: string) => app.inject({ method: "POST", url: root,
+    payload: { task: "canonical work", routePolicy: { primary, fallbacks }, ...(specialistId ? { specialistId } : {}) } });
   const get = async (id: string) => (await app.inject({ method: "GET", url: `${root}/${id}` })).json();
   const done = async (id: string) => {
     let result: any;
@@ -329,8 +329,9 @@ describe("durable runtime lifecycle through Fastify", () => {
       });
       yield { type: "terminal", outcome };
     } });
-    const first = (await f.submit([])).json().taskId;
-    const second = (await f.submit([])).json().taskId;
+    const agentId = (await f.app.inject({ method: "POST", url: "/api/sarathi/specialists", payload: { name: "Circuit", role: "tester", slotLimit: 2 } })).json().specialist.id;
+    const first = (await f.submit([], agentId)).json().taskId;
+    const second = (await f.submit([], agentId)).json().taskId;
     releases[0]!({ status: "failed", failure: { kind: "authentication" } });
     await f.done(first);
     releases[1]!({ status });

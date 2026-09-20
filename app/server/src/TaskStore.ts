@@ -10,6 +10,7 @@ export interface StoredTask {
   taskId: string;
   task: string;
   sessionKey: string;
+  agentId?: string;
   chunks: string[];
   status: TaskStatus;
   outcome: TaskOutcome | null;

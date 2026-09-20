@@ -25,6 +25,7 @@ export interface Specialist {
   runtime: string;
   status: SpecialistStatus;
   scope: string;
+  slotLimit: number;
 }
 
 export interface RuntimeStatus {
@@ -109,7 +110,7 @@ export interface SarathiStore {
   setPaused(paused: boolean): SarathiDashboard;
   checkDiscovery(): SarathiDashboard;
   recordTask(task: StoredTask): SarathiDashboard;
-  createSpecialist(input: { name: string; role: string; runtime: string }): Specialist;
+  createSpecialist(input: { name: string; role: string; runtime: string; slotLimit?: number }): Specialist;
   approveSpecialist(id: string): Specialist | undefined;
   getPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord;
   setRoutePolicy(scope: "global" | "specialist" | "workflow", id: string | undefined, policy: RoutePolicyOverride): RoutePolicyRecord;
@@ -282,14 +283,15 @@ export class FileSarathiStore implements SarathiStore {
     return this.snapshot();
   }
 
-  createSpecialist(input: { name: string; role: string; runtime: string }): Specialist {
+  createSpecialist(input: { name: string; role: string; runtime: string; slotLimit?: number }): Specialist {
     const specialist: Specialist = {
       id: randomUUID(),
       name: input.name.trim(),
       role: input.role.trim(),
       runtime: input.runtime.trim() || "unselected",
       status: "pending_approval",
-      scope: "project context required"
+      scope: "project context required",
+      slotLimit: input.slotLimit ?? 1
     };
     this.state.specialists.push(specialist);
     this.persist();
@@ -531,7 +533,8 @@ function defaultDashboard(): SarathiDashboard {
         role: "coordinator",
         runtime: "unselected",
         status: "active",
-        scope: "local project"
+        scope: "local project",
+        slotLimit: 1
       }
     ],
     recentTasks: [],
@@ -545,6 +548,7 @@ function defaultDashboard(): SarathiDashboard {
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks ??= [];
   state.automaticDecisions ??= [];
+  state.specialists = (state.specialists ?? []).map((specialist) => ({ ...specialist, slotLimit: specialist.slotLimit ?? 1 }));
   state.standingRuleSuggestions ??= []; state.approvalStreak ??= null;
   state.asks = state.asks.map((ask) => ({ ...ask, risk: ask.risk ?? riskOf(ask.kind) }));
   state.askAudit ??= [];

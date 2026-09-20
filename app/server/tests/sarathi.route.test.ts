@@ -2,7 +2,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
 import type { AgentAbstraction, AgentInfo, HealthStatus, TaskStream } from "@aios/contracts";
 import { createTestApp as buildApp } from "./testApp.js";
@@ -1111,6 +1111,9 @@ describe("Sarathi dashboard routes", () => {
         }
       });
 
+      release?.();
+      await vi.waitFor(async () => expect((await app.inject({ method: "GET", url: `/api/agents/active/tasks/${first.json().taskId}` })).json().status).toBe("completed"));
+
       await app.inject({
         method: "PUT",
         url: "/api/sarathi/routing/policies/workflow/review-flow",
@@ -1128,7 +1131,6 @@ describe("Sarathi dashboard routes", () => {
       });
       expect(firstTask.json().resolvedExecutionPlan.route.model).toBe("workflow-primary");
 
-      release?.();
       await app.close();
     });
   });
