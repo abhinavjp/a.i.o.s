@@ -82,6 +82,13 @@ export function registerSarathiRoutes(
   app.get("/api/sarathi/permissions", async () => store.snapshot().permissions);
   app.get("/api/sarathi/standing-rules", async () => ({ rules: store.snapshot().standingRules }));
   app.get("/api/sarathi/autopilot", async () => store.snapshot().autopilot);
+  app.get("/api/sarathi/standing-rule-suggestions", async () => ({ suggestions: store.snapshot().standingRuleSuggestions.filter((item) => item.state === "offered") }));
+  app.post<{ Params: { suggestionId: string } }>("/api/sarathi/standing-rule-suggestions/:suggestionId/accept", async (request, reply) => {
+    const suggestion = store.snapshot().standingRuleSuggestions.find((item) => item.id === request.params.suggestionId && item.state === "offered");
+    if (!suggestion || !permissionEngine) { reply.code(404); return { error: "standing rule suggestion was not found" }; }
+    try { const rule = store.addStandingRule({ id: randomUUID(), label: `Automatically suggested: ${suggestion.askKind}`, askKind: suggestion.askKind, scope: suggestion.scope, enabled: true, firedCount: 0, permissionRule: permissionEngine.buildStandingRule(suggestion.askKind, suggestion.scope) }); store.setStandingRuleSuggestionState(suggestion.id, "accepted"); reply.code(201); return { rule }; } catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "standing rule suggestion could not be accepted" }; }
+  });
+  app.post<{ Params: { suggestionId: string } }>("/api/sarathi/standing-rule-suggestions/:suggestionId/dismiss", async (request, reply) => { const suggestion = store.setStandingRuleSuggestionState(request.params.suggestionId, "dismissed"); if (!suggestion) { reply.code(404); return { error: "standing rule suggestion was not found" }; } return { suggestion }; });
   app.get("/api/sarathi/automatic-decisions", async () => {
     const decisions = store.snapshot().automaticDecisions;
     const today = new Date().toISOString().slice(0, 10);
@@ -182,7 +189,7 @@ export function registerSarathiRoutes(
     const ask = store.decideAsk(request.params.askId, request.body.decision);
     if (!ask) { reply.code(409); return { error: "ask was already decided or does not exist" }; }
     onAskDecision?.(ask.intent, request.body.decision, request.body.note);
-    if (request.body.decision === "approved") permissionEngine.approve(ask.intent, "once");
+    if (request.body.decision === "approved") { permissionEngine.approve(ask.intent, "once"); store.recordApprovedAsk(ask); }
     else permissionEngine.saveRule({ decision: "deny", tool: ask.intent.tool, operation: ask.intent.operation, target: ask.intent.target, context: ask.intent.context, lifetime: "once" });
     return { ask, decision: request.body.decision };
   });

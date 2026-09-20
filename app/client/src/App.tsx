@@ -24,6 +24,7 @@ type RunStatus = "idle" | "running" | TaskTerminalStatus;
 type Dashboard = {
   asks: Array<{ id: string; kind: string; workItemId: string | null; createdAt: string }>;
   automaticDecisions: Array<{ id: string; intent: { operation: string; target: string }; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean }>;
+  standingRuleSuggestions: Array<{ id: string; askKind: string; scope: string }>;
   runtime: {
     name: string;
     state: "unavailable" | "unverified" | "ready";
@@ -116,6 +117,7 @@ const DEFAULT_PROOFS: RuntimeProof[] = ["codex", "claude", "ollama", "custom-ope
 const DEFAULT_DASHBOARD: Dashboard = {
   asks: [],
   automaticDecisions: [],
+  standingRuleSuggestions: [],
   runtime: {
     name: "Hermes",
     state: "unavailable",
@@ -347,6 +349,11 @@ export function App() {
     if (response.ok) void refreshDashboard();
   }
 
+  async function resolveStandingRuleSuggestion(id: string, action: "accept" | "dismiss") {
+    const response = await fetch(`/api/sarathi/standing-rule-suggestions/${id}/${action}`, { method: "POST" });
+    if (response.ok) void refreshDashboard();
+  }
+
   useEffect(() => {
     if (catchUpIndex === null) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -544,6 +551,7 @@ export function App() {
 
         <div className="content-grid">
           <div className="main-column">
+            <section className="panel" aria-label="Standing rule suggestions"><div className="panel-heading"><div><span className="eyebrow">Standing rules</span><h2>Suggested from approvals</h2></div></div>{dashboard.standingRuleSuggestions.length === 0 ? <p className="panel-note subtle">No standing rule suggestions.</p> : <div className="proof-list">{dashboard.standingRuleSuggestions.map((suggestion) => <div className="proof-row" key={suggestion.id}><div><strong>{suggestion.askKind}</strong><small>{suggestion.scope}</small></div><button type="button" onClick={() => void resolveStandingRuleSuggestion(suggestion.id, "accept")}>Accept</button><button type="button" onClick={() => void resolveStandingRuleSuggestion(suggestion.id, "dismiss")}>Dismiss</button></div>)}</div>}</section>
             <section className="panel loop-panel"><div className="panel-heading"><div><span className="eyebrow">The loop</span><h2>From signal to safe handoff</h2></div><span className="quiet-tag">policy first</span></div><div className="workflow-track">{[["01", "Discover"], ["02", "Group"], ["03", "Review"], ["04", "Approve"], ["05", "Verify"]].map(([number, label]) => <div className="workflow-step waiting" key={number}><span className="step-number">{number}</span><span className="step-label">{label}</span><span className="step-state">waiting</span></div>)}</div><div className="panel-note"><span className="status-dot amber" /> The first external boundary is deliberately stopped until its adapter and account route are proven.</div></section>
 
             <section className="panel review-panel" id="review"><div className="panel-heading"><div><span className="eyebrow">Review queue</span><h2>Assigned merge requests</h2></div><button className="text-button" type="button" onClick={checkNow} disabled={isRefreshing}>Check now <span>↗</span></button></div>{dashboard.discovery.status === "blocked" ? <div className="blocked-state"><div className="blocked-icon">!</div><div><strong>Discovery is waiting for a real adapter.</strong><p>{dashboard.discovery.reason}</p></div><span className="state-chip blocked">blocked</span></div> : dashboard.discovery.mergeRequests.length === 0 ? <div className="empty-state"><span>◌</span><p>No assigned merge requests in this check.</p></div> : <div className="mr-list">{dashboard.discovery.mergeRequests.map((mergeRequest) => <div className="mr-row" key={mergeRequest.id}><strong>{mergeRequest.title}</strong><span>{mergeRequest.project}</span><span>{mergeRequest.role}</span><span>{mergeRequest.coverage}</span></div>)}</div>}</section>

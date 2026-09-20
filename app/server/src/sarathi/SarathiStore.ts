@@ -5,7 +5,7 @@ import { runMigrations, type StoreMigration } from "../StoreMigrations.js";
 import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
-import { FLOOR_RULES, isFloorRule } from "./DecisionFloor.js";
+import { FLOOR_RULES, isFloorAskKind, isFloorRule } from "./DecisionFloor.js";
 import { riskOf, type AskRisk } from "./AskRisk.js";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
@@ -57,12 +57,15 @@ export interface DiscoveryState {
 export interface PendingAsk { id: string; kind: string; risk: AskRisk; workItemId: string | null; intent: ToolIntent; createdAt: string; }
 export type Autopilot = Record<AskRisk, "ask" | "automatic">;
 export interface AutomaticDecision { id: string; intent: ToolIntent; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean; }
+export interface StandingRuleSuggestion { id: string; askKind: string; scope: string | "all"; state: "offered" | "dismissed" | "accepted"; }
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
 export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
 export interface SarathiDashboard {
   asks: PendingAsk[];
   automaticDecisions: AutomaticDecision[];
+  standingRuleSuggestions: StandingRuleSuggestion[];
+  approvalStreak: { askKind: string; scope: string | "all"; count: number } | null;
   askAudit: AskAuditEntry[];
   standingRules: StandingRule[];
   autopilot: Autopilot;
@@ -129,6 +132,8 @@ export interface SarathiStore {
   addAutomaticDecision(input: Omit<AutomaticDecision, "id" | "createdAt" | "undone">): AutomaticDecision;
   undoAutomaticDecision(id: string): { decision: AutomaticDecision; ask: PendingAsk } | undefined;
   getAutomaticDecision(id: string): AutomaticDecision | undefined;
+  recordApprovedAsk(ask: PendingAsk): StandingRuleSuggestion | undefined;
+  setStandingRuleSuggestionState(id: string, state: StandingRuleSuggestion["state"]): StandingRuleSuggestion | undefined;
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
@@ -197,6 +202,15 @@ export class FileSarathiStore implements SarathiStore {
     const ask = this.addPendingAsk({ kind: decision.intent.operation, workItemId: decision.workItemId, intent: decision.intent });
     this.persist(); return { decision: clone(decision), ask };
   }
+  recordApprovedAsk(ask: PendingAsk): StandingRuleSuggestion | undefined {
+    const scope = ask.intent.context.repository ?? "all";
+    if (isFloorAskKind(ask.kind)) return undefined;
+    const streak = this.state.approvalStreak;
+    this.state.approvalStreak = streak?.askKind === ask.kind && streak.scope === scope ? { ...streak, count: streak.count + 1 } : { askKind: ask.kind, scope, count: 1 };
+    if (this.state.approvalStreak.count !== 3 || this.state.standingRuleSuggestions.some((item) => item.askKind === ask.kind && item.scope === scope)) { this.persist(); return undefined; }
+    const suggestion = { id: randomUUID(), askKind: ask.kind, scope, state: "offered" as const }; this.state.standingRuleSuggestions.push(suggestion); this.persist(); return clone(suggestion);
+  }
+  setStandingRuleSuggestionState(id: string, state: StandingRuleSuggestion["state"]): StandingRuleSuggestion | undefined { const item = this.state.standingRuleSuggestions.find((entry) => entry.id === id); if (!item || item.state !== "offered") return undefined; item.state = state; this.persist(); return clone(item); }
 
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined {
     const index = this.state.asks.findIndex((ask) => ask.id === id);
@@ -477,6 +491,7 @@ function defaultDashboard(): SarathiDashboard {
   return {
     asks: [],
     automaticDecisions: [],
+    standingRuleSuggestions: [], approvalStreak: null,
     askAudit: [], standingRules: [], autopilot: defaultAutopilot(),
     runtime: {
       name: "Hermes",
@@ -526,6 +541,7 @@ function defaultDashboard(): SarathiDashboard {
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks ??= [];
   state.automaticDecisions ??= [];
+  state.standingRuleSuggestions ??= []; state.approvalStreak ??= null;
   state.asks = state.asks.map((ask) => ({ ...ask, risk: ask.risk ?? riskOf(ask.kind) }));
   state.askAudit ??= [];
   state.standingRules ??= [];
