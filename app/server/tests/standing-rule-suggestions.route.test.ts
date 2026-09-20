@@ -43,4 +43,12 @@ describe("standing rule suggestions", () => {
     await approve(server, floor); await approve(server, floor); await approve(server, floor);
     expect((await server.inject({ method: "GET", url: "/api/sarathi/standing-rule-suggestions" })).json()).toEqual({ suggestions: [] });
   });
+
+  test("resets a non-floor approval streak when a floor ask is approved", async () => {
+    const server = app();
+    const web = { tool: "work", operation: "track.change", target: "work-1", context: { repository: "web" } };
+    const floor = { tool: "code-host", operation: "push", target: "shared/main", context: {} };
+    await approve(server, web); await approve(server, web); await approve(server, floor); await approve(server, web);
+    expect((await server.inject({ method: "GET", url: "/api/sarathi/standing-rule-suggestions" })).json()).toEqual({ suggestions: [] });
+  });
 });

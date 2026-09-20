@@ -204,7 +204,11 @@ export class FileSarathiStore implements SarathiStore {
   }
   recordApprovedAsk(ask: PendingAsk): StandingRuleSuggestion | undefined {
     const scope = ask.intent.context.repository ?? "all";
-    if (isFloorAskKind(ask.kind)) return undefined;
+    if (isFloorAskKind(ask.kind)) {
+      this.state.approvalStreak = null;
+      this.persist();
+      return undefined;
+    }
     const streak = this.state.approvalStreak;
     this.state.approvalStreak = streak?.askKind === ask.kind && streak.scope === scope ? { ...streak, count: streak.count + 1 } : { askKind: ask.kind, scope, count: 1 };
     if (this.state.approvalStreak.count !== 3 || this.state.standingRuleSuggestions.some((item) => item.askKind === ask.kind && item.scope === scope)) { this.persist(); return undefined; }
