@@ -1228,7 +1228,7 @@ describe("Sarathi dashboard routes", () => {
   describe("standing rules", () => {
     const tools = { definitions: [
       { tool: "delivery-pipeline", operations: ["track.change"] }, { tool: "code-host", operations: ["push"] }, { tool: "work-source", operations: ["close"] }, { tool: "system-update", operations: ["apply"] }
-    ], async execute() { return { output: "executed" }; } };
+    ], async execute() { return { output: "executed" }; }, isUndoable() { return true; }, async undo() {} };
     const change = (repository: string) => ({ tool: "delivery-pipeline", operation: "track.change", target: "work-1", context: { repository } });
     const create = (app: ReturnType<typeof buildApp>, payload: object) => app.inject({ method: "POST", url: "/api/sarathi/standing-rules", payload });
 

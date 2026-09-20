@@ -11,8 +11,11 @@ import type {
   ToolExecutionContext,
   ToolIntent
 } from "@aios/contracts";
-import { matchesPermissionRule, type SarathiStore } from "./SarathiStore.js";
+import { matchesPermissionRule, type AutomaticDecision, type PendingAsk, type SarathiStore } from "./SarathiStore.js";
 import { isFloorAskKind, isFloorIntent, wouldAllowFloorAction } from "./DecisionFloor.js";
+import { riskOf } from "./AskRisk.js";
+
+type EngineDecision = PermissionDecision & { automatic?: Pick<AutomaticDecision, "source" | "sourceDetail"> };
 
 export class PermissionEngine {
   constructor(
@@ -42,6 +45,7 @@ export class PermissionEngine {
     context?.beforeExecute(definition.idempotent ?? (isDeterministicallySafe(intent) && !isConsequential(intent)));
     try {
       const result = await this.tools.execute(intent, context ? { idempotencyKey: context.idempotencyKey, signal: context.signal } : undefined);
+      if (decision.automatic) this.store.addAutomaticDecision({ intent, ...decision.automatic, workItemId: intent.context.workItemId ?? null, undoable: this.canUndo(intent) });
       return { decision, output: result.output, effect: "completed" };
     } catch (error) {
       return { decision, effect: "uncertain", error: error instanceof Error ? error.message : "tool execution interrupted" };
@@ -79,7 +83,15 @@ export class PermissionEngine {
     });
   }
 
-  private async evaluate(intent: ToolIntent, signal?: AbortSignal): Promise<PermissionDecision> {
+  async undoAutomaticDecision(id: string): Promise<{ decision: AutomaticDecision; ask: PendingAsk } | "not-found" | "not-undoable"> {
+    const decision = this.store.getAutomaticDecision(id);
+    if (!decision || decision.undone) return "not-found";
+    if (!decision.undoable || !this.tools.undo) return "not-undoable";
+    await this.tools.undo(decision.intent);
+    return this.store.undoAutomaticDecision(id) ?? "not-found";
+  }
+
+  private async evaluate(intent: ToolIntent, signal?: AbortSignal): Promise<EngineDecision> {
     if (isFloorIntent(intent)) {
       const approval = this.store.findMatchingApproval(intent);
       return approval ? this.useApproval(approval, "floor approval") : { outcome: "requires_approval", reason: "floor action requires operator approval" };
@@ -95,11 +107,12 @@ export class PermissionEngine {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "scoped ask" };
     }
     // Floor intents returned above, so a standing rule can never settle one.
-    if (this.store.matchAndConsumeStandingRule(intent)) {
-      return { outcome: "allowed", reason: "standing rule" };
+    const standingRule = this.canUndo(intent) ? this.store.matchAndConsumeStandingRule(intent) : undefined;
+    if (standingRule) {
+      return { outcome: "allowed", reason: "standing rule", automatic: { source: "standing rule", sourceDetail: standingRule.label } };
     }
-    if (this.store.matchesAutopilot(intent.operation)) {
-      return { outcome: "allowed", reason: "autopilot" };
+    if (this.canUndo(intent) && this.store.matchesAutopilot(intent.operation)) {
+      return { outcome: "allowed", reason: "autopilot", automatic: { source: "autopilot", sourceDetail: riskOf(intent.operation) } };
     }
     if (isConsequential(intent)) {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "operator approval required" };
@@ -129,6 +142,10 @@ export class PermissionEngine {
       this.store.consumeApproval(approval.id);
     }
     return { outcome: "allowed", reason };
+  }
+
+  private canUndo(intent: ToolIntent): boolean {
+    return this.tools.isUndoable?.(intent) === true && typeof this.tools.undo === "function";
   }
 
   private isDefined(intent: ToolIntent): boolean {

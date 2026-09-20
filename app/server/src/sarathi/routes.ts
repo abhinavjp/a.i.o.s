@@ -82,6 +82,18 @@ export function registerSarathiRoutes(
   app.get("/api/sarathi/permissions", async () => store.snapshot().permissions);
   app.get("/api/sarathi/standing-rules", async () => ({ rules: store.snapshot().standingRules }));
   app.get("/api/sarathi/autopilot", async () => store.snapshot().autopilot);
+  app.get("/api/sarathi/automatic-decisions", async () => {
+    const decisions = store.snapshot().automaticDecisions;
+    const today = new Date().toISOString().slice(0, 10);
+    return { decisions, todayCount: decisions.filter((decision) => decision.createdAt.startsWith(today)).length };
+  });
+  app.post<{ Params: { decisionId: string } }>("/api/sarathi/automatic-decisions/:decisionId/undo", async (request, reply) => {
+    if (!permissionEngine) { reply.code(400); return { error: "permission engine is unavailable" }; }
+    const result = await permissionEngine.undoAutomaticDecision(request.params.decisionId);
+    if (result === "not-found") { reply.code(409); return { error: "automatic decision was already undone or does not exist" }; }
+    if (result === "not-undoable") { reply.code(409); return { error: "automatic decision cannot be undone" }; }
+    return result;
+  });
   app.put<{ Body: AutopilotBody }>("/api/sarathi/autopilot", async (request, reply) => {
     const body = request.body;
     if (!body || ![body.low, body.medium, body.high].every((tier) => tier === "ask" || tier === "automatic")) { reply.code(400); return { error: "each autopilot tier must be ask or automatic" }; }

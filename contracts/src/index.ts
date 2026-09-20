@@ -359,6 +359,10 @@ export interface ToolExecutionContext {
 export interface SarathiToolExecutor {
   readonly definitions: ReadonlyArray<ToolDefinition>;
   execute(intent: ToolIntent, options?: { readonly idempotencyKey: string; readonly signal: AbortSignal }): Promise<{ readonly output: string }>;
+  /** An executor explicitly declines automatic execution when this returns false. */
+  isUndoable?(intent: ToolIntent): boolean;
+  /** Reverses a completed tool action when isUndoable returned true. */
+  undo?(intent: ToolIntent): Promise<void>;
 }
 
 /** Optional semantic classifier; it may only identify unresolved low-risk work. */

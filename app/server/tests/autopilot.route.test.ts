@@ -7,7 +7,7 @@ import { createTestApp } from "./testApp.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 
 function manager() { const configurator = new AgentConfigurator(); configurator.register("fake", new FakeAgent()); return new AgentManager(configurator, "fake"); }
-function app() { return createTestApp(manager(), { permissionTools: { definitions: [{ tool: "work", operations: ["artifact.approve", "track.change", "question", "recovery"] }, { tool: "code-host", operations: ["push"] }, { tool: "work-source", operations: ["close"] }, { tool: "system-update", operations: ["apply"] }, { tool: "repository", operations: ["irreversible"] }], async execute() { return { output: "done" }; } } }); }
+function app() { return createTestApp(manager(), { permissionTools: { definitions: [{ tool: "work", operations: ["artifact.approve", "track.change", "question", "recovery"] }, { tool: "code-host", operations: ["push"] }, { tool: "work-source", operations: ["close"] }, { tool: "system-update", operations: ["apply"] }, { tool: "repository", operations: ["irreversible"] }], async execute() { return { output: "done" }; }, isUndoable() { return true; }, async undo() {} } }); }
 
 describe("autopilot", () => {
   test("defaults every tier to ask and adds risk to pending asks", async () => {

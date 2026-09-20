@@ -56,11 +56,13 @@ export interface DiscoveryState {
 
 export interface PendingAsk { id: string; kind: string; risk: AskRisk; workItemId: string | null; intent: ToolIntent; createdAt: string; }
 export type Autopilot = Record<AskRisk, "ask" | "automatic">;
+export interface AutomaticDecision { id: string; intent: ToolIntent; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean; }
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
 export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
 export interface SarathiDashboard {
   asks: PendingAsk[];
+  automaticDecisions: AutomaticDecision[];
   askAudit: AskAuditEntry[];
   standingRules: StandingRule[];
   autopilot: Autopilot;
@@ -124,6 +126,9 @@ export interface SarathiStore {
   setStandingRuleEnabled(id: string, enabled: boolean): StandingRule | undefined;
   setAutopilot(autopilot: Autopilot): Autopilot;
   matchesAutopilot(kind: string): boolean;
+  addAutomaticDecision(input: Omit<AutomaticDecision, "id" | "createdAt" | "undone">): AutomaticDecision;
+  undoAutomaticDecision(id: string): { decision: AutomaticDecision; ask: PendingAsk } | undefined;
+  getAutomaticDecision(id: string): AutomaticDecision | undefined;
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
@@ -177,6 +182,21 @@ export class FileSarathiStore implements SarathiStore {
   }
   setAutopilot(autopilot: Autopilot): Autopilot { this.state.autopilot = clone(autopilot); this.persist(); return clone(this.state.autopilot); }
   matchesAutopilot(kind: string): boolean { return this.state.autopilot[riskOf(kind)] === "automatic"; }
+  addAutomaticDecision(input: Omit<AutomaticDecision, "id" | "createdAt" | "undone">): AutomaticDecision {
+    const decision = { ...input, id: randomUUID(), createdAt: new Date().toISOString(), undone: false };
+    this.state.automaticDecisions.push(decision); this.persist(); return clone(decision);
+  }
+  getAutomaticDecision(id: string): AutomaticDecision | undefined {
+    const decision = this.state.automaticDecisions.find((entry) => entry.id === id);
+    return decision ? clone(decision) : undefined;
+  }
+  undoAutomaticDecision(id: string): { decision: AutomaticDecision; ask: PendingAsk } | undefined {
+    const decision = this.state.automaticDecisions.find((entry) => entry.id === id);
+    if (!decision || decision.undone) return undefined;
+    decision.undone = true;
+    const ask = this.addPendingAsk({ kind: decision.intent.operation, workItemId: decision.workItemId, intent: decision.intent });
+    this.persist(); return { decision: clone(decision), ask };
+  }
 
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined {
     const index = this.state.asks.findIndex((ask) => ask.id === id);
@@ -456,6 +476,7 @@ const TICKET_TITLES: ReadonlyArray<[string, string]> = [
 function defaultDashboard(): SarathiDashboard {
   return {
     asks: [],
+    automaticDecisions: [],
     askAudit: [], standingRules: [], autopilot: defaultAutopilot(),
     runtime: {
       name: "Hermes",
@@ -504,6 +525,7 @@ function defaultDashboard(): SarathiDashboard {
 
 function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks ??= [];
+  state.automaticDecisions ??= [];
   state.asks = state.asks.map((ask) => ({ ...ask, risk: ask.risk ?? riskOf(ask.kind) }));
   state.askAudit ??= [];
   state.standingRules ??= [];
