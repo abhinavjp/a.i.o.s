@@ -59,6 +59,27 @@ async function fixture(router: RuntimeRouter, extra: BuildAppOptions = {}) {
 }
 
 describe("durable runtime lifecycle through Fastify", () => {
+  test("derives running task stall state from runtime event timestamps and configurable thresholds", async () => {
+    const f = await fixture({ async *run(input) {
+      yield { type: "progress", text: "first output" };
+      await new Promise<void>((resolve) => input.signal.addEventListener("abort", () => resolve(), { once: true }));
+      yield { type: "terminal", outcome: { status: "cancelled" } };
+    } });
+    expect((await f.app.inject({ method: "GET", url: "/api/sarathi/stall-thresholds" })).json()).toEqual({ nudgeMinutes: 5, stopMinutes: 15 });
+    expect((await f.app.inject({ method: "PUT", url: "/api/sarathi/stall-thresholds", payload: { nudgeMinutes: 2, stopMinutes: 4 } })).json()).toEqual({ nudgeMinutes: 2, stopMinutes: 4 });
+    const id = (await f.submit()).json().taskId;
+    await vi.waitFor(async () => expect((await f.get(id)).chunks).toEqual(["first output"]));
+    f.clock.time += 60_000;
+    expect((await f.get(id)).stall).toMatchObject({ state: "active" });
+    f.clock.time += 60_001;
+    expect((await f.get(id)).stall).toMatchObject({ state: "nudge", lastOutputAt: "2026-09-07T00:00:00.000Z" });
+    f.clock.time += 120_000;
+    expect((await f.get(id)).stall).toMatchObject({ state: "stop" });
+    await f.app.inject({ method: "POST", url: `${root}/${id}/cancel` });
+    f.clock.time += 86_400_000;
+    expect((await f.get(id)).stall).toMatchObject({ state: "active" });
+  });
+
   test("reconstructs canonical conversation and tool authority after losing runtime-private state", async () => {
     const f = await fixture({ async *run(input) {
       yield { type: "resume", metadata: { nativeSessionId: "optional-session" } };

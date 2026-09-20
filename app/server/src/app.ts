@@ -98,7 +98,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     fixedRouteSelector: routeEligibility,
     toolMediator: permissionEngine,
     resilience,
-    agentSlots
+    agentSlots,
+    stallThresholds: () => sarathiStore.snapshot().stallThresholds
   }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness(), (intent, decision, note) => {
     if (intent.tool !== "delivery-pipeline" || intent.operation !== "artifact.approve") return;

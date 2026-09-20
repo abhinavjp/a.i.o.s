@@ -6,10 +6,12 @@ import { needsReconciliation, type StoredTask, type TaskStore } from "./TaskStor
 import { IneligibleRouteError, type ExecutionPlanAdmissionValidator, type FixedRouteSelector } from "./sarathi/RouteEligibility.js";
 import { systemRuntimeClock, type RouteResilience } from "./sarathi/RouteResilience.js";
 import { type AgentSlotManager } from "./sarathi/AgentSlots.js";
+import { defaultStallThresholds, type StallThresholds } from "./sarathi/SarathiStore.js";
 
 interface TaskListener { onChunk: (chunk: string) => void; onDone: (outcome: TaskOutcome) => void }
 export interface TaskExecutionObserver { record(task: StoredTask): void }
 export interface TaskToolMediator { execute(intent: ToolIntent, context?: ToolExecutionContext): Promise<ToolExecutionResult> }
+export interface TaskStall { state: "active" | "nudge" | "stop"; lastOutputAt: string | null; }
 type Execution = { taskId: string; task: string; sessionKey: string; plan: ResolvedExecutionPlan; agent: AgentAbstraction; signal: AbortSignal };
 
 export interface TaskAdmissionMetadata {
@@ -35,7 +37,8 @@ export class TaskRunRegistry {
     private readonly fixedRouteSelector?: FixedRouteSelector,
     private readonly toolMediator?: TaskToolMediator,
     private readonly resilience?: RouteResilience,
-    private readonly agentSlots?: AgentSlotManager
+    private readonly agentSlots?: AgentSlotManager,
+    private readonly stallThresholds: () => StallThresholds = defaultStallThresholds
   ) {}
 
   async start(agent: AgentAbstraction, task: string, sessionKey: string,
@@ -71,6 +74,15 @@ export class TaskRunRegistry {
 
   has(taskId: string): boolean { return this.store.get(taskId) !== undefined; }
   get(taskId: string) { return this.store.get(taskId); }
+  stall(task: StoredTask): TaskStall {
+    if (task.status !== "running" || task.outcome) return { state: "active", lastOutputAt: null };
+    const lastOutputAt = [...(task.attempts ?? [])].reverse().flatMap((attempt) => [...attempt.events].reverse())
+      .find((event) => event.type === "progress")?.observedAt ?? task.attempts?.at(-1)?.startedAt ?? null;
+    if (!lastOutputAt) return { state: "active", lastOutputAt: null };
+    const quietMinutes = (this.clock.now() - Date.parse(lastOutputAt)) / 60_000;
+    const thresholds = this.stallThresholds();
+    return { state: quietMinutes >= thresholds.stopMinutes ? "stop" : quietMinutes >= thresholds.nudgeMinutes ? "nudge" : "active", lastOutputAt };
+  }
 
   async cancel(taskId: string): Promise<StoredTask | undefined> {
     const task = this.store.get(taskId);

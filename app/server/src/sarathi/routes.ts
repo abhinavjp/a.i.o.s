@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ApprovalLifetime, LiveProofRoute, PermissionRuleDecision, ResolvedRoute, RoutePolicyOverride, RuntimeRouter, ToolIntent } from "@aios/contracts";
-import type { SarathiStore } from "./SarathiStore.js";
+import type { SarathiStore, StallThresholds } from "./SarathiStore.js";
 import { randomUUID } from "node:crypto";
 import { isRoutePolicyOverride } from "./RoutePolicy.js";
 import type { ProviderCatalogManager } from "./ProviderCatalog.js";
@@ -45,6 +45,7 @@ interface ApprovalBody {
 }
 interface StandingRuleBody { label?: unknown; askKind?: unknown; scope?: unknown; }
 interface AutopilotBody { low?: unknown; medium?: unknown; high?: unknown; }
+interface StallThresholdsBody { nudgeMinutes?: unknown; stopMinutes?: unknown; }
 
 export function registerSarathiRoutes(
   app: FastifyInstance,
@@ -92,6 +93,12 @@ export function registerSarathiRoutes(
   app.get("/api/sarathi/permissions", async () => store.snapshot().permissions);
   app.get("/api/sarathi/standing-rules", async () => ({ rules: store.snapshot().standingRules }));
   app.get("/api/sarathi/autopilot", async () => store.snapshot().autopilot);
+  app.get("/api/sarathi/stall-thresholds", async () => store.snapshot().stallThresholds);
+  app.put<{ Body: StallThresholdsBody }>("/api/sarathi/stall-thresholds", async (request, reply) => {
+    const thresholds = request.body;
+    if (!isStallThresholds(thresholds)) { reply.code(400); return { error: "nudgeMinutes and stopMinutes must be positive whole minutes, with stopMinutes greater than nudgeMinutes" }; }
+    return store.setStallThresholds(thresholds);
+  });
   app.get("/api/sarathi/standing-rule-suggestions", async () => ({ suggestions: store.snapshot().standingRuleSuggestions.filter((item) => item.state === "offered") }));
   app.post<{ Params: { suggestionId: string } }>("/api/sarathi/standing-rule-suggestions/:suggestionId/accept", async (request, reply) => {
     const suggestion = store.snapshot().standingRuleSuggestions.find((item) => item.id === request.params.suggestionId && item.state === "offered");
@@ -269,6 +276,11 @@ export function registerSarathiRoutes(
       return { specialist };
     }
   );
+}
+
+function isStallThresholds(value: StallThresholdsBody | undefined): value is StallThresholds {
+  if (!value || typeof value.nudgeMinutes !== "number" || typeof value.stopMinutes !== "number") return false;
+  return Number.isInteger(value.nudgeMinutes) && Number.isInteger(value.stopMinutes) && value.nudgeMinutes > 0 && value.stopMinutes > value.nudgeMinutes;
 }
 
 function isCapabilityTags(value: unknown): value is string[] | undefined {

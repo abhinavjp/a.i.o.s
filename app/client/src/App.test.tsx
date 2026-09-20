@@ -89,6 +89,18 @@ describe("App", () => {
     expect(screen.queryByRole("button", { name: "Stop task" })).toBeNull();
   });
 
+  test("shows the active task when its stop threshold has passed", async () => {
+    FakeEventSource.instances = [];
+    vi.stubGlobal("EventSource", FakeEventSource);
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () =>
+      url === "/api/agents/active/tasks" ? { taskId: "task-stalled" }
+        : url === "/api/agents/active/tasks/task-stalled" ? { stall: { state: "stop", lastOutputAt: "2026-09-07T00:00:00.000Z" } }
+          : { agents: [] } })));
+    render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /run task/i }));
+    expect(await screen.findByText("Task stalled: stop threshold passed.")).toBeTruthy();
+  });
+
   test("shows circuit recovery, retry and fallback counts, and reconstructs tool history on demand", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };

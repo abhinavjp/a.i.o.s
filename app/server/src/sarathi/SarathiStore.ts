@@ -58,6 +58,7 @@ export interface DiscoveryState {
 
 export interface PendingAsk { id: string; kind: string; risk: AskRisk; workItemId: string | null; intent: ToolIntent; createdAt: string; }
 export type Autopilot = Record<AskRisk, "ask" | "automatic">;
+export interface StallThresholds { nudgeMinutes: number; stopMinutes: number; }
 export interface AutomaticDecision { id: string; intent: ToolIntent; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean; }
 export interface StandingRuleSuggestion { id: string; askKind: string; scope: string | "all"; state: "offered" | "dismissed" | "accepted"; }
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
@@ -71,6 +72,7 @@ export interface SarathiDashboard {
   askAudit: AskAuditEntry[];
   standingRules: StandingRule[];
   autopilot: Autopilot;
+  stallThresholds: StallThresholds;
   runtime: RuntimeStatus;
   routing: { policies: RoutePolicyRecord[] };
   permissions: { rules: PermissionRule[]; approvals: ActionBoundApproval[] };
@@ -130,6 +132,7 @@ export interface SarathiStore {
   addStandingRule(rule: StandingRule): StandingRule;
   setStandingRuleEnabled(id: string, enabled: boolean): StandingRule | undefined;
   setAutopilot(autopilot: Autopilot): Autopilot;
+  setStallThresholds(thresholds: StallThresholds): StallThresholds;
   matchesAutopilot(kind: string): boolean;
   addAutomaticDecision(input: Omit<AutomaticDecision, "id" | "createdAt" | "undone">): AutomaticDecision;
   undoAutomaticDecision(id: string): { decision: AutomaticDecision; ask: PendingAsk } | undefined;
@@ -140,13 +143,14 @@ export interface SarathiStore {
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
-const SCHEMA_VERSION = 4;
+const SCHEMA_VERSION = 5;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
   { fromVersion: 1, migrate: (document) => ({ ...document, schemaVersion: 2, dashboard: { ...document.dashboard, asks: document.dashboard.asks ?? [] } }) }
   , { fromVersion: 2, migrate: (document) => ({ ...document, schemaVersion: 3, dashboard: { ...document.dashboard, askAudit: document.dashboard.askAudit ?? [] } }) }
   , { fromVersion: 3, migrate: (document) => ({ ...document, schemaVersion: 4, dashboard: withFloorRules(document.dashboard) }) }
+  , { fromVersion: 4, migrate: (document) => ({ ...document, schemaVersion: 5, dashboard: { ...document.dashboard, stallThresholds: document.dashboard.stallThresholds ?? defaultStallThresholds() } }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -188,6 +192,7 @@ export class FileSarathiStore implements SarathiStore {
     return clone(rule);
   }
   setAutopilot(autopilot: Autopilot): Autopilot { this.state.autopilot = clone(autopilot); this.persist(); return clone(this.state.autopilot); }
+  setStallThresholds(thresholds: StallThresholds): StallThresholds { this.state.stallThresholds = clone(thresholds); this.persist(); return clone(this.state.stallThresholds); }
   matchesAutopilot(kind: string): boolean { return this.state.autopilot[riskOf(kind)] === "automatic"; }
   addAutomaticDecision(input: Omit<AutomaticDecision, "id" | "createdAt" | "undone">): AutomaticDecision {
     const decision = { ...input, id: randomUUID(), createdAt: new Date().toISOString(), undone: false };
@@ -500,7 +505,7 @@ function defaultDashboard(): SarathiDashboard {
     asks: [],
     automaticDecisions: [],
     standingRuleSuggestions: [], approvalStreak: null,
-    askAudit: [], standingRules: [], autopilot: defaultAutopilot(),
+    askAudit: [], standingRules: [], autopilot: defaultAutopilot(), stallThresholds: defaultStallThresholds(),
     runtime: {
       name: "Hermes",
       state: "unavailable",
@@ -557,6 +562,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.askAudit ??= [];
   state.standingRules ??= [];
   state.autopilot ??= defaultAutopilot();
+  state.stallThresholds ??= defaultStallThresholds();
   state.routing ??= { policies: [defaultPolicy("global")] };
   state.permissions ??= { rules: [], approvals: [] };
   state = withFloorRules(state);
@@ -577,6 +583,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   return state;
 }
 function defaultAutopilot(): Autopilot { return { low: "ask", medium: "ask", high: "ask" }; }
+export function defaultStallThresholds(): StallThresholds { return { nudgeMinutes: 5, stopMinutes: 15 }; }
 
 function withFloorRules(state: SarathiDashboard): SarathiDashboard {
   state.permissions ??= { rules: [], approvals: [] };

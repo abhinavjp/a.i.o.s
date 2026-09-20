@@ -13,6 +13,7 @@ import { resolveEnginePolicy } from "../engine/resolveEnginePolicy.js";
 import { validatePolicy } from "../engine/EngineConfigStore.js";
 import type { RouteResilience } from "../sarathi/RouteResilience.js";
 import { NoFreeSlotError, type AgentSlotManager } from "../sarathi/AgentSlots.js";
+import type { StallThresholds } from "../sarathi/SarathiStore.js";
 
 interface SubmitTaskBody {
   task: string;
@@ -37,6 +38,7 @@ export interface TaskRouteOptions {
   toolMediator?: TaskToolMediator;
   resilience?: RouteResilience;
   agentSlots?: AgentSlotManager;
+  stallThresholds?: () => StallThresholds;
 }
 
 export function registerTaskRoutes(
@@ -55,7 +57,8 @@ export function registerTaskRoutes(
     options.fixedRouteSelector,
     options.toolMediator,
     options.resilience,
-    options.agentSlots
+    options.agentSlots,
+    options.stallThresholds
   );
   app.addHook("onClose", async () => registry.close());
 
@@ -184,6 +187,7 @@ export function registerTaskRoutes(
         ,readiness: record.readiness
         ,routingSource: record.routingSource
         ,nativeSessionIds: record.nativeSessionIds
+        ,stall: registry.stall(record)
       };
     }
   );
