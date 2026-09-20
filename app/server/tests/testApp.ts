@@ -6,13 +6,15 @@ import { afterEach } from "vitest";
 import { buildApp, type BuildAppOptions } from "../src/app.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
+import { FileReleaseChannelStore } from "../src/ReleaseChannel.js";
 
 // Public-boundary tests inject stores so parallel files never share persisted state.
 const apps: Array<{ app: ReturnType<typeof buildApp>; directory?: string }> = [];
 export function createTestApp(manager: Parameters<typeof buildApp>[0], options: BuildAppOptions = {}) {
   const directory = mkdtempSync(join(tmpdir(), "sarathi-app-test-"));
   const app = buildApp(manager, { taskStore: new FileTaskStore(join(directory, "tasks.json")),
-    sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")), ...options });
+    sarathiStore: new FileSarathiStore(join(directory, "sarathi.json")),
+    releaseChannelStore: new FileReleaseChannelStore(join(directory, "release-channel.json")), ...options });
   apps.push({ app, directory });
   return app;
 }
