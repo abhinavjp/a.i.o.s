@@ -62,9 +62,9 @@ describe("release channel", () => {
       releaseChannelPublicKey: publicKey
     });
 
-    expect((await server.inject({ method: "POST", url: "/api/release-channel/check" })).json()).toEqual({
+    expect((await server.inject({ method: "POST", url: "/api/release-channel/check" })).json()).toEqual(expect.objectContaining({
       status: "available", release: releases("0.1.0")[0]
-    });
+    }));
     expect(calls).toEqual([{ url: "https://releases.adhisthana.dev/channel.json", metadata: { version: runningVersion, channel: "public" } }]);
 
     manifest = signed("public", releases(runningVersion));
@@ -81,7 +81,7 @@ describe("release channel", () => {
 
     expect((await server.inject({ method: "PUT", url: "/api/release-channel", payload: { channel: "internal", url: "https://updates.internal/channel.json" } })).json()).toEqual({ channel: "internal", url: "https://updates.internal/channel.json" });
     manifest = signed("internal", releases("0.3.0"));
-    expect((await server.inject({ method: "POST", url: "/api/release-channel/check" })).json()).toEqual({ status: "available", release: releases("0.3.0")[0] });
+    expect((await server.inject({ method: "POST", url: "/api/release-channel/check" })).json()).toEqual(expect.objectContaining({ status: "available", release: releases("0.3.0")[0] }));
     expect(calls.at(-1)).toEqual({ url: "https://updates.internal/channel.json", metadata: { version: runningVersion, channel: "internal" } });
 
     manifest = undefined;

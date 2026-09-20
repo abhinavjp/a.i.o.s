@@ -92,9 +92,11 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     ? new RuntimeRouterRegistry([...(options.runtimeAdapters ?? []), ...providerRegistrations], new AgentRuntimeRouter())
     : undefined);
   const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore, resilience, autoSelector);
-  const permissionEngine = options.permissionTools
-    ? new PermissionEngine(sarathiStore, withDeliveryPipelineTools(options.permissionTools), options.permissionSemanticClassifier)
-    : undefined;
+  const permissionTools: SarathiToolExecutor = options.permissionTools ?? {
+    definitions: [{ tool: "system-update", operations: ["apply"] }],
+    async execute() { throw new Error("system update execution is not configured"); }
+  };
+  const permissionEngine = new PermissionEngine(sarathiStore, withDeliveryPipelineTools(permissionTools), options.permissionSemanticClassifier);
   app.addHook("onReady", async () => providerCatalogManager.refreshAll());
   // Task history is authoritative if the dashboard projection lagged a crash.
   for (const task of taskStore.list().sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))) sarathiStore.recordTask(task);
@@ -122,6 +124,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore);
-  registerReleaseChannelRoutes(app, releaseChannel);
+  registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
   return app;
 }

@@ -46,6 +46,18 @@ function stubAgentsFetch() {
 }
 
 describe("App", () => {
+  test("shows version, channel, and notes for an update ask", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+      if (url === "/api/agents") return { agents: [] };
+      return {
+        runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" }, controls: { manualPaused: false }, discovery: { status: "blocked", reason: "blocked", mergeRequests: [] }, tickets: [],
+        asks: [{ id: "update-1", kind: "apply", workItemId: null, createdAt: "2026-09-20T00:00:00.000Z", intent: { tool: "system-update", context: { version: "0.1.0", channel: "public", notes: "Important fixes" } } }]
+      };
+    } })));
+    render(<App />);
+    expect(await screen.findByText("0.1.0 · public · Important fixes")).toBeTruthy();
+  });
+
   test("displays the running version reported by the server", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({
       ok: true,

@@ -134,8 +134,7 @@ export class ReleaseChannelManager {
 
   configure(configuration: ReleaseChannelConfiguration) { return this.store.set(configuration); }
 
-  async check(): Promise<ReleaseChannelCheck> {
-    const configuration = this.configuration();
+  async check(configuration = this.configuration()): Promise<ReleaseChannelCheck> {
     try {
       const manifest = JSON.parse(await this.transport.fetch(configuration.url, { version: this.runningVersion, channel: configuration.channel })) as SignedReleaseManifest;
       if (!manifest.signature) return { status: "failed", error: "release channel signature is missing" };
