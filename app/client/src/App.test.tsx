@@ -46,6 +46,17 @@ function stubAgentsFetch() {
 }
 
 describe("App", () => {
+  test("displays the running version reported by the server", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({
+      ok: true,
+      json: async () => url === "/api/version" ? { version: "0.0.0" } : { agents: [] }
+    })));
+
+    render(<App />);
+
+    expect(await screen.findByText("Adhisthana 0.0.0")).toBeTruthy();
+  });
+
   test("shows each agent's slot use in the specialist console", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };

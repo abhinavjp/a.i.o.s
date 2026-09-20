@@ -3,6 +3,11 @@ import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
 import { createTestApp as buildApp } from "./testApp.js";
 
 describe("GET /api/agents", () => {
+  test("reports the running package version on a fresh app", async () => {
+    const configurator = new AgentConfigurator(); configurator.register("fake", new FakeAgent());
+    const app = buildApp(new AgentManager(configurator, "fake"));
+    expect((await app.inject({ method: "GET", url: "/api/version" })).json()).toEqual({ version: "0.0.0" });
+  });
   test("returns the active agent sourced from the Manager/Configurator/Abstraction chain", async () => {
     const configurator = new AgentConfigurator();
     configurator.register("fake", new FakeAgent());

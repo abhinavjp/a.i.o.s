@@ -30,6 +30,7 @@ import { FileWorkItemStore, type WorkItemStore } from "./WorkItemStore.js";
 import { FileArtifactStore, type ArtifactStore } from "./ArtifactStore.js";
 import { FilePhaseStore, type PhaseStore } from "./PhaseStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
+import { RUNNING_VERSION } from "./Version.js";
 import type { CodeHost, WorkSource } from "@aios/connectors";
 
 export interface BuildAppOptions {
@@ -56,6 +57,7 @@ export interface BuildAppOptions {
 
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const app = Fastify();
+  app.get("/api/version", async () => ({ version: RUNNING_VERSION }));
   registerAgentsRoute(app, manager);
   const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore || !options.artifactStore || !options.phaseStore;
   const dataDirectory = needsDefaultStore ? applicationDataDirectory() : "";
