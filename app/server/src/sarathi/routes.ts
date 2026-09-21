@@ -55,7 +55,7 @@ export function registerSarathiRoutes(
   resilience?: RouteResilience,
   runtimeRouter?: RuntimeRouter,
   proofHarness?: LiveProofHarness,
-  onAskDecision?: (intent: ToolIntent, decision: "approved" | "declined", note?: string) => void,
+  onAskDecision?: (intent: ToolIntent, decision: "approved" | "declined", note?: string) => void | Promise<void>,
   onArtifactAwait?: (artifactId: string) => ToolIntent | undefined,
   agentSlots?: AgentSlotManager
 ): void {
@@ -203,9 +203,10 @@ export function registerSarathiRoutes(
   });
   app.post<{ Params: { askId: string }; Body: { decision?: string; note?: string } }>("/api/sarathi/asks/:askId/decide", async (request, reply) => {
     if (!permissionEngine || (request.body?.decision !== "approved" && request.body?.decision !== "declined")) { reply.code(400); return { error: "decision must be approved or declined" }; }
-    const ask = store.decideAsk(request.params.askId, request.body.decision);
+    const ask = store.getPendingAsk(request.params.askId);
     if (!ask) { reply.code(409); return { error: "ask was already decided or does not exist" }; }
-    onAskDecision?.(ask.intent, request.body.decision, request.body.note);
+    await onAskDecision?.(ask.intent, request.body.decision, request.body.note);
+    store.decideAsk(request.params.askId, request.body.decision);
     if (request.body.decision === "approved") { permissionEngine.approve(ask.intent, "once"); store.recordApprovedAsk(ask); }
     else permissionEngine.saveRule({ decision: "deny", tool: ask.intent.tool, operation: ask.intent.operation, target: ask.intent.target, context: ask.intent.context, lifetime: "once" });
     return { ask, decision: request.body.decision };

@@ -62,6 +62,7 @@ export interface StallThresholds { nudgeMinutes: number; stopMinutes: number; }
 export interface AutomaticDecision { id: string; intent: ToolIntent; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean; }
 export interface StandingRuleSuggestion { id: string; askKind: string; scope: string | "all"; state: "offered" | "dismissed" | "accepted"; }
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
+export interface UpdateAuditEntry { version: string; channel: string; appliedAt: string; }
 export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
 export interface SarathiDashboard {
@@ -70,6 +71,7 @@ export interface SarathiDashboard {
   standingRuleSuggestions: StandingRuleSuggestion[];
   approvalStreak: { askKind: string; scope: string | "all"; count: number } | null;
   askAudit: AskAuditEntry[];
+  updateAudit: UpdateAuditEntry[];
   standingRules: StandingRule[];
   autopilot: Autopilot;
   stallThresholds: StallThresholds;
@@ -129,6 +131,7 @@ export interface SarathiStore {
   consumeApproval(id: string): void;
   recordCircuit(circuit: RouteCircuit): void;
   addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt" | "risk">): PendingAsk;
+  getPendingAsk(id: string): PendingAsk | undefined;
   addStandingRule(rule: StandingRule): StandingRule;
   setStandingRuleEnabled(id: string, enabled: boolean): StandingRule | undefined;
   setAutopilot(autopilot: Autopilot): Autopilot;
@@ -140,10 +143,11 @@ export interface SarathiStore {
   recordApprovedAsk(ask: PendingAsk): StandingRuleSuggestion | undefined;
   setStandingRuleSuggestionState(id: string, state: StandingRuleSuggestion["state"]): StandingRuleSuggestion | undefined;
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined;
+  recordUpdateAudit(entry: UpdateAuditEntry): UpdateAuditEntry;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
@@ -151,6 +155,7 @@ const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   , { fromVersion: 2, migrate: (document) => ({ ...document, schemaVersion: 3, dashboard: { ...document.dashboard, askAudit: document.dashboard.askAudit ?? [] } }) }
   , { fromVersion: 3, migrate: (document) => ({ ...document, schemaVersion: 4, dashboard: withFloorRules(document.dashboard) }) }
   , { fromVersion: 4, migrate: (document) => ({ ...document, schemaVersion: 5, dashboard: { ...document.dashboard, stallThresholds: document.dashboard.stallThresholds ?? defaultStallThresholds() } }) }
+  , { fromVersion: 5, migrate: (document) => ({ ...document, schemaVersion: 6, dashboard: { ...document.dashboard, updateAudit: document.dashboard.updateAudit ?? [] } }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -174,6 +179,8 @@ export class FileSarathiStore implements SarathiStore {
     const ask = { ...input, risk: riskOf(input.kind), id: randomUUID(), createdAt: new Date().toISOString() };
     this.state.asks.push(ask); this.persist(); return clone(ask);
   }
+
+  getPendingAsk(id: string): PendingAsk | undefined { const ask = this.state.asks.find((candidate) => candidate.id === id); return ask && clone(ask); }
 
   addStandingRule(rule: StandingRule): StandingRule {
     this.state.standingRules.push(clone(rule));
@@ -230,6 +237,8 @@ export class FileSarathiStore implements SarathiStore {
     this.state.askAudit.push({ askId: id, decision, createdAt: new Date().toISOString() });
     this.persist(); return clone(ask);
   }
+
+  recordUpdateAudit(entry: UpdateAuditEntry): UpdateAuditEntry { this.state.updateAudit.push(clone(entry)); this.persist(); return clone(entry); }
 
   setPaused(paused: boolean): SarathiDashboard {
     this.state.controls = {
@@ -505,7 +514,7 @@ function defaultDashboard(): SarathiDashboard {
     asks: [],
     automaticDecisions: [],
     standingRuleSuggestions: [], approvalStreak: null,
-    askAudit: [], standingRules: [], autopilot: defaultAutopilot(), stallThresholds: defaultStallThresholds(),
+    askAudit: [], updateAudit: [], standingRules: [], autopilot: defaultAutopilot(), stallThresholds: defaultStallThresholds(),
     runtime: {
       name: "Hermes",
       state: "unavailable",
@@ -560,6 +569,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.standingRuleSuggestions ??= []; state.approvalStreak ??= null;
   state.asks = state.asks.map((ask) => ({ ...ask, risk: ask.risk ?? riskOf(ask.kind) }));
   state.askAudit ??= [];
+  state.updateAudit ??= [];
   state.standingRules ??= [];
   state.autopilot ??= defaultAutopilot();
   state.stallThresholds ??= defaultStallThresholds();

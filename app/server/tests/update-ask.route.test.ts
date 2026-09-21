@@ -1,4 +1,5 @@
 import { generateKeyPairSync, sign } from "node:crypto";
+import { createHash } from "node:crypto";
 import { describe, expect, test } from "vitest";
 import { AgentConfigurator, AgentManager, FakeAgent } from "@aios/agents";
 import { createTestApp } from "./testApp.js";
@@ -44,5 +45,46 @@ describe("available updates", () => {
     });
     await app.inject({ method: "POST", url: "/api/release-channel/check" });
     expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toEqual([expect.objectContaining({ intent: expect.objectContaining({ tool: "system-update", operation: "apply" }) })]);
+  });
+
+  test("keeps an approved update ask when the normal app has no installer", async () => {
+    const app = createTestApp(manager(), {
+      releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey,
+      releaseChannelTransport: { async fetch() { return JSON.stringify(signedManifest); } }
+    });
+    await app.inject({ method: "POST", url: "/api/release-channel/check" });
+    const ask = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0];
+
+    const response = await app.inject({ method: "POST", url: `/api/sarathi/asks/${ask.id}/decide`, payload: { decision: "approved" } });
+
+    expect(response.statusCode).toBe(500);
+    expect(response.json().message).toBe("system update execution is not configured");
+    expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toEqual([expect.objectContaining({ id: ask.id })]);
+  });
+
+  test("installs a checksum-verified approved update without passing the user state directory", async () => {
+    const artifact = Buffer.from("release artifact");
+    const checkedRelease = { ...release, checksum: createHash("sha256").update(artifact).digest("hex") };
+    const checked = { channel: "public", releases: [checkedRelease] };
+    const checkedManifest = { ...checked, signature: sign(null, Buffer.from(JSON.stringify(checked)), keys.privateKey).toString("base64") };
+    const installs: Array<{ version: string; artifact: Buffer }> = [];
+    const app = createTestApp(manager(), { releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey, releaseChannelTransport: { async fetch() { return JSON.stringify(checkedManifest); } }, updateInstaller: { async download() { return artifact; }, async install(input) { installs.push(input); } } });
+    await app.inject({ method: "POST", url: "/api/release-channel/check" });
+    const ask = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0];
+    expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${ask.id}/decide`, payload: { decision: "approved" } })).statusCode).toBe(200);
+    expect(installs).toEqual([{ version: "0.1.0", artifact, retainPrevious: true }]);
+    expect((await app.inject({ method: "GET", url: "/api/update-audit" })).json().entries).toEqual([expect.objectContaining({ version: "0.1.0", channel: "public", appliedAt: expect.any(String) })]);
+  });
+
+  test("does not install when an approved update checksum is wrong", async () => {
+    const installs: unknown[] = [];
+    const app = createTestApp(manager(), { releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey, releaseChannelTransport: { async fetch() { return JSON.stringify(signedManifest); } }, updateInstaller: { async download() { return Buffer.from("wrong artifact"); }, async install(input) { installs.push(input); } } });
+    await app.inject({ method: "POST", url: "/api/release-channel/check" });
+    const ask = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0];
+    const response = await app.inject({ method: "POST", url: `/api/sarathi/asks/${ask.id}/decide`, payload: { decision: "approved" } });
+    expect(response.statusCode).toBe(500);
+    expect(response.json().message).toBe("update checksum does not match");
+    expect(installs).toEqual([]);
+    expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toEqual([expect.objectContaining({ id: ask.id })]);
   });
 });

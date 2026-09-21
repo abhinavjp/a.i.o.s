@@ -33,6 +33,7 @@ import { registerWorkItemRoutes } from "./routes/workItems.js";
 import { RUNNING_VERSION } from "./Version.js";
 import { DEFAULT_RELEASE_CHANNEL_PUBLIC_KEY, FetchReleaseChannelTransport, FileReleaseChannelStore, type ReleaseChannelStore, type ReleaseChannelTransport, ReleaseChannelManager } from "./ReleaseChannel.js";
 import { registerReleaseChannelRoutes } from "./routes/releaseChannel.js";
+import { type UpdateInstaller, UpdateInstallerConfigurator, UpdateManager } from "./UpdateInstaller.js";
 import type { CodeHost, WorkSource } from "@aios/connectors";
 
 export interface BuildAppOptions {
@@ -58,6 +59,7 @@ export interface BuildAppOptions {
   releaseChannelStore?: ReleaseChannelStore;
   releaseChannelTransport?: ReleaseChannelTransport;
   releaseChannelPublicKey?: string;
+  updateInstaller?: UpdateInstaller;
 }
 
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
@@ -92,9 +94,12 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     ? new RuntimeRouterRegistry([...(options.runtimeAdapters ?? []), ...providerRegistrations], new AgentRuntimeRouter())
     : undefined);
   const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore, resilience, autoSelector);
+  const updateInstallerConfigurator = new UpdateInstallerConfigurator();
+  if (options.updateInstaller) updateInstallerConfigurator.register("default", options.updateInstaller);
+  const updateManager = new UpdateManager(updateInstallerConfigurator.select(), sarathiStore);
   const permissionTools: SarathiToolExecutor = options.permissionTools ?? {
     definitions: [{ tool: "system-update", operations: ["apply"] }],
-    async execute() { throw new Error("system update execution is not configured"); }
+    async execute(intent) { if (intent.tool === "system-update") { await updateManager.apply(intent.context); return { output: "update installed" }; } throw new Error("system update execution is not configured"); }
   };
   const permissionEngine = new PermissionEngine(sarathiStore, withDeliveryPipelineTools(permissionTools), options.permissionSemanticClassifier);
   app.addHook("onReady", async () => providerCatalogManager.refreshAll());
@@ -112,6 +117,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     stallThresholds: () => sarathiStore.snapshot().stallThresholds
   }, engineConfigStore);
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness(), (intent, decision, note) => {
+    if (intent.tool === "system-update" && intent.operation === "apply" && decision === "approved") return updateManager.apply(intent.context);
     if (intent.tool !== "delivery-pipeline" || intent.operation !== "artifact.approve") return;
     const artifact = artifactStore.get(intent.target);
     if (!artifact || artifact.approvalState !== "awaiting") return;
@@ -125,5 +131,6 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
+  app.get("/api/update-audit", async () => ({ entries: sarathiStore.snapshot().updateAudit }));
   return app;
 }
