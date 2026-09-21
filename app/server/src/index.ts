@@ -1,6 +1,8 @@
 import cors from "@fastify/cors";
+import { spawn } from "node:child_process";
 import { AgentConfigurator, AgentManager, ClaudeCodeAgent, CodexAgent, EngineRegistry, HermesAgent } from "@aios/agents";
 import { buildApp } from "./app.js";
+import { registerInstalledConsoleFiles } from "./InstalledConsole.js";
 
 const configurator = new AgentConfigurator();
 const hermesAgent = new HermesAgent();
@@ -21,6 +23,7 @@ const manager = new AgentManager(configurator, "hermes", engineRegistry);
 
 const app = buildApp(manager);
 await app.register(cors, { origin: true });
+if (process.env.AIOS_CLIENT_DIR) registerInstalledConsoleFiles(app, process.env.AIOS_CLIENT_DIR);
 
 const port = Number(process.env.PORT ?? 3001);
 app.listen({ port }, (err, address) => {
@@ -29,4 +32,12 @@ app.listen({ port }, (err, address) => {
     process.exit(1);
   }
   app.log.info(`Adhiṣṭhāna BFF listening on ${address}`);
+  if (process.env.AIOS_OPEN_BROWSER === "1") openConsole(address);
 });
+
+function openConsole(address: string): void {
+  const command = process.platform === "win32" ? "cmd.exe" : process.platform === "darwin" ? "open" : "xdg-open";
+  const args = process.platform === "win32" ? ["/c", "start", "", address] : [address];
+  const browser = spawn(command, args, { detached: true, stdio: "ignore" });
+  browser.unref();
+}

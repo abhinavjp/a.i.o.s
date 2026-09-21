@@ -1,6 +1,2 @@
-import { createRequire } from "node:module";
-
-const require = createRequire(import.meta.url);
-const packageMetadata = require("../package.json") as { version: string };
-
-export const RUNNING_VERSION = packageMetadata.version;
+declare const __ADHISTHANA_VERSION__: string | undefined;
+export const RUNNING_VERSION = typeof __ADHISTHANA_VERSION__ === "string" ? __ADHISTHANA_VERSION__ : "0.0.0";
