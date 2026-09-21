@@ -62,7 +62,7 @@ export interface StallThresholds { nudgeMinutes: number; stopMinutes: number; }
 export interface AutomaticDecision { id: string; intent: ToolIntent; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean; }
 export interface StandingRuleSuggestion { id: string; askKind: string; scope: string | "all"; state: "offered" | "dismissed" | "accepted"; }
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
-export interface UpdateAuditEntry { version: string; channel: string; appliedAt: string; }
+export interface UpdateAuditEntry { action?: "rollback"; version: string; previousVersion?: string; channel: string; appliedAt: string; }
 export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
 export interface SarathiDashboard {

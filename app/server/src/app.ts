@@ -64,7 +64,6 @@ export interface BuildAppOptions {
 
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const app = Fastify();
-  app.get("/api/version", async () => ({ version: RUNNING_VERSION }));
   registerAgentsRoute(app, manager);
   const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore || !options.artifactStore || !options.phaseStore || !options.releaseChannelStore;
   const dataDirectory = needsDefaultStore ? applicationDataDirectory() : "";
@@ -96,7 +95,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const routeEligibility = new ProviderCatalogEligibilityValidator(sarathiStore, resilience, autoSelector);
   const updateInstallerConfigurator = new UpdateInstallerConfigurator();
   if (options.updateInstaller) updateInstallerConfigurator.register("default", options.updateInstaller);
-  const updateManager = new UpdateManager(updateInstallerConfigurator.select(), sarathiStore);
+  const updateManager = new UpdateManager(updateInstallerConfigurator.select(), sarathiStore, RUNNING_VERSION);
+  app.get("/api/version", async () => ({ version: updateManager.version() }));
   const permissionTools: SarathiToolExecutor = options.permissionTools ?? {
     definitions: [{ tool: "system-update", operations: ["apply"] }],
     async execute(intent) { if (intent.tool === "system-update") { await updateManager.apply(intent.context); return { output: "update installed" }; } throw new Error("system update execution is not configured"); }
@@ -132,5 +132,9 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
   app.get("/api/update-audit", async () => ({ entries: sarathiStore.snapshot().updateAudit }));
+  app.post("/api/update/rollback", async (_request, reply) => {
+    try { return { version: await updateManager.rollback() }; }
+    catch (error) { const message = error instanceof Error ? error.message : "rollback could not be completed"; reply.code(message === "no retained previous version is available" ? 409 : 500); return { error: message }; }
+  });
   return app;
 }

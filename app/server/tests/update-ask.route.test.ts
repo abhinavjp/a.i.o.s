@@ -68,7 +68,7 @@ describe("available updates", () => {
     const checked = { channel: "public", releases: [checkedRelease] };
     const checkedManifest = { ...checked, signature: sign(null, Buffer.from(JSON.stringify(checked)), keys.privateKey).toString("base64") };
     const installs: Array<{ version: string; artifact: Buffer }> = [];
-    const app = createTestApp(manager(), { releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey, releaseChannelTransport: { async fetch() { return JSON.stringify(checkedManifest); } }, updateInstaller: { async download() { return artifact; }, async install(input) { installs.push(input); } } });
+    const app = createTestApp(manager(), { releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey, releaseChannelTransport: { async fetch() { return JSON.stringify(checkedManifest); } }, updateInstaller: { async download() { return artifact; }, async install(input) { installs.push(input); }, async rollback() { throw new Error("no retained previous version is available"); } } });
     await app.inject({ method: "POST", url: "/api/release-channel/check" });
     const ask = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0];
     expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${ask.id}/decide`, payload: { decision: "approved" } })).statusCode).toBe(200);
@@ -78,7 +78,7 @@ describe("available updates", () => {
 
   test("does not install when an approved update checksum is wrong", async () => {
     const installs: unknown[] = [];
-    const app = createTestApp(manager(), { releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey, releaseChannelTransport: { async fetch() { return JSON.stringify(signedManifest); } }, updateInstaller: { async download() { return Buffer.from("wrong artifact"); }, async install(input) { installs.push(input); } } });
+    const app = createTestApp(manager(), { releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey, releaseChannelTransport: { async fetch() { return JSON.stringify(signedManifest); } }, updateInstaller: { async download() { return Buffer.from("wrong artifact"); }, async install(input) { installs.push(input); }, async rollback() { throw new Error("no retained previous version is available"); } } });
     await app.inject({ method: "POST", url: "/api/release-channel/check" });
     const ask = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0];
     const response = await app.inject({ method: "POST", url: `/api/sarathi/asks/${ask.id}/decide`, payload: { decision: "approved" } });
@@ -86,5 +86,31 @@ describe("available updates", () => {
     expect(response.json().message).toBe("update checksum does not match");
     expect(installs).toEqual([]);
     expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toEqual([expect.objectContaining({ id: ask.id })]);
+  });
+
+  test("rolls back the retained version, reports it as running, and audits both versions", async () => {
+    const artifact = Buffer.from("release artifact");
+    const checkedRelease = { ...release, checksum: createHash("sha256").update(artifact).digest("hex") };
+    const checked = { channel: "public", releases: [checkedRelease] };
+    const checkedManifest = { ...checked, signature: sign(null, Buffer.from(JSON.stringify(checked)), keys.privateKey).toString("base64") };
+    const rollbacks: string[] = [];
+    const app = createTestApp(manager(), { releaseChannelStore: new MemoryReleaseChannelStore(), releaseChannelPublicKey: publicKey, releaseChannelTransport: { async fetch() { return JSON.stringify(checkedManifest); } }, updateInstaller: { async download() { return artifact; }, async install() {}, async rollback() { rollbacks.push("rollback"); return { version: "0.0.0" }; } } });
+    await app.inject({ method: "POST", url: "/api/release-channel/check" });
+    const ask = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0];
+    await app.inject({ method: "POST", url: `/api/sarathi/asks/${ask.id}/decide`, payload: { decision: "approved" } });
+
+    expect((await app.inject({ method: "POST", url: "/api/update/rollback" })).statusCode).toBe(200);
+    expect(rollbacks).toEqual(["rollback"]);
+    expect((await app.inject({ method: "GET", url: "/api/version" })).json()).toEqual({ version: "0.0.0" });
+    expect((await app.inject({ method: "GET", url: "/api/update-audit" })).json().entries.at(-1)).toEqual(expect.objectContaining({ action: "rollback", version: "0.0.0", previousVersion: "0.1.0", appliedAt: expect.any(String) }));
+  });
+
+  test("rejects rollback when no previous version is retained", async () => {
+    const app = createTestApp(manager(), { updateInstaller: { async download() { return Buffer.alloc(0); }, async install() {}, async rollback() { throw new Error("no retained previous version is available"); } } });
+
+    const response = await app.inject({ method: "POST", url: "/api/update/rollback" });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ error: "no retained previous version is available" });
   });
 });
