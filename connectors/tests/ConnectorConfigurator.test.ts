@@ -1,7 +1,67 @@
 import { describe, expect, test, vi } from "vitest";
-import { adhisthanaBranch, ConnectorConfigurator, FakeCodeHost, GitLabCodeHost, JiraWorkSource, NullCodeHost, NullWorkSource } from "../src/index.js";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { adhisthanaBranch, ConnectorConfigurator, CredentialConfigurator, CredentialManager, FileCredentialReferenceStore, FakeCodeHost, GitLabCodeHost, JiraWorkSource, KeychainCredentialStrategy, NullCodeHost, NullWorkSource, SecretCommandCredentialStrategy } from "../src/index.js";
 
 describe("ConnectorConfigurator", () => {
+  test("saves only a keychain reference to disk and resolves its value lazily", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-credential-"));
+    const value = "keychain-only-test-value";
+    const keychain = { save: vi.fn(async () => undefined), read: vi.fn(async () => ({ value })) };
+    const configurator = new CredentialConfigurator();
+    configurator.register("keychain", new KeychainCredentialStrategy(keychain));
+    const manager = new CredentialManager(new FileCredentialReferenceStore(join(directory, "credentials.json")), configurator);
+    try {
+      expect(keychain.read).not.toHaveBeenCalled();
+      await manager.saveToKeychain("jira", value, "jira-entry");
+      expect(keychain.save).toHaveBeenCalledWith("jira-entry", value);
+      const onDisk = await readFile(join(directory, "credentials.json"), "utf8");
+      expect(onDisk).toContain("jira-entry");
+      expect(onDisk).not.toContain(value);
+      await expect(manager.resolve("jira")).resolves.toEqual({ value });
+      expect(keychain.read).toHaveBeenCalledWith("jira-entry");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test("migrates reference-only state, supports secret commands, and clearly stops on a missing entry", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-credential-migration-"));
+    const path = join(directory, "credentials.json");
+    await writeFile(path, JSON.stringify({ credentials: { command: { reference: "command", source: "command", commandReference: "ADHISTHANA_JIRA_COMMAND" } } }), "utf8");
+    const runner = { run: vi.fn(async () => "command-test-value\n") };
+    const keychain = { save: vi.fn(async () => undefined), read: vi.fn(async () => null) };
+    const configurator = new CredentialConfigurator();
+    configurator.register("keychain", new KeychainCredentialStrategy(keychain));
+    configurator.register("command", new SecretCommandCredentialStrategy(runner));
+    const store = new FileCredentialReferenceStore(path);
+    const manager = new CredentialManager(store, configurator);
+    try {
+      expect(store.snapshot().schemaVersion).toBe(1);
+      await expect(manager.resolve("command")).resolves.toEqual({ value: "command-test-value" });
+      expect(runner.run).toHaveBeenCalledWith("ADHISTHANA_JIRA_COMMAND");
+      manager.saveSecretCommand("alternate", "ADHISTHANA_GITLAB_COMMAND");
+      await expect(manager.resolve("missing")).rejects.toThrow("Credential reference is not configured: missing");
+      await manager.saveToKeychain("missing-entry", "keychain-only-test-value", "absent-entry");
+      await expect(manager.resolve("missing-entry")).rejects.toThrow("Credential keychain entry is missing: absent-entry");
+      const onDisk = await readFile(path, "utf8");
+      expect(onDisk).not.toContain("command-test-value");
+      expect(onDisk).not.toContain("keychain-only-test-value");
+      expect(onDisk).not.toContain("password-manager --token");
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
+  test("stops a connector action before its transport when the keychain entry is missing", async () => {
+    const directory = await mkdtemp(join(tmpdir(), "aios-credential-missing-action-"));
+    const store = new FileCredentialReferenceStore(join(directory, "credentials.json"));
+    const configurator = new CredentialConfigurator();
+    configurator.register("keychain", new KeychainCredentialStrategy({ save: async () => undefined, read: async () => null }));
+    const manager = new CredentialManager(store, configurator);
+    const search = vi.fn(async () => []);
+    await manager.saveToKeychain("jira", "keychain-only-test-value", "missing-jira-entry");
+    const source = new JiraWorkSource({ siteUrl: "https://jira.example.test", searchQuery: "assignee = currentUser()", credentialReference: "jira", credentialResolver: manager, transport: { search, read: async () => null } });
+    try {
+      await expect(source.listAssignedTickets()).rejects.toThrow("Credential keychain entry is missing: missing-jira-entry");
+      expect(search).not.toHaveBeenCalled();
+    } finally { await rm(directory, { recursive: true, force: true }); }
+  });
   test("structurally refuses dangerous writes while allowing Adhisthana branch work", async () => {
     const host = new FakeCodeHost();
     const branch = adhisthanaBranch("OPS-33", "implementation");

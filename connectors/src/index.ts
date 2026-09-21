@@ -1,4 +1,8 @@
 import { ADHISTHANA_BRANCH_PREFIX, adhisthanaBranch, isAdhisthanaBranch } from "@aios/contracts";
+import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname } from "node:path";
+import { spawn } from "node:child_process";
 export { ADHISTHANA_BRANCH_PREFIX, adhisthanaBranch, isAdhisthanaBranch } from "@aios/contracts";
 export interface WorkSourceTicket { key: string; title: string; type: string; status: string; description: string; }
 export interface WorkSourceConnection { siteUrl: string; credentialReference: string; daysUntilExpiry: number | null; expiresSoon: boolean; }
@@ -9,7 +13,107 @@ export interface WorkSource {
 }
 
 export interface JiraIssue { key: string; fields: { summary: string; issuetype: { name: string }; status: { name: string }; description: unknown; }; }
-export interface JiraCredentialResolver { resolve(reference: string): Promise<{ value: string; expiresAt?: string }>; }
+export interface CredentialResolver { resolve(reference: string): Promise<{ value: string; expiresAt?: string }>; }
+export type JiraCredentialResolver = CredentialResolver;
+
+export type CredentialReference =
+  | { reference: string; source: "keychain"; keychainEntry: string }
+  | { reference: string; source: "command"; commandReference: string };
+export interface CredentialReferenceDocument { schemaVersion: number; credentials: Record<string, CredentialReference>; }
+export interface CredentialReferenceStore { snapshot(): CredentialReferenceDocument; save(credential: CredentialReference): void; get(reference: string): CredentialReference | null; }
+
+const CREDENTIAL_SCHEMA_VERSION = 1;
+export const SECRET_COMMAND_REFERENCE = /^[A-Z][A-Z0-9_]*$/;
+export class FileCredentialReferenceStore implements CredentialReferenceStore {
+  private document: CredentialReferenceDocument;
+  private migratedOnOpen = false;
+  constructor(private readonly filePath: string) { this.document = this.load(); if (this.migratedOnOpen) this.persist(); }
+  snapshot(): CredentialReferenceDocument { return cloneCredential(this.document); }
+  save(credential: CredentialReference): void { this.document.credentials[credential.reference] = cloneCredential(credential); this.persist(); }
+  get(reference: string): CredentialReference | null { const credential = this.document.credentials[reference]; return credential ? cloneCredential(credential) : null; }
+  private load(): CredentialReferenceDocument {
+    if (!existsSync(this.filePath)) return { schemaVersion: CREDENTIAL_SCHEMA_VERSION, credentials: {} };
+    const parsed: unknown = JSON.parse(readFileSync(this.filePath, "utf8"));
+    if (!parsed || typeof parsed !== "object") throw new Error(`Invalid credential reference document: ${this.filePath}`);
+    const version = (parsed as { schemaVersion?: unknown }).schemaVersion ?? 0;
+    if (!Number.isInteger(version) || typeof version !== "number") throw new Error(`Invalid credential reference schema version: ${this.filePath}`);
+    if (version > CREDENTIAL_SCHEMA_VERSION) throw new Error(`Credential reference schema version ${version} is newer than supported version ${CREDENTIAL_SCHEMA_VERSION}`);
+    const credentials = (parsed as { credentials?: unknown }).credentials ?? {};
+    if (!credentials || typeof credentials !== "object" || Array.isArray(credentials)) throw new Error(`Invalid credential reference document: ${this.filePath}`);
+    for (const [reference, credential] of Object.entries(credentials)) validateCredentialReference(reference, credential);
+    this.migratedOnOpen = version < CREDENTIAL_SCHEMA_VERSION;
+    return { schemaVersion: CREDENTIAL_SCHEMA_VERSION, credentials: cloneCredential(credentials as Record<string, CredentialReference>) };
+  }
+  private persist(): void { mkdirSync(dirname(this.filePath), { recursive: true }); const temporaryPath = `${this.filePath}.${process.pid}.${randomUUID()}.tmp`; writeFileSync(temporaryPath, JSON.stringify(this.document, null, 2), "utf8"); renameSync(temporaryPath, this.filePath); }
+}
+
+export interface OperatingSystemKeychain { save(entry: string, value: string): Promise<void>; read(entry: string): Promise<{ value: string; expiresAt?: string } | null>; }
+export interface SecretCommandRunner { run(commandReference: string): Promise<string>; }
+export interface CredentialStrategy { save?(credential: CredentialReference, value: string): Promise<void>; resolve(credential: CredentialReference): Promise<{ value: string; expiresAt?: string }>; }
+export class KeychainCredentialStrategy implements CredentialStrategy {
+  constructor(private readonly keychain: OperatingSystemKeychain) {}
+  async save(credential: CredentialReference, value: string): Promise<void> { if (credential.source !== "keychain") throw new Error("keychain strategy requires a keychain reference"); await this.keychain.save(credential.keychainEntry, value); }
+  async resolve(credential: CredentialReference): Promise<{ value: string; expiresAt?: string }> { if (credential.source !== "keychain") throw new Error("keychain strategy requires a keychain reference"); const found = await this.keychain.read(credential.keychainEntry); if (!found) throw new Error(`Credential keychain entry is missing: ${credential.keychainEntry}`); return found; }
+}
+export class SecretCommandCredentialStrategy implements CredentialStrategy {
+  constructor(private readonly runner: SecretCommandRunner) {}
+  async resolve(credential: CredentialReference): Promise<{ value: string }> { if (credential.source !== "command") throw new Error("secret command strategy requires a command reference"); const value = (await this.runner.run(credential.commandReference)).trim(); if (!value) throw new Error(`Secret command returned no value for credential reference: ${credential.reference}`); return { value }; }
+}
+export class MissingCredentialStrategy implements CredentialStrategy { async resolve(credential: CredentialReference): Promise<never> { throw new Error(`Credential source is not configured for reference: ${credential.reference}`); } }
+export class CredentialConfigurator {
+  private readonly strategies = new Map<CredentialReference["source"], CredentialStrategy>();
+  private readonly fallback = new MissingCredentialStrategy();
+  register(source: CredentialReference["source"], strategy: CredentialStrategy): void { this.strategies.set(source, strategy); }
+  resolve(source: CredentialReference["source"]): CredentialStrategy { return this.strategies.get(source) ?? this.fallback; }
+  getFallback(): CredentialStrategy { return this.fallback; }
+}
+export class CredentialManager implements CredentialResolver {
+  constructor(private readonly store: CredentialReferenceStore, private readonly configurator: CredentialConfigurator) {}
+  async saveToKeychain(reference: string, value: string, keychainEntry = reference): Promise<void> { const credential: CredentialReference = { reference, source: "keychain", keychainEntry }; const strategy = this.configurator.resolve("keychain"); if (!strategy.save) throw new Error("Credential keychain saving is not configured"); await strategy.save(credential, value); this.store.save(credential); }
+  saveSecretCommand(reference: string, commandReference: string): void { if (!SECRET_COMMAND_REFERENCE.test(commandReference)) throw new Error("secret command reference must be an environment-variable name"); this.store.save({ reference, source: "command", commandReference }); }
+  async resolve(reference: string): Promise<{ value: string; expiresAt?: string }> { const credential = this.store.get(reference); if (!credential) throw new Error(`Credential reference is not configured: ${reference}`); return this.configurator.resolve(credential.source).resolve(credential); }
+}
+
+/** Windows Credential Manager adapter. The secret is supplied over stdin and is never written to the reference store. */
+export class WindowsCredentialManagerKeychain implements OperatingSystemKeychain {
+  async save(entry: string, value: string): Promise<void> { await runPowerShell(WINDOWS_KEYCHAIN_SCRIPT, ["save", entry], value); }
+  async read(entry: string): Promise<{ value: string } | null> { const encoded = (await runPowerShell(WINDOWS_KEYCHAIN_SCRIPT, ["read", entry])).trim(); return encoded ? { value: Buffer.from(encoded, "base64").toString("utf8") } : null; }
+}
+/** Resolves a command from an environment variable at use time; state stores only that variable name. */
+export class EnvironmentSecretCommandRunner implements SecretCommandRunner {
+  async run(commandReference: string): Promise<string> {
+    const command = process.env[commandReference];
+    if (!command) throw new Error(`Secret command is not configured: ${commandReference}`);
+    return runCommand(command);
+  }
+}
+export function createOperatingSystemKeychain(): OperatingSystemKeychain | null { return process.platform === "win32" ? new WindowsCredentialManagerKeychain() : null; }
+
+const WINDOWS_KEYCHAIN_SCRIPT = `param([string]$operation, [string]$entry)
+Add-Type @'
+using System; using System.Runtime.InteropServices;
+public static class AiosCredential {
+ [StructLayout(LayoutKind.Sequential, CharSet=CharSet.Unicode)] public struct CREDENTIAL { public UInt32 Flags; public UInt32 Type; public string TargetName; public string Comment; public System.Runtime.InteropServices.ComTypes.FILETIME LastWritten; public UInt32 CredentialBlobSize; public IntPtr CredentialBlob; public UInt32 Persist; public UInt32 AttributeCount; public IntPtr Attributes; public string TargetAlias; public string UserName; }
+ [DllImport("Advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool CredWrite(ref CREDENTIAL credential, UInt32 flags);
+ [DllImport("Advapi32.dll", CharSet=CharSet.Unicode, SetLastError=true)] public static extern bool CredRead(string target, UInt32 type, UInt32 flags, out IntPtr credentialPtr);
+ [DllImport("Advapi32.dll", SetLastError=true)] public static extern void CredFree(IntPtr credential);
+}
+'@
+$target = "Adhisthana:" + $entry
+if ($operation -eq "save") { $bytes = [Text.Encoding]::UTF8.GetBytes([Console]::In.ReadToEnd()); $blob = [Runtime.InteropServices.Marshal]::AllocHGlobal($bytes.Length); try { [Runtime.InteropServices.Marshal]::Copy($bytes, 0, $blob, $bytes.Length); $credential = New-Object AiosCredential+CREDENTIAL; $credential.Type = 1; $credential.TargetName = $target; $credential.CredentialBlobSize = $bytes.Length; $credential.CredentialBlob = $blob; $credential.Persist = 2; $credential.UserName = "Adhisthana"; if (-not [AiosCredential]::CredWrite([ref]$credential, 0)) { throw "Credential Manager save failed: $([Runtime.InteropServices.Marshal]::GetLastWin32Error())" } } finally { [Runtime.InteropServices.Marshal]::FreeHGlobal($blob) }; exit 0 }
+$pointer = [IntPtr]::Zero; if (-not [AiosCredential]::CredRead($target, 1, 0, [ref]$pointer)) { $error = [Runtime.InteropServices.Marshal]::GetLastWin32Error(); if ($error -eq 1168) { exit 0 }; throw "Credential Manager read failed: $error" }; try { $credential = [Runtime.InteropServices.Marshal]::PtrToStructure($pointer, [type][AiosCredential+CREDENTIAL]); $bytes = New-Object byte[] $credential.CredentialBlobSize; [Runtime.InteropServices.Marshal]::Copy($credential.CredentialBlob, $bytes, 0, $bytes.Length); [Console]::Out.Write([Convert]::ToBase64String($bytes)) } finally { [AiosCredential]::CredFree($pointer) }`;
+function runPowerShell(script: string, args: ReadonlyArray<string>, input?: string): Promise<string> { return runProcess("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command", script, ...args], input); }
+function runCommand(command: string): Promise<string> { return runProcess(process.platform === "win32" ? "cmd.exe" : "/bin/sh", process.platform === "win32" ? ["/d", "/s", "/c", command] : ["-c", command]); }
+function runProcess(command: string, args: ReadonlyArray<string>, input?: string): Promise<string> { return new Promise((resolve, reject) => { const child = spawn(command, args, { stdio: ["pipe", "pipe", "pipe"] }); let stdout = ""; let stderr = ""; child.stdout.on("data", (chunk: Buffer) => { stdout += chunk.toString("utf8"); }); child.stderr.on("data", (chunk: Buffer) => { stderr += chunk.toString("utf8"); }); child.on("error", reject); child.on("close", (code) => code === 0 ? resolve(stdout) : reject(new Error(`${command} failed${stderr ? `: ${stderr.trim()}` : ""}`))); child.stdin.end(input); }); }
+
+function validateCredentialReference(reference: string, credential: unknown): asserts credential is CredentialReference {
+  if (!credential || typeof credential !== "object" || !reference.trim()) throw new Error("Invalid credential reference document");
+  const value = credential as Partial<CredentialReference>;
+  if (value.reference !== reference || (value.source !== "keychain" && value.source !== "command")) throw new Error("Invalid credential reference document");
+  if (value.source === "keychain" && (typeof value.keychainEntry !== "string" || !value.keychainEntry.trim())) throw new Error("Invalid credential reference document");
+  if (value.source === "command" && (typeof value.commandReference !== "string" || !SECRET_COMMAND_REFERENCE.test(value.commandReference))) throw new Error("Invalid credential reference document");
+}
+function cloneCredential<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }
 export interface JiraTransport {
   search(input: { siteUrl: string; searchQuery: string; token: string }): Promise<ReadonlyArray<JiraIssue>>;
   read(input: { siteUrl: string; ticketKey: string; token: string }): Promise<JiraIssue | null>;

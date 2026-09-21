@@ -34,7 +34,8 @@ import { RUNNING_VERSION } from "./Version.js";
 import { DEFAULT_RELEASE_CHANNEL_PUBLIC_KEY, FetchReleaseChannelTransport, FileReleaseChannelStore, type ReleaseChannelStore, type ReleaseChannelTransport, ReleaseChannelManager } from "./ReleaseChannel.js";
 import { registerReleaseChannelRoutes } from "./routes/releaseChannel.js";
 import { type UpdateInstaller, UpdateInstallerConfigurator, UpdateManager } from "./UpdateInstaller.js";
-import type { CodeHost, WorkSource } from "@aios/connectors";
+import { createOperatingSystemKeychain, CredentialConfigurator, CredentialManager, EnvironmentSecretCommandRunner, FileCredentialReferenceStore, KeychainCredentialStrategy, SecretCommandCredentialStrategy, type CodeHost, type CredentialReferenceStore, type WorkSource } from "@aios/connectors";
+import { registerCredentialRoutes } from "./routes/credentials.js";
 
 export interface BuildAppOptions {
   taskStore?: TaskStore;
@@ -45,6 +46,8 @@ export interface BuildAppOptions {
   phaseStore?: PhaseStore;
   workSource?: WorkSource;
   codeHost?: CodeHost;
+  credentialStore?: CredentialReferenceStore;
+  credentialManager?: CredentialManager;
   runtimeRouter?: RuntimeRouter;
   /** Explicit provider/runtime adapters. Missing live adapters remain UNMEASURED. */
   runtimeAdapters?: ReadonlyArray<RuntimeAdapterRegistration>;
@@ -65,7 +68,7 @@ export interface BuildAppOptions {
 export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const app = Fastify();
   registerAgentsRoute(app, manager);
-  const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore || !options.artifactStore || !options.phaseStore || !options.releaseChannelStore;
+  const needsDefaultStore = !options.taskStore || !options.sarathiStore || !options.engineConfigStore || !options.workItemStore || !options.artifactStore || !options.phaseStore || !options.releaseChannelStore || (!options.credentialStore && !options.credentialManager);
   const dataDirectory = needsDefaultStore ? applicationDataDirectory() : "";
   if (needsDefaultStore) mkdirSync(dataDirectory, { recursive: true });
   const taskStore = options.taskStore ?? new FileTaskStore(join(dataDirectory, "tasks.json"), options.runtimeClock ? () => options.runtimeClock!.now() : undefined);
@@ -77,6 +80,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const workItemStore = options.workItemStore ?? new FileWorkItemStore(join(dataDirectory, "work-items.json"));
   const artifactStore = options.artifactStore ?? new FileArtifactStore(join(dataDirectory, "artifacts.json"));
   const phaseStore = options.phaseStore ?? new FilePhaseStore(join(dataDirectory, "phases.json"));
+  const credentialStore = options.credentialStore ?? (options.credentialManager ? undefined : new FileCredentialReferenceStore(join(dataDirectory, "credentials.json")));
+  const credentialManager = options.credentialManager ?? defaultCredentialManager(credentialStore!);
   const releaseChannel = new ReleaseChannelManager(options.releaseChannelStore ?? new FileReleaseChannelStore(join(dataDirectory, "release-channel.json")), options.releaseChannelTransport ?? new FetchReleaseChannelTransport(), RUNNING_VERSION, options.releaseChannelPublicKey ?? DEFAULT_RELEASE_CHANNEL_PUBLIC_KEY);
   const providerAdapters = options.providerAdapters ?? [];
   const providerCatalogManager = new ProviderCatalogManager([
@@ -130,6 +135,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore);
+  registerCredentialRoutes(app, credentialManager);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
   app.get("/api/update-audit", async () => ({ entries: sarathiStore.snapshot().updateAudit }));
   app.post("/api/update/rollback", async (_request, reply) => {
@@ -137,4 +143,12 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     catch (error) { const message = error instanceof Error ? error.message : "rollback could not be completed"; reply.code(message === "no retained previous version is available" ? 409 : 500); return { error: message }; }
   });
   return app;
+}
+
+function defaultCredentialManager(store: CredentialReferenceStore): CredentialManager {
+  const configurator = new CredentialConfigurator();
+  const keychain = createOperatingSystemKeychain();
+  if (keychain) configurator.register("keychain", new KeychainCredentialStrategy(keychain));
+  configurator.register("command", new SecretCommandCredentialStrategy(new EnvironmentSecretCommandRunner()));
+  return new CredentialManager(store, configurator);
 }
