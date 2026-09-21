@@ -248,6 +248,7 @@ export function App() {
   const [routeDraft, setRouteDraft] = useState({ scope: "global" as "global" | "specialist" | "workflow", id: "", primaryModel: "fake", fallbackModel: "", overridePrimary: true, overrideFallback: false });
   const [routeMessage, setRouteMessage] = useState<string | null>(null);
   const [proofMessage, setProofMessage] = useState<string | null>(null);
+  const [setup, setSetup] = useState<{ firstRun: boolean; steps: { workSource: boolean; codeHost: boolean; agent: boolean } } | null>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const dashboardRefreshGeneration = useRef(0);
 
@@ -299,6 +300,7 @@ export function App() {
     fetch("/api/version").then((response) => response.json()).then((data: { version?: unknown }) => {
       if (typeof data.version === "string") setRunningVersion(data.version);
     }).catch(() => setRunningVersion(null));
+    fetch("/api/setup").then((response) => response.json()).then((data: { firstRun?: unknown; steps?: { workSource?: unknown; codeHost?: unknown; agent?: unknown } }) => setSetup({ firstRun: data.firstRun === true, steps: { workSource: data.steps?.workSource === true, codeHost: data.steps?.codeHost === true, agent: data.steps?.agent === true } })).catch(() => setSetup(null));
 
     const lastTaskId = localStorage.getItem(LAST_TASK_STORAGE_KEY);
     if (lastTaskId) {
@@ -557,6 +559,9 @@ export function App() {
   const activeAgent = agents[0];
   const latestUsage = dashboard.recentTasks.find((task) => task.usage)?.usage;
   const todayLabel = formatToday();
+
+  if (setup?.firstRun) return <main className="sarathi-shell"><section className="dashboard"><div className="panel"><span className="eyebrow">First run</span><h1>Connect Adhiṣṭhāna</h1><ol><li><strong>1. Work source</strong> — {setup.steps.workSource ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect work source</button></li><li><strong>2. Code host</strong> — {setup.steps.codeHost ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect code host</button></li><li><strong>3. Agent</strong> — {setup.steps.agent ? "connected" : "not connected"} <button onClick={() => setView("routing")}>Connect agent</button></li></ol></div></section></main>;
+
 
   if (view === "routing") return <div className="sarathi-shell"><aside className="rail"><div className="brand-lockup"><span className="brand-mark" aria-hidden="true">✳</span><div><strong>Sarathi</strong><span>local command center</span></div></div><nav className="primary-nav" aria-label="Primary navigation"><button className="nav-item" type="button" onClick={() => setView("command")}><span>01</span>Command</button><button className="nav-item active" type="button"><span>05</span>Routing</button></nav></aside><main className="dashboard"><RoutingPage /></main></div>;
   if (view === "work-items") return <div className="sarathi-shell"><aside className="rail"><div className="brand-lockup"><span className="brand-mark" aria-hidden="true">✳</span><div><strong>Sarathi</strong><span>local command center</span></div></div><nav className="primary-nav" aria-label="Primary navigation"><button className="nav-item" type="button" onClick={() => setView("command")}><span>01</span>Command</button><button className="nav-item active" type="button"><span>02</span>Work items</button></nav></aside><main className="dashboard"><WorkItemsPage /></main></div>;

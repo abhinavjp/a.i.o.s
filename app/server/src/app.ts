@@ -102,6 +102,10 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   if (options.updateInstaller) updateInstallerConfigurator.register("default", options.updateInstaller);
   const updateManager = new UpdateManager(updateInstallerConfigurator.select(), sarathiStore, RUNNING_VERSION);
   app.get("/api/version", async () => ({ version: updateManager.version() }));
+  app.get("/api/setup", async () => {
+    const steps = { workSource: Boolean(options.workSource), codeHost: Boolean(options.codeHost), agent: manager.getActiveAgent().checkHealth().ok };
+    return { firstRun: workItemStore.list().length === 0 && !steps.workSource && !steps.codeHost && !steps.agent, steps };
+  });
   const permissionTools: SarathiToolExecutor = options.permissionTools ?? {
     definitions: [{ tool: "system-update", operations: ["apply"] }],
     async execute(intent) { if (intent.tool === "system-update") { await updateManager.apply(intent.context); return { output: "update installed" }; } throw new Error("system update execution is not configured"); }
