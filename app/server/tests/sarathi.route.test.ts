@@ -9,6 +9,7 @@ import { createTestApp as buildApp } from "./testApp.js";
 import { FileTaskStore } from "../src/TaskStore.js";
 import { FileSarathiStore } from "../src/sarathi/SarathiStore.js";
 import { FileArtifactStore } from "../src/ArtifactStore.js";
+import { FileWorkItemStore } from "../src/WorkItemStore.js";
 
 async function withStore<T>(run: (path: string) => Promise<T>): Promise<T> {
   const directory = await mkdtemp(join(tmpdir(), "sarathi-"));
@@ -127,6 +128,22 @@ describe("Sarathi dashboard routes", () => {
       expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: { ...intent, context: { workItemId: "other" } } })).statusCode).toBe(409);
       expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${askId}/decide`, payload: { decision: "approved" } })).json()).toEqual({ error: "ask was already decided or does not exist" });
       expect((await app.inject({ method: "GET", url: "/api/sarathi/dashboard" })).json().askAudit).toMatchObject([{ askId, decision: "approved", createdAt: expect.any(String) }]);
+      await app.close();
+    });
+  });
+
+  test("keeps an invalid generic track-change ask pending without mutating its track", async () => {
+    await withStore(async (path) => {
+      const workItemStore = new FileWorkItemStore(join(dirname(path), "work-items.json"));
+      const workItem = workItemStore.create({ title: "Validated track", repositories: [] });
+      workItemStore.approveTrack(workItem.id, ["plan", "implementation", "merge"]);
+      const app = buildApp(makeManager(), { sarathiStore: new FileSarathiStore(path), workItemStore, permissionTools: { definitions: [], async execute() { return { output: "executed" }; } } });
+      const intent = { tool: "delivery-pipeline", operation: "track.change", target: workItem.id, context: { workItemId: workItem.id, stageKind: "not-a-stage", index: "0", currentTrack: JSON.stringify(["plan", "implementation", "merge"]), proposedTrack: JSON.stringify(["not-a-stage", "plan", "implementation", "merge"]) } };
+      expect((await app.inject({ method: "POST", url: "/api/sarathi/tools/execute", payload: intent })).statusCode).toBe(409);
+      const askId = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0].id;
+      expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${askId}/decide`, payload: { decision: "approved" } })).statusCode).toBe(500);
+      expect(workItemStore.list()[0]).toMatchObject({ track: { stages: ["plan", "implementation", "merge"] } });
+      expect((await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks).toHaveLength(1);
       await app.close();
     });
   });

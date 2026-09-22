@@ -1,15 +1,17 @@
 import type { FastifyInstance } from "fastify";
 import type { WorkItemStore } from "../WorkItemStore.js";
-import type { AuthoredArtifactReference, StageKind, StageState, TaskStatus } from "@aios/contracts";
+import type { AuthoredArtifactReference, StageKind, StageState, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { CodeHost, WorkSource } from "@aios/connectors";
 import type { ArtifactStore } from "../ArtifactStore.js";
 import type { PhaseStore } from "../PhaseStore.js";
 import type { TaskStore } from "../TaskStore.js";
 import type { SarathiStore } from "../sarathi/SarathiStore.js";
+import type { PermissionEngine } from "../sarathi/PermissionEngine.js";
 
 interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
 interface SetStageStateBody { state?: unknown; }
+interface TrackChangeBody { stageKind?: unknown; index?: unknown; }
 interface AddPhaseTaskBody { taskId?: unknown; }
 type CompletionCount = { completed: number; total: number } | null;
 
@@ -21,7 +23,7 @@ const STARTING_POINTS: Record<string, StageKind[]> = {
 };
 const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocked", "done", "skipped"];
 
-export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore, sarathiStore: SarathiStore): void {
+export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore, sarathiStore: SarathiStore, permissionEngine: PermissionEngine, onAllowedTrackChange: (intent: ToolIntent) => void): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
   app.get("/api/code-host/connection", async (_request, reply) => { try { return { connection: await codeHost?.connectionStatus?.() ?? null }; } catch (error) { reply.code(502); return { error: `code host connection failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; } });
   app.get("/api/work-items/connection", async (_request, reply) => {
@@ -111,6 +113,26 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
       reply.code(400); return { error: error instanceof Error ? error.message : "track could not be approved" };
     }
   });
+  app.post<{ Params: { workItemId: string }; Body: TrackChangeBody }>("/api/work-items/:workItemId/track/changes", async (request, reply) => {
+    const { stageKind, index } = request.body ?? {};
+    if (typeof stageKind !== "string" || !isStageKind(stageKind)) { reply.code(400); return { error: "stageKind must be a valid stage kind" }; }
+    if (typeof index !== "number" || !Number.isInteger(index) || index < 0) { reply.code(400); return { error: "index must be a non-negative integer" }; }
+    const stageIndex = index;
+    const workItem = store.list().find((candidate) => candidate.id === request.params.workItemId);
+    if (!workItem) { reply.code(400); return { error: "work item was not found" }; }
+    if (!workItem.track) { reply.code(400); return { error: "a track must be approved before adding a stage" }; }
+    if (workItem.track.stages.includes(stageKind)) { reply.code(400); return { error: `stage ${stageKind} is already in this work item's track` }; }
+    if (stageIndex > workItem.track.stages.length) { reply.code(400); return { error: "stage index is outside this work item's track" }; }
+    const currentTrack = [...workItem.track.stages];
+    const proposedTrack = [...currentTrack]; proposedTrack.splice(stageIndex, 0, stageKind);
+    const intent: ToolIntent = { tool: "delivery-pipeline", operation: "track.change", target: workItem.id, context: {
+      workItemId: workItem.id, stageKind, index: String(stageIndex), currentTrack: JSON.stringify(currentTrack), proposedTrack: JSON.stringify(proposedTrack)
+    } };
+    const result = await permissionEngine.execute(intent);
+    if (result.decision.outcome === "allowed") onAllowedTrackChange(intent);
+    reply.code(result.decision.outcome === "requires_approval" ? 202 : result.decision.outcome === "allowed" ? 200 : 403);
+    return result;
+  });
   app.put<{ Params: { workItemId: string; stageKind: StageKind }; Body: SetStageStateBody }>("/api/work-items/:workItemId/stages/:stageKind", async (request, reply) => {
     const state = request.body?.state;
     if (typeof state !== "string" || !STAGE_STATES.includes(state as StageState)) {
@@ -133,6 +155,10 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
       reply.code(400); return { error: error instanceof Error ? error.message : "stage could not be updated" };
     }
   });
+}
+
+function isStageKind(value: string): value is StageKind {
+  return ["functional-analysis", "technical-analysis", "spec-and-eval", "plan", "implementation", "final-review", "merge"].includes(value);
 }
 
 function countChecklist(content: string): CompletionCount {

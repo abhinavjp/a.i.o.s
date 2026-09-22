@@ -17,6 +17,7 @@ export interface WorkItemStore {
   create(input: { title: string; repositories: string[] }): WorkItem;
   import(input: { workSourceKey: string; title: string }): WorkItem | null;
   approveTrack(workItemId: string, stages: StageKind[]): WorkItem;
+  insertStage(workItemId: string, stageKind: StageKind, index: number, expectedTrack: StageKind[], proposedTrack: StageKind[]): WorkItem;
   setStageState(workItemId: string, stageKind: StageKind, state: StageState): WorkItem;
   stageActivity(): StageActivity[];
 }
@@ -64,6 +65,24 @@ export class FileWorkItemStore implements WorkItemStore {
     return clone(approved);
   }
 
+  insertStage(workItemId: string, stageKind: StageKind, index: number, expectedTrack: StageKind[], proposedTrack: StageKind[]): WorkItem {
+    const workItemIndex = this.workItems.findIndex((workItem) => workItem.id === workItemId);
+    if (workItemIndex < 0) throw new Error("work item was not found");
+    const current = this.workItems[workItemIndex];
+    if (!current.track) throw new Error("a track must be approved before adding a stage");
+    if (!STAGE_KINDS.includes(stageKind)) throw new Error("stage kind is invalid");
+    if (current.track.stages.includes(stageKind)) throw new Error(`stage ${stageKind} is already in this work item's track`);
+    if (!Number.isInteger(index) || index < 0 || index > current.track.stages.length) throw new Error("stage index is outside this work item's track");
+    if (JSON.stringify(current.track.stages) !== JSON.stringify(expectedTrack)) throw new Error("the track changed after this ask was created");
+    const trackStages = [...current.track.stages]; trackStages.splice(index, 0, stageKind);
+    if (JSON.stringify(trackStages) !== JSON.stringify(proposedTrack)) throw new Error("the proposed track does not match this change");
+    const stages = [...current.stages]; stages.splice(index, 0, { kind: stageKind, state: "not-started", artifacts: [] });
+    const updated = { ...current, track: { stages: trackStages }, stages };
+    this.workItems[workItemIndex] = updated;
+    this.persist();
+    return clone(updated);
+  }
+
   setStageState(workItemId: string, stageKind: StageKind, state: StageState): WorkItem {
     const index = this.workItems.findIndex((workItem) => workItem.id === workItemId);
     if (index < 0) throw new Error("work item was not found");
@@ -93,5 +112,7 @@ export class FileWorkItemStore implements WorkItemStore {
     renameSync(temporaryPath, this.filePath);
   }
 }
+
+const STAGE_KINDS: StageKind[] = ["functional-analysis", "technical-analysis", "spec-and-eval", "plan", "implementation", "final-review", "merge"];
 
 function clone<T>(value: T): T { return JSON.parse(JSON.stringify(value)) as T; }

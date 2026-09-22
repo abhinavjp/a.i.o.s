@@ -167,6 +167,46 @@ describe("work-item API", () => {
     expect((await restarted.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0].stages).toHaveLength(3);
   });
 
+  test("asks before changing a track, applies only an approved insertion, and preserves a declined track", async () => {
+    const { app } = await createApp();
+    const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } })).json().workItem.id as string;
+    await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track`, payload: { startingPoint: "fast" } });
+
+    const proposed = await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track/changes`, payload: { stageKind: "technical-analysis", index: 0 } });
+    expect(proposed.statusCode).toBe(202);
+    expect((await app.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0]).toMatchObject({ track: { stages: ["plan", "implementation", "merge"] } });
+    const ask = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks;
+    expect(ask).toEqual([expect.objectContaining({ kind: "track.change", workItemId, intent: { tool: "delivery-pipeline", operation: "track.change", target: workItemId, context: {
+      workItemId, stageKind: "technical-analysis", index: "0", currentTrack: JSON.stringify(["plan", "implementation", "merge"]), proposedTrack: JSON.stringify(["technical-analysis", "plan", "implementation", "merge"])
+    } } })]);
+
+    expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${ask[0].id}/decide`, payload: { decision: "approved" } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0]).toMatchObject({
+      track: { stages: ["technical-analysis", "plan", "implementation", "merge"] },
+      stages: expect.arrayContaining([{ kind: "technical-analysis", state: "not-started", artifacts: [] }])
+    });
+    expect((await app.inject({ method: "GET", url: "/api/sarathi/dashboard" })).json().askAudit).toEqual([expect.objectContaining({ askId: ask[0].id, decision: "approved" })]);
+    expect((await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track/changes`, payload: { stageKind: "plan", index: 1 } })).json()).toEqual({ error: "stage plan is already in this work item's track" });
+    expect((await app.inject({ method: "PUT", url: `/api/work-items/${workItemId}/stages/technical-analysis`, payload: { state: "skipped" } })).json().workItem.stages[0]).toMatchObject({ kind: "technical-analysis", state: "skipped" });
+
+    const declinedWorkItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Declined track change", repositories: [] } })).json().workItem.id as string;
+    await app.inject({ method: "POST", url: `/api/work-items/${declinedWorkItemId}/track`, payload: { startingPoint: "fast" } });
+    await app.inject({ method: "POST", url: `/api/work-items/${declinedWorkItemId}/track/changes`, payload: { stageKind: "technical-analysis", index: 1 } });
+    const declinedAsk = (await app.inject({ method: "GET", url: "/api/sarathi/asks" })).json().asks[0];
+    expect((await app.inject({ method: "POST", url: `/api/sarathi/asks/${declinedAsk.id}/decide`, payload: { decision: "declined" } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/work-items" })).json().workItems.find((item: { id: string }) => item.id === declinedWorkItemId)).toMatchObject({ track: { stages: ["plan", "implementation", "merge"] } });
+    expect((await app.inject({ method: "GET", url: "/api/sarathi/dashboard" })).json().askAudit).toEqual(expect.arrayContaining([expect.objectContaining({ askId: declinedAsk.id, decision: "declined" })]));
+  });
+
+  test("applies an allowed track change using its exact proposed track", async () => {
+    const { app } = await createApp();
+    const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Allowed track change", repositories: [] } })).json().workItem.id as string;
+    await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track`, payload: { startingPoint: "fast" } });
+    expect((await app.inject({ method: "POST", url: "/api/sarathi/permissions/rules", payload: { decision: "allow", tool: "delivery-pipeline", operation: "track.change", target: workItemId, lifetime: "global", context: { workItemId } } })).statusCode).toBe(201);
+    expect((await app.inject({ method: "POST", url: `/api/work-items/${workItemId}/track/changes`, payload: { stageKind: "technical-analysis", index: 1 } })).statusCode).toBe(200);
+    expect((await app.inject({ method: "GET", url: "/api/work-items" })).json().workItems[0]).toMatchObject({ track: { stages: ["plan", "technical-analysis", "implementation", "merge"] } });
+  });
+
   test("changes an approved stage state, persists it, and rejects invalid stages or states", async () => {
     const { app, directory } = await createApp();
     const workItemId = (await app.inject({ method: "POST", url: "/api/work-items", payload: { title: "Repair payroll export", repositories: [] } })).json().workItem.id as string;

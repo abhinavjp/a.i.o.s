@@ -2,7 +2,7 @@ import Fastify from "fastify";
 import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import type { AgentManager } from "@aios/agents";
-import type { PermissionSemanticClassifier, ProviderCatalogAdapter, RuntimeClock, RuntimeRouter, SarathiToolExecutor } from "@aios/contracts";
+import type { PermissionSemanticClassifier, ProviderCatalogAdapter, RuntimeClock, RuntimeRouter, SarathiToolExecutor, StageKind, ToolIntent } from "@aios/contracts";
 import { registerAgentsRoute } from "./routes/agents.js";
 import { registerTaskRoutes } from "./routes/tasks.js";
 import { registerSarathiRoutes } from "./sarathi/routes.js";
@@ -128,8 +128,19 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     agentSlots,
     stallThresholds: () => sarathiStore.snapshot().stallThresholds
   }, engineConfigStore);
+  const applyTrackChange = (intent: ToolIntent): void => {
+    const stageKind = intent.context.stageKind as StageKind;
+    const index = Number(intent.context.index);
+    const expectedTrack = JSON.parse(intent.context.currentTrack) as StageKind[];
+    const proposedTrack = JSON.parse(intent.context.proposedTrack) as StageKind[];
+    workItemStore.insertStage(intent.context.workItemId, stageKind, index, expectedTrack, proposedTrack);
+  };
   registerSarathiRoutes(app, sarathiStore, providerCatalogManager, permissionEngine, resilience, runtimeRouter, options.proofHarness ?? new OptInProofHarness(), (intent, decision, note) => {
     if (intent.tool === "system-update" && intent.operation === "apply" && decision === "approved") return updateManager.apply(intent.context);
+    if (intent.tool === "delivery-pipeline" && intent.operation === "track.change" && decision === "approved" && intent.context.workItemId && intent.context.stageKind && intent.context.index && intent.context.currentTrack && intent.context.proposedTrack) {
+      applyTrackChange(intent);
+      return;
+    }
     if (intent.tool !== "delivery-pipeline" || intent.operation !== "artifact.approve") return;
     const artifact = artifactStore.get(intent.target);
     if (!artifact || artifact.approvalState !== "awaiting") return;
@@ -141,7 +152,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
   }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
-  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore);
+  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore, permissionEngine, applyTrackChange);
   registerCredentialRoutes(app, credentialManager);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
   app.get("/api/update-audit", async () => ({ entries: sarathiStore.snapshot().updateAudit }));

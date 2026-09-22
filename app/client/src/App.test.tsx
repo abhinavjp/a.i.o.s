@@ -46,6 +46,21 @@ function stubAgentsFetch() {
 }
 
 describe("App", () => {
+  test("shows current and proposed tracks for a track change ask", async () => {
+    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+      if (url === "/api/agents") return { agents: [] };
+      return {
+        runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" }, controls: { manualPaused: false, changedAt: null }, discovery: { status: "blocked", reason: "blocked", mergeRequests: [] }, tickets: [],
+        asks: [{ id: "track-change-1", kind: "track.change", workItemId: "work-1", createdAt: "2026-09-22T00:00:00.000Z", intent: { tool: "delivery-pipeline", context: {
+          currentTrack: JSON.stringify(["plan", "implementation", "merge"]), proposedTrack: JSON.stringify(["technical-analysis", "plan", "implementation", "merge"])
+          } } }]
+      };
+    } })));
+    render(<App />);
+    expect(await screen.findByText("Current track: plan → implementation → merge")).toBeTruthy();
+    expect(screen.getByText("Proposed track: technical-analysis → plan → implementation → merge")).toBeTruthy();
+  });
+
   test("shows version, channel, and notes for an update ask", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };
