@@ -5,6 +5,7 @@ import type { CodeHost, WorkSource } from "@aios/connectors";
 import type { ArtifactStore } from "../ArtifactStore.js";
 import type { PhaseStore } from "../PhaseStore.js";
 import type { TaskStore } from "../TaskStore.js";
+import type { SarathiStore } from "../sarathi/SarathiStore.js";
 
 interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
@@ -20,7 +21,7 @@ const STARTING_POINTS: Record<string, StageKind[]> = {
 };
 const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocked", "done", "skipped"];
 
-export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore): void {
+export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore, sarathiStore: SarathiStore): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
   app.get("/api/code-host/connection", async (_request, reply) => { try { return { connection: await codeHost?.connectionStatus?.() ?? null }; } catch (error) { reply.code(502); return { error: `code host connection failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; } });
   app.get("/api/work-items/connection", async (_request, reply) => {
@@ -81,7 +82,12 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
     if (typeof taskId !== "string" || !taskId.trim()) { reply.code(400); return { error: "taskId is required" }; }
     if (!Number.isInteger(phaseNumber)) { reply.code(400); return { error: "phase number must be an integer" }; }
     if (!taskStore.get(taskId)) { reply.code(400); return { error: `task was not found: ${taskId}` }; }
-    try { phaseStore.addTask(request.params.workItemId, phaseNumber, taskId); return { phases: phaseStore.list(request.params.workItemId) }; }
+    try {
+      phaseStore.addTask(request.params.workItemId, phaseNumber, taskId);
+      const task = taskStore.get(taskId);
+      if (task) sarathiStore.recordTask(task, request.params.workItemId);
+      return { phases: phaseStore.list(request.params.workItemId) };
+    }
     catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "task could not be added to phase" }; }
   });
   app.post<{ Body: CreateWorkItemBody }>("/api/work-items", async (request, reply) => {
@@ -110,8 +116,22 @@ export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStor
     if (typeof state !== "string" || !STAGE_STATES.includes(state as StageState)) {
       reply.code(400); return { error: "state must be not-started, running, waiting, blocked, done, or skipped" };
     }
-    try { return { workItem: store.setStageState(request.params.workItemId, request.params.stageKind, state as StageState) }; }
-    catch (error) { reply.code(400); return { error: error instanceof Error ? error.message : "stage could not be updated" }; }
+    const previousState = store.list().find((workItem) => workItem.id === request.params.workItemId)?.stages.find((stage) => stage.kind === request.params.stageKind)?.state;
+    let workItem: ReturnType<WorkItemStore["setStageState"]> | undefined;
+    try {
+      workItem = store.setStageState(request.params.workItemId, request.params.stageKind, state as StageState);
+      if (previousState !== state) sarathiStore.recordStageState(store.stageActivity().at(-1)!);
+      return { workItem };
+    }
+    catch (error) {
+      if (workItem && previousState) {
+        try { store.setStageState(workItem.id, request.params.stageKind, previousState); }
+        catch { /* A failed rollback is surfaced as a server error, never an accepted stage change. */ }
+        reply.code(500);
+        return { error: "stage activity could not be recorded" };
+      }
+      reply.code(400); return { error: error instanceof Error ? error.message : "stage could not be updated" };
+    }
   });
 }
 

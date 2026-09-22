@@ -24,6 +24,7 @@ type RunStatus = "idle" | "running" | TaskTerminalStatus;
 type TaskStall = { state: "active" | "nudge" | "stop"; lastOutputAt: string | null };
 
 type Dashboard = {
+  activity: Array<{ id: string; occurredAt: string; agent: string; workItemId: string | null; what: string }>;
   asks: Array<{ id: string; kind: string; workItemId: string | null; createdAt: string; intent: { tool: string; context: Record<string, string> } }>;
   automaticDecisions: Array<{ id: string; intent: { operation: string; target: string }; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean }>;
   standingRuleSuggestions: Array<{ id: string; askKind: string; scope: string }>;
@@ -119,6 +120,7 @@ const DEFAULT_PROOFS: RuntimeProof[] = ["codex", "claude", "ollama", "custom-ope
 }));
 
 const DEFAULT_DASHBOARD: Dashboard = {
+  activity: [],
   asks: [],
   automaticDecisions: [],
   standingRuleSuggestions: [],
@@ -284,7 +286,7 @@ export function App() {
       const slots = await slotsResponse.json() as { agents?: AgentSlot[] };
       if (Array.isArray(slots.agents)) setAgentSlots(slots.agents);
       if (generation === dashboardRefreshGeneration.current && Array.isArray(next.tickets) && next.runtime && next.discovery) {
-        setDashboard({ ...DEFAULT_DASHBOARD, ...next, providerCatalogs: next.providerCatalogs ?? [], proofs: next.proofs ?? DEFAULT_PROOFS });
+        setDashboard({ ...DEFAULT_DASHBOARD, ...next, activity: next.activity ?? [], providerCatalogs: next.providerCatalogs ?? [], proofs: next.proofs ?? DEFAULT_PROOFS });
       }
     } catch {
       // Keep the explicit local fallback while the API is down.
@@ -640,6 +642,7 @@ export function App() {
           </div>
 
           <aside className="side-column">
+            <section className="panel" aria-label="Activity feed"><div className="panel-heading"><div><span className="eyebrow">Activity</span><h2>What moved</h2></div></div>{dashboard.activity.length === 0 ? <p className="panel-note subtle">No activity recorded yet.</p> : <div className="proof-list">{dashboard.activity.map((entry) => <div className="proof-row" key={entry.id}><div><strong>{entry.what}</strong><small><time dateTime={entry.occurredAt}>{entry.occurredAt}</time> · {entry.agent} · {entry.workItemId ?? "No work item"}</small></div></div>)}</div>}</section>
             <section className="panel"><div className="panel-heading"><div><span className="eyebrow">Installation</span><h2>Update recovery</h2></div></div><p className="panel-note">{runningVersion ? `Running ${runningVersion}` : "Running version unknown"}</p><button type="button" onClick={() => void rollbackUpdate()}>Roll back update</button></section>
             <section className="panel gates-panel"><div className="panel-heading"><div><span className="eyebrow">Readiness gates</span><h2>What still needs proof</h2></div><span className="gate-count">{blockedTickets.length}</span></div><div className="gate-list">{blockedTickets.slice(0, 6).map((ticket) => <div className="gate-row" key={ticket.id}><span className="gate-index">{ticket.id}</span><div><strong>{ticket.title}</strong><small>{ticket.reason}</small></div><span className="state-chip blocked">blocked</span></div>)}</div>{blockedTickets.length > 6 && <p className="more-note">+ {blockedTickets.length - 6} more gates in the ticket map</p>}</section>
 

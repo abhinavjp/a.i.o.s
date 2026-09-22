@@ -79,6 +79,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     options.engineConfigStore ?? new FileEngineConfigStore(join(dataDirectory, "engine-routing.json"));
   const workItemStore = options.workItemStore ?? new FileWorkItemStore(join(dataDirectory, "work-items.json"));
   const artifactStore = options.artifactStore ?? new FileArtifactStore(join(dataDirectory, "artifacts.json"));
+  artifactStore.setActivityStore(sarathiStore);
   const phaseStore = options.phaseStore ?? new FilePhaseStore(join(dataDirectory, "phases.json"));
   const credentialStore = options.credentialStore ?? (options.credentialManager ? undefined : new FileCredentialReferenceStore(join(dataDirectory, "credentials.json")));
   const credentialManager = options.credentialManager ?? defaultCredentialManager(credentialStore!);
@@ -113,11 +114,13 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const permissionEngine = new PermissionEngine(sarathiStore, withDeliveryPipelineTools(permissionTools), options.permissionSemanticClassifier);
   app.addHook("onReady", async () => providerCatalogManager.refreshAll());
   // Task history is authoritative if the dashboard projection lagged a crash.
-  for (const task of taskStore.list().sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))) sarathiStore.recordTask(task);
+  for (const activity of workItemStore.stageActivity()) sarathiStore.recordStageState(activity);
+  for (const activity of artifactStore.activityEntries()) sarathiStore.recordArtifactWritten(activity.artifact, activity.occurredAt);
+  for (const task of taskStore.list().sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))) sarathiStore.recordTask(task, phaseStore.workItemForTask(task.taskId));
   registerTaskRoutes(app, manager, taskStore, {
     runtimeRouter,
     planResolver: options.executionPlanResolver ?? new LayeredExecutionPlanResolver(sarathiStore),
-    executionObserver: { record: (task) => sarathiStore.recordTask(task) },
+    executionObserver: { record: (task) => sarathiStore.recordTask(task, phaseStore.workItemForTask(task.taskId)) },
     planAdmissionValidator: routeEligibility,
     fixedRouteSelector: routeEligibility,
     toolMediator: permissionEngine,
@@ -138,7 +141,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
   }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
-  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore);
+  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore);
   registerCredentialRoutes(app, credentialManager);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
   app.get("/api/update-audit", async () => ({ entries: sarathiStore.snapshot().updateAudit }));

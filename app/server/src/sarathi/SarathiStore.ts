@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { runMigrations, type StoreMigration } from "../StoreMigrations.js";
-import type { ActionBoundApproval, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, TaskStatus, ToolIntent } from "@aios/contracts";
+import type { ActionBoundApproval, ArtifactReference, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, StageKind, StageState, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
 import { FLOOR_RULES, isFloorAskKind, isFloorRule } from "./DecisionFloor.js";
@@ -63,6 +63,7 @@ export interface AutomaticDecision { id: string; intent: ToolIntent; source: "st
 export interface StandingRuleSuggestion { id: string; askKind: string; scope: string | "all"; state: "offered" | "dismissed" | "accepted"; }
 export interface AskAuditEntry { askId: string; decision: "approved" | "declined"; createdAt: string; }
 export interface UpdateAuditEntry { action?: "rollback"; version: string; previousVersion?: string; channel: string; appliedAt: string; }
+export interface ActivityEntry { id: string; occurredAt: string; agent: string; workItemId: string | null; what: string; dedupeKey?: string; }
 export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
 export interface SarathiDashboard {
@@ -72,6 +73,7 @@ export interface SarathiDashboard {
   approvalStreak: { askKind: string; scope: string | "all"; count: number } | null;
   askAudit: AskAuditEntry[];
   updateAudit: UpdateAuditEntry[];
+  activity: ActivityEntry[];
   standingRules: StandingRule[];
   autopilot: Autopilot;
   stallThresholds: StallThresholds;
@@ -114,7 +116,7 @@ export interface SarathiStore {
   snapshot(): SarathiDashboard;
   setPaused(paused: boolean): SarathiDashboard;
   checkDiscovery(): SarathiDashboard;
-  recordTask(task: StoredTask): SarathiDashboard;
+  recordTask(task: StoredTask, workItemId?: string | null): SarathiDashboard;
   createSpecialist(input: { name: string; role: string; runtime: string; slotLimit?: number; capabilityTags?: string[] }): Specialist;
   approveSpecialist(id: string): Specialist | undefined;
   getPolicy(scope: "global" | "specialist" | "workflow", id?: string): RoutePolicyRecord;
@@ -143,11 +145,13 @@ export interface SarathiStore {
   recordApprovedAsk(ask: PendingAsk): StandingRuleSuggestion | undefined;
   setStandingRuleSuggestionState(id: string, state: StandingRuleSuggestion["state"]): StandingRuleSuggestion | undefined;
   decideAsk(id: string, decision: AskAuditEntry["decision"]): PendingAsk | undefined;
+  recordStageState(input: { id: string; workItemId: string; stageKind: StageKind; state: StageState; occurredAt: string }): ActivityEntry;
+  recordArtifactWritten(artifact: ArtifactReference, occurredAt?: string): ActivityEntry;
   recordUpdateAudit(entry: UpdateAuditEntry): UpdateAuditEntry;
   recordProof(proof: RuntimeProof): RuntimeProof;
 }
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
@@ -156,6 +160,7 @@ const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   , { fromVersion: 3, migrate: (document) => ({ ...document, schemaVersion: 4, dashboard: withFloorRules(document.dashboard) }) }
   , { fromVersion: 4, migrate: (document) => ({ ...document, schemaVersion: 5, dashboard: { ...document.dashboard, stallThresholds: document.dashboard.stallThresholds ?? defaultStallThresholds() } }) }
   , { fromVersion: 5, migrate: (document) => ({ ...document, schemaVersion: 6, dashboard: { ...document.dashboard, updateAudit: document.dashboard.updateAudit ?? [] } }) }
+  , { fromVersion: 6, migrate: (document) => ({ ...document, schemaVersion: 7, dashboard: { ...document.dashboard, activity: document.dashboard.activity ?? [] } }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -170,6 +175,7 @@ export class FileSarathiStore implements SarathiStore {
   snapshot(): SarathiDashboard {
     const snapshot = clone(this.state);
     snapshot.asks.sort((left, right) => askPriority(left.kind) - askPriority(right.kind) || left.createdAt.localeCompare(right.createdAt));
+    snapshot.activity.sort((left, right) => right.occurredAt.localeCompare(left.occurredAt));
     return snapshot;
   }
 
@@ -235,7 +241,24 @@ export class FileSarathiStore implements SarathiStore {
     if (index < 0) return undefined;
     const [ask] = this.state.asks.splice(index, 1);
     this.state.askAudit.push({ askId: id, decision, createdAt: new Date().toISOString() });
+    this.recordActivity({ agent: "Sarathi", workItemId: ask.workItemId, what: `Ask ${decision}` });
     this.persist(); return clone(ask);
+  }
+
+  recordStageState(input: { id: string; workItemId: string; stageKind: StageKind; state: StageState; occurredAt: string }): ActivityEntry {
+    const existing = this.state.activity.find((entry) => entry.dedupeKey === `stage:${input.id}`);
+    if (existing) return clone(existing);
+    const entry = this.recordActivity({ agent: "Sarathi", workItemId: input.workItemId, what: `Stage ${input.stageKind} changed to ${input.state}`, occurredAt: input.occurredAt, dedupeKey: `stage:${input.id}` });
+    this.persist();
+    return entry;
+  }
+
+  recordArtifactWritten(artifact: ArtifactReference, occurredAt = new Date().toISOString()): ActivityEntry {
+    const existing = this.state.activity.find((entry) => entry.dedupeKey === `artifact:${artifact.id}`);
+    if (existing) return clone(existing);
+    const entry = this.recordActivity({ agent: "Sarathi", workItemId: artifact.workItemId, what: `Artifact ${artifact.name} written`, occurredAt, dedupeKey: `artifact:${artifact.id}` });
+    this.persist();
+    return entry;
   }
 
   recordUpdateAudit(entry: UpdateAuditEntry): UpdateAuditEntry { this.state.updateAudit.push(clone(entry)); this.persist(); return clone(entry); }
@@ -260,10 +283,17 @@ export class FileSarathiStore implements SarathiStore {
     return this.snapshot();
   }
 
-  recordTask(task: StoredTask): SarathiDashboard {
+  recordTask(task: StoredTask, workItemId: string | null = null): SarathiDashboard {
+    const existingActivity = this.state.activity.find((entry) => entry.dedupeKey === `task:${task.taskId}:finished`);
+    if (task.outcome && !existingActivity) {
+      this.recordActivity({ agent: task.agentId ?? "Sarathi", workItemId, what: `Task finished: ${task.task}`, occurredAt: task.updatedAt, dedupeKey: `task:${task.taskId}:finished` });
+    } else if (existingActivity && existingActivity.workItemId === null && workItemId) {
+      existingActivity.workItemId = workItemId;
+    }
     const plan = task.resolvedExecutionPlan;
     const attempt = task.attempts?.at(-1);
     if (!plan || !attempt) {
+      this.persist();
       return this.snapshot();
     }
 
@@ -462,6 +492,12 @@ export class FileSarathiStore implements SarathiStore {
     return clone(proof);
   }
 
+  private recordActivity(input: Omit<ActivityEntry, "id" | "occurredAt"> & { occurredAt?: string }): ActivityEntry {
+    const entry: ActivityEntry = { id: randomUUID(), occurredAt: input.occurredAt ?? new Date().toISOString(), ...input };
+    this.state.activity.unshift(entry);
+    return clone(entry);
+  }
+
   private load(): SarathiDashboard {
     if (!existsSync(this.filePath)) {
       return defaultDashboard();
@@ -514,7 +550,7 @@ function defaultDashboard(): SarathiDashboard {
     asks: [],
     automaticDecisions: [],
     standingRuleSuggestions: [], approvalStreak: null,
-    askAudit: [], updateAudit: [], standingRules: [], autopilot: defaultAutopilot(), stallThresholds: defaultStallThresholds(),
+    askAudit: [], updateAudit: [], activity: [], standingRules: [], autopilot: defaultAutopilot(), stallThresholds: defaultStallThresholds(),
     runtime: {
       name: "Hermes",
       state: "unavailable",
@@ -570,6 +606,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.asks = state.asks.map((ask) => ({ ...ask, risk: ask.risk ?? riskOf(ask.kind) }));
   state.askAudit ??= [];
   state.updateAudit ??= [];
+  state.activity ??= [];
   state.standingRules ??= [];
   state.autopilot ??= defaultAutopilot();
   state.stallThresholds ??= defaultStallThresholds();
@@ -592,6 +629,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   }
   return state;
 }
+
 function defaultAutopilot(): Autopilot { return { low: "ask", medium: "ask", high: "ask" }; }
 export function defaultStallThresholds(): StallThresholds { return { nudgeMinutes: 5, stopMinutes: 15 }; }
 

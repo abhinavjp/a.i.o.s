@@ -202,6 +202,7 @@ describe("work-item API", () => {
     expect(missing.json()).toEqual({ error: "task was not found: missing" });
     expect((await app.inject({ method: "POST", url: "/api/work-items/work-1/phases/1/tasks", payload: { taskId: "task-1" } })).statusCode).toBe(200);
     expect(JSON.parse(await readFile(join(directory, "phases.json"), "utf8")).phases[0].phase).toEqual(expect.objectContaining({ taskIds: ["task-1"] }));
+    expect((await app.inject({ method: "GET", url: "/api/sarathi/dashboard" })).json().activity).toEqual(expect.arrayContaining([expect.objectContaining({ what: "Task finished: Implement the export", workItemId: "work-1" })]));
     expect((await app.inject({ method: "GET", url: "/api/work-items/work-1/phases" })).json()).toEqual({ phases: [{ workItemId: "work-1", stageKind: "implementation", phase: { number: 1, name: "Build", state: "running", demoSentence: "Show the build.", taskIds: ["task-1"] }, tasks: [{ taskId: "task-1", name: "Implement the export", agent: "codex", status: "completed" }] }] });
   });
 
