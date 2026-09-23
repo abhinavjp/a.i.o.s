@@ -5,6 +5,8 @@ import type { Stage, StageKind, StageState, WorkItem } from "@aios/contracts";
 import { runMigrations, type StoreMigration } from "./StoreMigrations.js";
 
 export interface StageActivity { id: string; workItemId: string; stageKind: StageKind; state: StageState; occurredAt: string; }
+export interface SourceObservationInput { workSourceKey: string; title: string; state: string; observedAt: string; }
+export interface SourceObservationBatchResult { imported: number; updated: number; missing: number; }
 interface WorkItemDocument { schemaVersion: number; workItems: WorkItem[]; stageActivity?: StageActivity[]; }
 const SCHEMA_VERSION = 4;
 const MIGRATIONS: ReadonlyArray<StoreMigration<WorkItemDocument>> = [
@@ -19,6 +21,7 @@ export interface WorkItemStore {
   import(input: { workSourceKey: string; title: string }): WorkItem | null;
   upsertSourceObservation(input: { workSourceKey: string; title: string; state: string; observedAt: string }): WorkItem;
   markSourceMissing(observedKeys: ReadonlyArray<string>, checkedAt: string): void;
+  applySourceObservationBatch(observations: ReadonlyArray<SourceObservationInput>, checkedAt: string): SourceObservationBatchResult;
   approveTrack(workItemId: string, stages: StageKind[]): WorkItem;
   insertStage(workItemId: string, stageKind: StageKind, index: number, expectedTrack: StageKind[], proposedTrack: StageKind[]): WorkItem;
   setStageState(workItemId: string, stageKind: StageKind, state: StageState): WorkItem;
@@ -70,6 +73,46 @@ export class FileWorkItemStore implements WorkItemStore {
     const updated = { ...current, title: input.title, sourceObservation: observation };
     if (JSON.stringify(current) !== JSON.stringify(updated)) { this.workItems[index] = updated; this.persist(); }
     return clone(updated);
+  }
+
+  applySourceObservationBatch(observations: ReadonlyArray<SourceObservationInput>, checkedAt: string): SourceObservationBatchResult {
+    if (!Number.isFinite(Date.parse(checkedAt))) throw new Error("source check time is invalid");
+    const observedKeys = new Set<string>();
+    for (const observation of observations) {
+      if (!observation.workSourceKey.trim() || !observation.title.trim() || !observation.state.trim() || !Number.isFinite(Date.parse(observation.observedAt))) throw new Error("source observation is incomplete");
+      if (observedKeys.has(observation.workSourceKey)) throw new Error("source observation batch contains duplicate work-source keys");
+      observedKeys.add(observation.workSourceKey);
+    }
+
+    let imported = 0;
+    let updated = 0;
+    let missing = 0;
+    const nextWorkItems = this.workItems.map((item) => ({ ...item }));
+    for (const observation of observations) {
+      const index = nextWorkItems.findIndex((item) => item.workSourceKey === observation.workSourceKey);
+      const sourceObservation = { source: "jira" as const, status: "observed" as const, lastObservedAt: observation.observedAt, lastCheckedAt: checkedAt, lastState: observation.state };
+      if (index < 0) {
+        imported += 1;
+        nextWorkItems.push({ id: randomUUID(), title: observation.title, repositories: [], workSourceKey: observation.workSourceKey, track: null, stages: [], createdAt: new Date().toISOString(), sourceObservation });
+      } else {
+        updated += 1;
+        nextWorkItems[index] = { ...nextWorkItems[index], title: observation.title, sourceObservation };
+      }
+    }
+
+    const existingKeys = new Set(this.workItems.flatMap((item) => item.workSourceKey ? [item.workSourceKey] : []));
+    for (const item of nextWorkItems) {
+      if (!item.workSourceKey || observedKeys.has(item.workSourceKey) || item.sourceObservation?.status === "missing") continue;
+      if (!existingKeys.has(item.workSourceKey)) continue;
+      missing += 1;
+      item.sourceObservation = { source: "jira", status: "missing", lastObservedAt: item.sourceObservation?.lastObservedAt ?? null, lastCheckedAt: checkedAt, lastState: item.sourceObservation?.lastState ?? null };
+    }
+
+    if (JSON.stringify(nextWorkItems) !== JSON.stringify(this.workItems)) {
+      this.persist(nextWorkItems);
+      this.workItems = nextWorkItems;
+    }
+    return { imported, updated, missing };
   }
 
   markSourceMissing(observedKeys: ReadonlyArray<string>, checkedAt: string): void {
@@ -137,10 +180,10 @@ export class FileWorkItemStore implements WorkItemStore {
     return { workItems: clone(workItems), stageActivity: clone(stageActivity ?? []), extras: clone(extras) };
   }
 
-  private persist(): void {
+  private persist(workItems: WorkItem[] = this.workItems): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
-    writeFileSync(temporaryPath, JSON.stringify({ ...this.documentExtras, schemaVersion: SCHEMA_VERSION, workItems: this.workItems, stageActivity: this.activity }, null, 2));
+    writeFileSync(temporaryPath, JSON.stringify({ ...this.documentExtras, schemaVersion: SCHEMA_VERSION, workItems, stageActivity: this.activity }, null, 2));
     renameSync(temporaryPath, this.filePath);
   }
 }

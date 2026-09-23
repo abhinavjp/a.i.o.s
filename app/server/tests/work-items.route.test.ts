@@ -35,6 +35,25 @@ async function createApp(workSource?: WorkSource, codeHost?: CodeHost) {
 }
 
 describe("work-item API", () => {
+  test("observes configured Jira work on startup", async () => {
+    let reads = 0;
+    const source: WorkSource = {
+      listAssignedTickets: async () => {
+        reads += 1;
+        return [{ key: "OPS-401", title: "Startup sync", type: "Task", status: "Open", description: "" }];
+      },
+      readTicket: async () => null
+    };
+    const { app } = await createApp(source);
+
+    await app.ready();
+
+    expect(reads).toBe(1);
+    expect((await app.inject({ method: "GET", url: "/api/work-items" })).json().workItems).toMatchObject([
+      { workSourceKey: "OPS-401", title: "Startup sync", sourceObservation: { status: "observed", lastState: "Open" } }
+    ]);
+  });
+
   test("reads GitLab merge requests and authored content through existing work-item paths", async () => {
     const token = "gitlab-token-must-not-persist";
     const host = new GitLabCodeHost({ siteUrl: "http://gitlab.internal", projectId: "group/project", defaultBranch: "trunk", credentialReference: "GITLAB_TOKEN", credentialResolver: { resolve: async () => ({ value: token, expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { listMergeRequests: async ({ branch }) => [{ iid: 42, title: "Fix export", source_branch: branch, state: "opened", head_pipeline: { status: "running" } }], readPipeline: async () => null, readFile: async () => "# Real branch", readDiff: async () => "a\nb\n" } }, () => Date.parse("2026-09-07T00:00:00Z"));
@@ -48,7 +67,7 @@ describe("work-item API", () => {
     const token = "jira-token-must-not-persist";
     const source = new JiraWorkSource({ siteUrl: "https://jira.example.test", searchQuery: "assignee = currentUser()", credentialReference: "JIRA_TOKEN", credentialResolver: { resolve: async () => ({ value: token, expiresAt: "2026-09-10T00:00:00.000Z" }) }, transport: { search: async () => [{ key: "OPS-301", fields: { summary: "Import Jira work", issuetype: { name: "Task" }, status: { name: "Open" }, description: "Read only" } }], read: async () => null } }, () => Date.parse("2026-09-07T00:00:00Z"));
     const { app, directory } = await createApp(source);
-    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 1, skipped: 0, workItems: [{ workSourceKey: "OPS-301", title: "Import Jira work" }] });
+    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 0, updated: 1, skipped: 1, workItems: [{ workSourceKey: "OPS-301", title: "Import Jira work" }] });
     expect((await app.inject({ method: "GET", url: "/api/work-items/connection" })).json()).toEqual({ connection: { siteUrl: "https://jira.example.test", credentialReference: "JIRA_TOKEN", daysUntilExpiry: 3, expiresSoon: true } });
     await expect(readFile(join(directory, "work-items.json"), "utf8")).resolves.not.toContain(token);
   });
@@ -58,7 +77,7 @@ describe("work-item API", () => {
     const { app } = await createApp(source);
     const response = await app.inject({ method: "POST", url: "/api/work-items/import" });
     expect(response.statusCode).toBe(502);
-    expect(response.json()).toEqual({ error: "work source import failed: Jira is unavailable" });
+    expect(response.json()).toMatchObject({ error: "work source import failed: Jira is unavailable", sync: { state: "failed", lastError: "Jira is unavailable" } });
     expect((await app.inject({ method: "GET", url: "/api/work-items" })).json()).toEqual({ workItems: [] });
   });
   test("lists no work items on a fresh install", async () => {
@@ -67,11 +86,33 @@ describe("work-item API", () => {
     expect(response.json()).toEqual({ workItems: [] });
   });
 
-  test("imports fake tickets once, then reports duplicates as skipped", async () => {
+  test("refreshes previously observed fake tickets without duplicating them", async () => {
     const { app } = await createApp(new FakeWorkSource());
-    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 2, skipped: 0 });
-    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 0, skipped: 2 });
+    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 0, updated: 2, skipped: 2 });
+    expect((await app.inject({ method: "POST", url: "/api/work-items/import" })).json()).toMatchObject({ imported: 0, updated: 2, skipped: 2 });
     expect((await app.inject({ method: "GET", url: "/api/work-items" })).json().workItems).toMatchObject([{ workSourceKey: "OPS-101", track: null }, { workSourceKey: "OPS-102", track: null }]);
+  });
+
+  test("manual import explicitly refreshes startup sync and reports its current status", async () => {
+    let reads = 0;
+    const source: WorkSource = {
+      listAssignedTickets: async () => {
+        reads += 1;
+        return [{ key: "OPS-402", title: "Refresh route", type: "Task", status: "Open", description: "" }];
+      },
+      readTicket: async () => null
+    };
+    const { app } = await createApp(source);
+
+    await app.ready();
+    expect((await app.inject({ method: "GET", url: "/api/work-items/sync" })).json()).toMatchObject({
+      sync: { configured: true, state: "available", lastSuccessAt: expect.any(String), lastError: null }
+    });
+    const response = await app.inject({ method: "POST", url: "/api/work-items/import" });
+
+    expect(reads).toBe(2);
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ imported: 0, updated: 1, workItems: [{ workSourceKey: "OPS-402" }], sync: { state: "available" } });
   });
 
   test("imports nothing from the null work source", async () => {

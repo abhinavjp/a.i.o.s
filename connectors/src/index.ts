@@ -120,12 +120,34 @@ export interface JiraTransport {
 }
 export interface JiraWorkSourceOptions { siteUrl: string; searchQuery: string; credentialReference: string; credentialResolver: JiraCredentialResolver; transport?: JiraTransport; expiryWarningDays?: number; }
 
+const JIRA_SEARCH_PAGE_SIZE = 100;
+const MAX_JIRA_SEARCH_PAGES = 100;
+
 /** Jira REST transport for an operator-provided site; tests can replace it with a fake. */
 export class FetchJiraTransport implements JiraTransport {
   async search(input: { siteUrl: string; searchQuery: string; token: string }): Promise<ReadonlyArray<JiraIssue>> {
-    const response = await fetch(`${input.siteUrl.replace(/\/$/, "")}/rest/api/3/search?${new URLSearchParams({ jql: input.searchQuery, fields: "summary,issuetype,status,description" })}`, { headers: { Authorization: `Bearer ${input.token}`, Accept: "application/json" } });
-    if (!response.ok) throw new Error(`Jira search failed (${response.status})`);
-    return (await response.json() as { issues?: JiraIssue[] }).issues ?? [];
+    const issues: JiraIssue[] = [];
+    const seenPageTokens = new Set<string>();
+    let nextPageToken: string | undefined;
+    for (let pageNumber = 0; pageNumber < MAX_JIRA_SEARCH_PAGES; pageNumber += 1) {
+      const query = new URLSearchParams({
+        jql: input.searchQuery,
+        fields: "summary,issuetype,status,description",
+        maxResults: String(JIRA_SEARCH_PAGE_SIZE)
+      });
+      if (nextPageToken) query.set("nextPageToken", nextPageToken);
+      const response = await fetch(`${input.siteUrl.replace(/\/$/, "")}/rest/api/3/search/jql?${query}`, { headers: { Authorization: `Bearer ${input.token}`, Accept: "application/json" } });
+      if (!response.ok) throw new Error(`Jira search failed (${response.status})`);
+      const page = parseJiraSearchPage(await response.json());
+      issues.push(...page.issues);
+      if (page.isLast) return issues;
+      const token = page.nextPageToken;
+      if (typeof token !== "string" || !token.trim()) throw new Error("Jira search returned an incomplete page");
+      if (seenPageTokens.has(token)) throw new Error("Jira search returned a repeated page token");
+      seenPageTokens.add(token);
+      nextPageToken = token;
+    }
+    throw new Error("Jira search exceeded its page limit");
   }
   async read(input: { siteUrl: string; ticketKey: string; token: string }): Promise<JiraIssue | null> {
     const response = await fetch(`${input.siteUrl.replace(/\/$/, "")}/rest/api/3/issue/${encodeURIComponent(input.ticketKey)}?${new URLSearchParams({ fields: "summary,issuetype,status,description" })}`, { headers: { Authorization: `Bearer ${input.token}`, Accept: "application/json" } });
@@ -133,6 +155,26 @@ export class FetchJiraTransport implements JiraTransport {
     if (!response.ok) throw new Error(`Jira ticket read failed (${response.status})`);
     return await response.json() as JiraIssue;
   }
+}
+
+function parseJiraSearchPage(value: unknown): { issues: JiraIssue[]; isLast: boolean; nextPageToken?: unknown } {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Jira search returned an invalid page");
+  const page = value as { issues?: unknown; isLast?: unknown; nextPageToken?: unknown };
+  if (!Array.isArray(page.issues) || typeof page.isLast !== "boolean") throw new Error("Jira search returned an invalid page");
+  const issues = page.issues.map(parseJiraIssue);
+  if (page.nextPageToken !== undefined && page.nextPageToken !== null && typeof page.nextPageToken !== "string") throw new Error("Jira search returned an invalid page");
+  return { issues, isLast: page.isLast, nextPageToken: page.nextPageToken };
+}
+
+function parseJiraIssue(value: unknown): JiraIssue {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("Jira search returned an invalid issue");
+  const issue = value as Partial<JiraIssue>;
+  const fields = issue.fields;
+  if (typeof issue.key !== "string" || !issue.key.trim() || !fields || typeof fields !== "object" ||
+    typeof fields.summary !== "string" || typeof fields.issuetype?.name !== "string" || typeof fields.status?.name !== "string") {
+    throw new Error("Jira search returned an incomplete issue");
+  }
+  return issue as JiraIssue;
 }
 
 /** Read-only Jira work source; credentials remain external and are resolved only for each call. */

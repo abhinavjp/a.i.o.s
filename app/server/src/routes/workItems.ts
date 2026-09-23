@@ -7,6 +7,7 @@ import type { PhaseStore } from "../PhaseStore.js";
 import type { TaskStore } from "../TaskStore.js";
 import type { SarathiStore } from "../sarathi/SarathiStore.js";
 import type { PermissionEngine } from "../sarathi/PermissionEngine.js";
+import type { JiraSyncCoordinator } from "../JiraSyncCoordinator.js";
 
 interface CreateWorkItemBody { title?: unknown; repositories?: unknown; }
 interface ApproveTrackBody { startingPoint?: unknown; }
@@ -23,20 +24,23 @@ const STARTING_POINTS: Record<string, StageKind[]> = {
 };
 const STAGE_STATES: StageState[] = ["not-started", "running", "waiting", "blocked", "done", "skipped"];
 
-export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore, sarathiStore: SarathiStore, permissionEngine: PermissionEngine, onAllowedTrackChange: (intent: ToolIntent) => void): void {
+export function registerWorkItemRoutes(app: FastifyInstance, store: WorkItemStore, workSource: WorkSource | undefined, codeHost: CodeHost | undefined, artifactStore: ArtifactStore | undefined, phaseStore: PhaseStore, taskStore: TaskStore, sarathiStore: SarathiStore, permissionEngine: PermissionEngine, onAllowedTrackChange: (intent: ToolIntent) => void, jiraSync: JiraSyncCoordinator): void {
   app.get("/api/work-items", async () => ({ workItems: store.list() }));
+  app.get("/api/work-items/sync", async () => ({ sync: jiraSync.status() }));
   app.get("/api/code-host/connection", async (_request, reply) => { try { return { connection: await codeHost?.connectionStatus?.() ?? null }; } catch (error) { reply.code(502); return { error: `code host connection failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; } });
   app.get("/api/work-items/connection", async (_request, reply) => {
     try { return { connection: await workSource?.connectionStatus?.() ?? null }; }
     catch (error) { reply.code(502); return { error: `work source connection failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
   });
-  app.post("/api/work-items/import", async (_request, reply) => {
-    let tickets;
-    try { tickets = await workSource?.listAssignedTickets() ?? []; }
-    catch (error) { reply.code(502); return { error: `work source import failed: ${error instanceof Error ? error.message : "unknown connection failure"}` }; }
-    const imported = tickets.map((ticket) => store.import({ workSourceKey: ticket.key, title: ticket.title })).filter(Boolean);
-    return { imported: imported.length, skipped: tickets.length - imported.length, workItems: store.list() };
-  });
+  const refreshWorkSource = async (_request: unknown, reply: { code(statusCode: number): unknown }) => {
+    const result = await jiraSync.refresh();
+    if (result.state === "failed") {
+      reply.code(502);
+      return { error: `work source import failed: ${result.error ?? "unknown connection failure"}`, sync: jiraSync.status() };
+    }
+    return { imported: result.imported, updated: result.updated, skipped: result.skipped, missing: result.missing, workItems: store.list(), sync: jiraSync.status() };
+  };
+  app.post("/api/work-items/import", refreshWorkSource);
   app.get<{ Params: { workItemId: string } }>("/api/work-items/:workItemId/merge-requests", async (request, reply) => {
     const workItem = store.list().find((candidate) => candidate.id === request.params.workItemId);
     if (!workItem) { reply.code(404); return { error: "work item was not found" }; }

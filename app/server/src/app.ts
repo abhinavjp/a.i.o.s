@@ -30,6 +30,7 @@ import { FileWorkItemStore, type WorkItemStore } from "./WorkItemStore.js";
 import { FileArtifactStore, type ArtifactStore } from "./ArtifactStore.js";
 import { FilePhaseStore, type PhaseStore } from "./PhaseStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
+import { JiraSyncCoordinator, type JiraSyncScheduler } from "./JiraSyncCoordinator.js";
 import { registerMissionControlBoardRoute } from "./mission-control/board.js";
 import { RUNNING_VERSION } from "./Version.js";
 import { DEFAULT_RELEASE_CHANNEL_PUBLIC_KEY, FetchReleaseChannelTransport, FileReleaseChannelStore, type ReleaseChannelStore, type ReleaseChannelTransport, ReleaseChannelManager } from "./ReleaseChannel.js";
@@ -46,6 +47,9 @@ export interface BuildAppOptions {
   artifactStore?: ArtifactStore;
   phaseStore?: PhaseStore;
   workSource?: WorkSource;
+  jiraSyncIntervalMs?: number;
+  jiraSyncNow?: () => number;
+  jiraSyncScheduler?: JiraSyncScheduler;
   codeHost?: CodeHost;
   credentialStore?: CredentialReferenceStore;
   credentialManager?: CredentialManager;
@@ -79,6 +83,13 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   const engineConfigStore =
     options.engineConfigStore ?? new FileEngineConfigStore(join(dataDirectory, "engine-routing.json"));
   const workItemStore = options.workItemStore ?? new FileWorkItemStore(join(dataDirectory, "work-items.json"));
+  const jiraSync = new JiraSyncCoordinator({
+    source: options.workSource,
+    store: workItemStore,
+    intervalMs: options.jiraSyncIntervalMs,
+    now: options.jiraSyncNow ?? (options.runtimeClock ? () => options.runtimeClock!.now() : undefined),
+    scheduler: options.jiraSyncScheduler
+  });
   const artifactStore = options.artifactStore ?? new FileArtifactStore(join(dataDirectory, "artifacts.json"));
   artifactStore.setActivityStore(sarathiStore);
   const phaseStore = options.phaseStore ?? new FilePhaseStore(join(dataDirectory, "phases.json"));
@@ -113,7 +124,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     async execute(intent) { if (intent.tool === "system-update") { await updateManager.apply(intent.context); return { output: "update installed" }; } throw new Error("system update execution is not configured"); }
   };
   const permissionEngine = new PermissionEngine(sarathiStore, withDeliveryPipelineTools(permissionTools), options.permissionSemanticClassifier);
-  app.addHook("onReady", async () => providerCatalogManager.refreshAll());
+  app.addHook("onReady", async () => { await Promise.all([providerCatalogManager.refreshAll(), jiraSync.start()]); });
+  app.addHook("onClose", async () => jiraSync.close());
   // Task history is authoritative if the dashboard projection lagged a crash.
   for (const activity of workItemStore.stageActivity()) sarathiStore.recordStageState(activity);
   for (const activity of artifactStore.activityEntries()) sarathiStore.recordArtifactWritten(activity.artifact, activity.occurredAt);
@@ -153,7 +165,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
   }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
-  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore, permissionEngine, applyTrackChange);
+  registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore, permissionEngine, applyTrackChange, jiraSync);
   registerMissionControlBoardRoute(app, { workItems: workItemStore, artifacts: artifactStore, phases: phaseStore, tasks: taskStore, codeHost: options.codeHost });
   registerCredentialRoutes(app, credentialManager);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
