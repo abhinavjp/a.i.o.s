@@ -106,7 +106,9 @@ export class RemediationAdmissionCoordinator {
       this.store.recordGitLabDiscussionAdmission(ask.intent.target, { state: "blocked", reason });
       return { state: "blocked", reason };
     }
-    this.store.recordGitLabDiscussionAdmission(ask.intent.target, { state: "admitted", taskId: result.value });
+    const admittedTask = this.tasks.get(result.value);
+    this.store.recordGitLabDiscussionAdmission(ask.intent.target, { state: "admitted", taskId: result.value }, admittedTask?.createdAt);
+    if (admittedTask?.outcome) this.store.recordTask(admittedTask, observation.workItemId);
     if (authority === "standing-rule") this.store.retireAskAfterAutomaticAdmission(ask.id);
     return { state: "admitted", taskId: result.value };
   }

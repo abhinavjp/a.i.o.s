@@ -503,6 +503,17 @@ export interface MissionControlDiscussionObservation {
   firstObservedAt: string;
   lastObservedAt: string;
   status: "observed" | "not-observed" | "stale";
+  admissionState: "pending" | "blocked" | "admitted";
+  blockedReason: string | null;
+  taskId: string | null;
+  milestones: MissionControlRemediationMilestones;
+}
+export interface MissionControlRemediationMilestones {
+  admitted: { taskId: string; observedAt: string | null; source: "sarathi"; pipelineIdAtAdmission: string | null; pipelineShaAtAdmission: string | null } | null;
+  fixProduced: { taskId: string; observedAt: string; source: "sarathi-task-outcome" } | null;
+  pushed: { commitSha: string; pipelineId: string; observedAt: string; source: "gitlab" } | null;
+  pipeline: { pipelineId: string; result: "passed" | "failed" | "running"; commitSha: string | null; ref: string | null; observedAt: string; source: "gitlab" } | null;
+  resolved: { discussionId: string; observedAt: string; source: "gitlab" } | null;
 }
 export interface MissionControlDiscussionSyncStatus {
   configured: boolean;

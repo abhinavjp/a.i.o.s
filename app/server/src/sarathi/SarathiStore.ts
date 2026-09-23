@@ -2,12 +2,12 @@ import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from "
 import { randomUUID } from "node:crypto";
 import { dirname } from "node:path";
 import { runMigrations, type StoreMigration } from "../StoreMigrations.js";
-import type { ActionBoundApproval, ArtifactReference, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, StageKind, StageState, TaskStatus, ToolIntent } from "@aios/contracts";
+import type { ActionBoundApproval, ArtifactReference, MissionControlRemediationMilestones, PermissionRule, ProviderCatalog, RouteCircuit, RoutePolicyOverride, RoutePolicyScope, RuntimeProof, RuntimeUsage, RuntimeAttribution, StageKind, StageState, TaskStatus, ToolIntent } from "@aios/contracts";
 import type { StoredTask } from "../TaskStore.js";
 import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
 import { FLOOR_RULES, isFloorAskKind, isFloorRule } from "./DecisionFloor.js";
 import { riskOf, type AskRisk } from "./AskRisk.js";
-import type { MergeRequest, MergeRequestDiscussion } from "@aios/connectors";
+import type { CodeHostPipeline, MergeRequest, MergeRequestDiscussion } from "@aios/connectors";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
 export type SpecialistStatus = "pending_approval" | "active";
@@ -89,9 +89,11 @@ export interface GitLabDiscussionObservation {
   admissionState: "pending" | "blocked" | "admitted";
   blockedReason: string | null;
   taskId: string | null;
+  milestones: RemediationMilestones;
 }
 export interface GitLabDiscussionState { sync: GitLabDiscussionSyncStatus; observations: GitLabDiscussionObservation[]; }
-export interface GitLabDiscussionObservationInput { workItemId: string; mergeRequest: MergeRequest; discussion: MergeRequestDiscussion; }
+export interface GitLabDiscussionObservationInput { workItemId: string; mergeRequest: MergeRequest; discussion: MergeRequestDiscussion; pipelineObservation?: CodeHostPipeline | null; }
+export type RemediationMilestones = MissionControlRemediationMilestones;
 
 export interface SarathiDashboard {
   asks: PendingAsk[];
@@ -179,12 +181,12 @@ export interface SarathiStore {
   recordProof(proof: RuntimeProof): RuntimeProof;
   markGitLabDiscussionSyncing(attemptedAt: string): GitLabDiscussionSyncStatus;
   applyGitLabDiscussionObservationBatch(observations: ReadonlyArray<GitLabDiscussionObservationInput>, observedAt: string): { observations: number; asksCreated: number };
-  recordGitLabDiscussionAdmission(id: string, admission: { state: "pending" } | { state: "blocked"; reason: string } | { state: "admitted"; taskId: string }): GitLabDiscussionObservation | undefined;
+  recordGitLabDiscussionAdmission(id: string, admission: { state: "pending" } | { state: "blocked"; reason: string } | { state: "admitted"; taskId: string }, observedAt?: string): GitLabDiscussionObservation | undefined;
   retireAskAfterAutomaticAdmission(id: string): PendingAsk | undefined;
   markGitLabDiscussionSyncFailed(failedAt: string, error: string): GitLabDiscussionSyncStatus;
 }
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
@@ -195,6 +197,7 @@ const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   , { fromVersion: 5, migrate: (document) => ({ ...document, schemaVersion: 6, dashboard: { ...document.dashboard, updateAudit: document.dashboard.updateAudit ?? [] } }) }
   , { fromVersion: 6, migrate: (document) => ({ ...document, schemaVersion: 7, dashboard: { ...document.dashboard, activity: document.dashboard.activity ?? [] } }) }
   , { fromVersion: 7, migrate: (document) => ({ ...document, schemaVersion: 8, dashboard: { ...document.dashboard, gitLabDiscussions: document.dashboard.gitLabDiscussions ?? defaultGitLabDiscussionState() } }) }
+  , { fromVersion: 8, migrate: (document) => ({ ...document, schemaVersion: 9, dashboard: addRemediationMilestones(document.dashboard) }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -234,6 +237,9 @@ export class FileSarathiStore implements SarathiStore {
   }
 
   applyGitLabDiscussionObservationBatch(inputs: ReadonlyArray<GitLabDiscussionObservationInput>, observedAt: string): { observations: number; asksCreated: number } {
+    if (this.state.gitLabDiscussions.sync.lastSuccessAt && observedAt < this.state.gitLabDiscussions.sync.lastSuccessAt) {
+      return { observations: new Set(inputs.map((input) => gitLabDiscussionIdentity(input.mergeRequest.repository, input.mergeRequest.number, input.discussion.discussionId))).size, asksCreated: 0 };
+    }
     const previousDiscussions = clone(this.state.gitLabDiscussions);
     const previousAsks = clone(this.state.asks);
     const previousAudit = clone(this.state.askAudit);
@@ -258,7 +264,7 @@ export class FileSarathiStore implements SarathiStore {
           const askResult = existing.askId === null ? this.addGitLabDiscussionAsk(input, id, observedAt) : null;
           if (askResult?.created) asksCreated += 1;
           const resolvedBeforeAdmission = input.discussion.resolved && !existing.taskId;
-          collection[existingIndex] = { ...existing, workItemId: input.workItemId, mergeRequest: clone(input.mergeRequest), discussion: clone(input.discussion), askId: askResult?.ask.id ?? existing.askId, lastObservedAt: observedAt, status: "observed",
+          collection[existingIndex] = { ...existing, workItemId: input.workItemId, mergeRequest: clone(input.mergeRequest), discussion: clone(input.discussion), askId: askResult?.ask.id ?? existing.askId, lastObservedAt: observedAt, status: "observed", milestones: updateGitLabMilestones(existing.milestones, input, observedAt),
             admissionState: resolvedBeforeAdmission ? "blocked" : existing.admissionState,
             blockedReason: resolvedBeforeAdmission ? "GitLab reports that this discussion is resolved" : existing.blockedReason };
           continue;
@@ -277,7 +283,8 @@ export class FileSarathiStore implements SarathiStore {
           status: "observed",
           admissionState: "pending",
           blockedReason: null,
-          taskId: null
+          taskId: null,
+          milestones: updateGitLabMilestones(emptyRemediationMilestones(), input, observedAt)
         });
       }
       const retiredAskIds = new Set(collection.filter((observation) => observation.askId && (observation.status === "not-observed" || observation.discussion.resolved)).map((observation) => observation.askId));
@@ -302,7 +309,7 @@ export class FileSarathiStore implements SarathiStore {
     }
   }
 
-  recordGitLabDiscussionAdmission(id: string, admission: { state: "pending" } | { state: "blocked"; reason: string } | { state: "admitted"; taskId: string }): GitLabDiscussionObservation | undefined {
+  recordGitLabDiscussionAdmission(id: string, admission: { state: "pending" } | { state: "blocked"; reason: string } | { state: "admitted"; taskId: string }, observedAt = new Date().toISOString()): GitLabDiscussionObservation | undefined {
     const observation = this.state.gitLabDiscussions.observations.find((entry) => entry.id === id);
     if (!observation) return undefined;
     if (admission.state === "pending" && !observation.taskId) {
@@ -317,6 +324,13 @@ export class FileSarathiStore implements SarathiStore {
         observation.admissionState = "admitted";
         observation.blockedReason = null;
         observation.taskId = admission.taskId;
+        observation.milestones = { ...observation.milestones, admitted: {
+          taskId: admission.taskId,
+          observedAt,
+          source: "sarathi",
+          pipelineIdAtAdmission: observation.mergeRequest.pipelineId ?? null,
+          pipelineShaAtAdmission: observation.milestones.pipeline?.commitSha ?? null
+        } };
       }
     } else if (admission.state === "blocked" && !observation.taskId) {
       observation.admissionState = "blocked";
@@ -475,6 +489,16 @@ export class FileSarathiStore implements SarathiStore {
   }
 
   recordTask(task: StoredTask, workItemId: string | null = null): SarathiDashboard {
+    if (task.outcome?.status === "completed") {
+      for (const observation of this.state.gitLabDiscussions.observations) {
+        if (observation.taskId !== task.taskId || observation.milestones.fixProduced) continue;
+        observation.milestones = { ...observation.milestones, fixProduced: {
+          taskId: task.taskId,
+          observedAt: task.updatedAt,
+          source: "sarathi-task-outcome"
+        } };
+      }
+    }
     const existingActivity = this.state.activity.find((entry) => entry.dedupeKey === `task:${task.taskId}:finished`);
     if (task.outcome && !existingActivity) {
       this.recordActivity({ agent: task.agentId ?? "Sarathi", workItemId, what: `Task finished: ${task.task}`, occurredAt: task.updatedAt, dedupeKey: `task:${task.taskId}:finished` });
@@ -804,7 +828,8 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
     ...observation,
     admissionState: observation.admissionState ?? "pending",
     blockedReason: observation.blockedReason ?? null,
-    taskId: observation.taskId ?? null
+    taskId: observation.taskId ?? null,
+    milestones: observation.milestones ?? legacyRemediationMilestones(observation)
   }));
   state.standingRules ??= [];
   state.autopilot ??= defaultAutopilot();
@@ -835,6 +860,64 @@ function defaultGitLabDiscussionState(): GitLabDiscussionState {
     sync: { configured: false, state: "unconfigured", stale: false, lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null },
     observations: []
   };
+}
+function emptyRemediationMilestones(taskId: string | null = null): RemediationMilestones {
+  return {
+    admitted: taskId === null ? null : { taskId, observedAt: null, source: "sarathi", pipelineIdAtAdmission: null, pipelineShaAtAdmission: null },
+    fixProduced: null,
+    pushed: null,
+    pipeline: null,
+    resolved: null
+  };
+}
+function legacyRemediationMilestones(observation: Pick<GitLabDiscussionObservation, "taskId" | "mergeRequest">): RemediationMilestones {
+  const milestones = emptyRemediationMilestones(observation.taskId ?? null);
+  if (!milestones.admitted) return milestones;
+  return {
+    ...milestones,
+    admitted: { ...milestones.admitted, pipelineIdAtAdmission: observation.mergeRequest?.pipelineId ?? null }
+  };
+}
+function addRemediationMilestones(dashboard: SarathiDashboard): SarathiDashboard {
+  const gitLabDiscussions = dashboard.gitLabDiscussions ?? defaultGitLabDiscussionState();
+  return {
+    ...dashboard,
+    gitLabDiscussions: {
+      ...gitLabDiscussions,
+      observations: (gitLabDiscussions.observations ?? []).map((observation) => ({
+        ...observation,
+        milestones: observation.milestones ?? legacyRemediationMilestones(observation)
+      }))
+    }
+  };
+}
+function updateGitLabMilestones(milestones: RemediationMilestones, input: GitLabDiscussionObservationInput, observedAt: string): RemediationMilestones {
+  let next = milestones;
+  const pipelineId = input.mergeRequest.pipelineId ?? null;
+  if (pipelineId && isAtOrAfter(observedAt, milestones.pipeline?.observedAt)) {
+    const detail = input.pipelineObservation?.id === pipelineId && input.pipelineObservation.repository === input.mergeRequest.repository
+      ? input.pipelineObservation
+      : null;
+    next = { ...next, pipeline: { pipelineId, result: input.mergeRequest.pipelineResult, commitSha: detail?.sha ?? null, ref: detail?.ref ?? null, observedAt, source: "gitlab" } };
+  }
+  const pipeline = input.pipelineObservation;
+  const hasNewCommit = !!pipeline?.sha && pipeline.ref === input.mergeRequest.branch &&
+    (milestones.admitted?.pipelineShaAtAdmission
+      ? pipeline.sha !== milestones.admitted.pipelineShaAtAdmission
+      : milestones.admitted?.pipelineIdAtAdmission === null);
+  if (pipelineId && pipeline?.sha && hasNewCommit && milestones.admitted && pipeline.updatedAt &&
+    pipeline.updatedAt >= (milestones.admitted.observedAt ?? "") &&
+    (!milestones.pushed || milestones.pushed.commitSha !== pipeline.sha) &&
+    isAtOrAfter(observedAt, milestones.admitted.observedAt) && isAtOrAfter(observedAt, milestones.pushed?.observedAt)) {
+    next = { ...next, pushed: { pipelineId, commitSha: pipeline.sha, observedAt, source: "gitlab" } };
+  }
+  if (input.discussion.resolved && isAtOrAfter(observedAt, milestones.resolved?.observedAt)) {
+    next = { ...next, resolved: { discussionId: input.discussion.discussionId, observedAt, source: "gitlab" } };
+  }
+  return next;
+}
+function isAtOrAfter(candidate: string, existing?: string | null): boolean {
+  return !existing || candidate >= existing;
 }
 function gitLabDiscussionIdentity(projectId: string, mergeRequestIid: number, discussionId: string): string {
   return `${encodeURIComponent(projectId)}:${mergeRequestIid}:${encodeURIComponent(discussionId)}`;

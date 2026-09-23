@@ -1,4 +1,4 @@
-import type { CodeHost, MergeRequest, MergeRequestDiscussion } from "@aios/connectors";
+import type { CodeHost, CodeHostPipeline, MergeRequest, MergeRequestDiscussion } from "@aios/connectors";
 import type { WorkItemStore } from "../WorkItemStore.js";
 import type { SarathiStore } from "../sarathi/SarathiStore.js";
 import type { JiraSyncScheduler } from "../JiraSyncCoordinator.js";
@@ -84,8 +84,9 @@ export class GitLabDiscussionSyncCoordinator {
       for (const workItem of this.options.workItems.list()) {
         const mergeRequests = validateMergeRequests(await this.options.codeHost!.listMergeRequests(workItem.id));
         for (const mergeRequest of mergeRequests) {
+          const pipeline = mergeRequest.pipelineId ? validatePipeline(await this.options.codeHost!.readPipeline(mergeRequest.pipelineId), mergeRequest) : null;
           const discussions = validateDiscussions(await this.options.codeHost!.listDiscussions(mergeRequest.number), mergeRequest);
-          for (const discussion of discussions) observations.push({ workItemId: workItem.id, mergeRequest, discussion });
+          for (const discussion of discussions) observations.push({ workItemId: workItem.id, mergeRequest, discussion, pipelineObservation: pipeline });
         }
       }
       const observedAt = this.timestamp();
@@ -137,6 +138,18 @@ function validateDiscussions(value: unknown, mergeRequest: MergeRequest): MergeR
     }
     return discussion as MergeRequestDiscussion;
   });
+}
+
+function validatePipeline(value: unknown, mergeRequest: MergeRequest): CodeHostPipeline | null {
+  if (value === null) return null;
+  if (!value || typeof value !== "object") throw new Error("GitLab pipeline read returned an invalid pipeline");
+  const pipeline = value as Partial<CodeHostPipeline>;
+  if (pipeline.id !== mergeRequest.pipelineId || pipeline.repository !== mergeRequest.repository || typeof pipeline.status !== "string" ||
+    (pipeline.ref !== null && typeof pipeline.ref !== "string") || (pipeline.sha !== null && typeof pipeline.sha !== "string") ||
+    (pipeline.webUrl !== null && typeof pipeline.webUrl !== "string") || (pipeline.updatedAt !== null && typeof pipeline.updatedAt !== "string")) {
+    throw new Error("GitLab pipeline read returned an incomplete or mismatched pipeline");
+  }
+  return pipeline as CodeHostPipeline;
 }
 
 function configuredInterval(): number {

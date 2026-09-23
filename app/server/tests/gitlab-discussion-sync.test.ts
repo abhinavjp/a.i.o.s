@@ -110,7 +110,7 @@ describe("GitLab discussion synchronization", () => {
     const board = await app.inject({ method: "GET", url: "/api/mission-control/board" });
     expect(board.json().gitLabDiscussions).toMatchObject({
       sync: { state: "available", stale: false },
-      observations: [{ workItemId: workItem.id, repository: "group/payroll", mergeRequestIid: 42, discussionId: "discussion-77", resolved: false, askId: sarathiStore.snapshot().asks[0].id }]
+      observations: [{ workItemId: workItem.id, repository: "group/payroll", mergeRequestIid: 42, discussionId: "discussion-77", resolved: false, askId: sarathiStore.snapshot().asks[0].id, milestones: { admitted: null, fixProduced: null, pushed: null, pipeline: null, resolved: null } }]
     });
   });
 
@@ -257,6 +257,6 @@ describe("GitLab discussion synchronization", () => {
     expect(migrated.asks).toMatchObject([{ id: "ask-legacy" }]);
     expect(migrated.activity).toMatchObject([{ id: "activity-legacy" }]);
     expect(migrated.gitLabDiscussions).toMatchObject({ sync: { state: "unconfigured" }, observations: [] });
-    expect(stored.schemaVersion).toBe(8);
+    expect(stored.schemaVersion).toBe(9);
   });
 });

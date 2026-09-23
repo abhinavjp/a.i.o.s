@@ -43,3 +43,11 @@
 - GREEN: an approved discussion ask is admitted through the existing permission decision path only after its action-bound approval is recorded. A valid standing rule can also admit an ordinary task. Selection requires an active agent with `gitlab.discussion.remediate` and a free slot; the task uses bounded MR/thread/work-item context and a stable identity-derived task ID. Resolved or stale observations, absent capability, full slots and floor intents do not admit. Block reasons and admitted task IDs are durable and projected on the board.
 - Proof: 9 focused admission/guard tests, 294 repository tests across 49 files, server/contracts/client typechecks, and `git diff --check` passed.
 - Direct review: corrected permission audit precedence for explicit approval, added a task-store-boundary freshness guard, allowed decline without remediation preflight, and kept the existing general suggestion endpoint behavior while requiring active specialists for remediation. Actual MCP/skill execution remains `UNMEASURED` without an authorized capable runtime.
+
+## TSK-006
+
+- TDD RED: admission lacked milestone slots; repeated pipeline observations risked replacing a result timestamp; the direct review's fast-completion test showed a task could finish before its discussion link was recorded.
+- Milestone sources: `admitted` comes from Sarathi task admission; `fixProduced` from a completed canonical task outcome; `pushed` from a new GitLab pipeline commit SHA after admission; `pipeline` from the GitLab MR/pipeline read; `resolved` from GitLab discussion resolution. Failed/cancelled tasks do not produce a fix. Older GitLab batches do not overwrite newer observations.
+- GREEN: schema v9 migrates v8 admitted links without inventing a time; distinct timestamped milestone fields persist across restart and project on Mission Control. The GitLab sync reads matching pipeline detail; the coordinator reconciles terminal tasks that complete before the admission link is stored.
+- Proof: 5 focused milestone tests, 299 repository tests across 50 files, server/contracts/client typechecks, and `git diff --check` passed. Live push, pipeline and thread resolution remain `UNMEASURED` without authorized GitLab/agent fixtures.
+- Direct review: added the fast-completion reconciliation proof; no blocking scoped finding remains.
