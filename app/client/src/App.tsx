@@ -16,6 +16,8 @@ import type {
 } from "@aios/contracts";
 import { RoutingPage } from "./routing/RoutingPage.js";
 import { WorkItemsPage } from "./work-items/WorkItemsPage.js";
+import { MissionControlShell } from "./mission-control/MissionControlShell.js";
+import { readMissionControlBoard, type BoardLoad } from "./mission-control/api.js";
 import "./App.css";
 
 type AgentListItem = AgentInfo & { health: HealthStatus };
@@ -232,6 +234,8 @@ export function App() {
   const [agents, setAgents] = useState<AgentListItem[]>([]);
   const [agentSlots, setAgentSlots] = useState<AgentSlot[]>([]);
   const [dashboard, setDashboard] = useState<Dashboard>(DEFAULT_DASHBOARD);
+  const [dashboardStatus, setDashboardStatus] = useState<"loading" | "available" | "error">("loading");
+  const [boardLoad, setBoardLoad] = useState<BoardLoad>({ status: "loading" });
   const [task, setTask] = useState("");
   const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", capabilityTag: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
   const [status, setStatus] = useState<RunStatus>("idle");
@@ -251,7 +255,7 @@ export function App() {
     capabilityTags: ""
   });
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
-  const [view, setView] = useState<"command" | "advanced-routing" | "work-items">("command");
+  const [view, setView] = useState<"command" | "legacy" | "advanced-routing" | "work-items">("command");
   const [advancedSpecialistId, setAdvancedSpecialistId] = useState<string | null>(null);
   const [catchUpIndex, setCatchUpIndex] = useState<number | null>(null);
   const [taskEngine, setTaskEngine] = useState<"inherit" | AgentEngineKind>("inherit");
@@ -296,11 +300,14 @@ export function App() {
       const next = (await response.json()) as Partial<Dashboard>;
       const slots = await slotsResponse.json() as { agents?: AgentSlot[] };
       if (Array.isArray(slots.agents)) setAgentSlots(slots.agents);
-      if (generation === dashboardRefreshGeneration.current && Array.isArray(next.tickets) && next.runtime && next.discovery) {
+      if (generation === dashboardRefreshGeneration.current && response.ok !== false && Array.isArray(next.tickets) && next.runtime && next.discovery) {
         setDashboard({ ...DEFAULT_DASHBOARD, ...next, activity: next.activity ?? [], providerCatalogs: next.providerCatalogs ?? [], proofs: next.proofs ?? DEFAULT_PROOFS });
+        setDashboardStatus("available");
+      } else if (generation === dashboardRefreshGeneration.current) {
+        setDashboardStatus("error");
       }
     } catch {
-      // Keep the explicit local fallback while the API is down.
+      if (generation === dashboardRefreshGeneration.current) setDashboardStatus("error");
     }
   }
 
@@ -310,15 +317,18 @@ export function App() {
       .then((data) => setAgents(data.agents))
       .catch(() => setAgents([]));
     void refreshDashboard();
+    let boardDisposed = false;
+    void readMissionControlBoard().then((result) => { if (!boardDisposed) setBoardLoad(result); });
     fetch("/api/version").then((response) => response.json()).then((data: { version?: unknown }) => {
       if (typeof data.version === "string") setRunningVersion(data.version);
     }).catch(() => setRunningVersion(null));
-    fetch("/api/setup").then((response) => response.json()).then((data: { firstRun?: unknown; steps?: { workSource?: unknown; codeHost?: unknown; agent?: unknown } }) => setSetup({ firstRun: data.firstRun === true, steps: { workSource: data.steps?.workSource === true, codeHost: data.steps?.codeHost === true, agent: data.steps?.agent === true } })).catch(() => setSetup(null));
+    fetch("/api/setup").then((response) => response.json()).then((data: { firstRun?: unknown; steps?: { workSource?: unknown; codeHost?: unknown; agent?: unknown } }) => setSetup(typeof data.firstRun === "boolean" ? { firstRun: data.firstRun, steps: { workSource: data.steps?.workSource === true, codeHost: data.steps?.codeHost === true, agent: data.steps?.agent === true } } : null)).catch(() => setSetup(null));
 
     const lastTaskId = localStorage.getItem(LAST_TASK_STORAGE_KEY);
     if (lastTaskId) {
       openTaskStream(lastTaskId);
     }
+    return () => { boardDisposed = true; };
   }, []);
 
   useEffect(() => () => eventSourceRef.current?.close(), []);
@@ -574,6 +584,10 @@ export function App() {
   const todayLabel = formatToday();
 
   if (setup?.firstRun) return <main className="sarathi-shell"><section className="dashboard"><div className="panel"><span className="eyebrow">First run</span><h1>Connect Adhiṣṭhāna</h1><ol><li><strong>1. Work source</strong> — {setup.steps.workSource ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect work source</button></li><li><strong>2. Code host</strong> — {setup.steps.codeHost ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect code host</button></li><li><strong>3. Agent</strong> — {setup.steps.agent ? "connected" : "not connected"} <button onClick={() => setView("command")}>Connect agent</button></li></ol></div></section></main>;
+
+  if (view === "command" && setup?.firstRun === false && (boardLoad.status === "available" || boardLoad.status === "error")) {
+    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} onAdvanced={() => setView("legacy")} onPause={() => { void togglePause(); }} onDecideAsk={(id, decision) => { void decideAsk(id, decision); }} />;
+  }
 
 
   if (view === "advanced-routing") {
