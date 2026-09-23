@@ -232,7 +232,9 @@ function formatToday(): string {
 export function App() {
   const [runningVersion, setRunningVersion] = useState<string | null>(null);
   const [agents, setAgents] = useState<AgentListItem[]>([]);
+  const [agentsStatus, setAgentsStatus] = useState<"loading" | "available" | "error">("loading");
   const [agentSlots, setAgentSlots] = useState<AgentSlot[]>([]);
+  const [agentSlotsStatus, setAgentSlotsStatus] = useState<"loading" | "available" | "error">("loading");
   const [dashboard, setDashboard] = useState<Dashboard>(DEFAULT_DASHBOARD);
   const [dashboardStatus, setDashboardStatus] = useState<"loading" | "available" | "error">("loading");
   const [boardLoad, setBoardLoad] = useState<BoardLoad>({ status: "loading" });
@@ -295,27 +297,34 @@ export function App() {
   async function refreshDashboard() {
     const generation = dashboardRefreshGeneration.current + 1;
     dashboardRefreshGeneration.current = generation;
-    try {
-      const [response, slotsResponse] = await Promise.all([fetch("/api/sarathi/dashboard"), fetch("/api/sarathi/agents")]);
-      const next = (await response.json()) as Partial<Dashboard>;
-      const slots = await slotsResponse.json() as { agents?: AgentSlot[] };
-      if (Array.isArray(slots.agents)) setAgentSlots(slots.agents);
-      if (generation === dashboardRefreshGeneration.current && response.ok !== false && Array.isArray(next.tickets) && next.runtime && next.discovery) {
+    const [dashboardRead, slotsRead] = await Promise.allSettled([
+      fetch("/api/sarathi/dashboard").then(async (response) => ({ response, data: await response.json() as Partial<Dashboard> })),
+      fetch("/api/sarathi/agents").then(async (response) => ({ response, data: await response.json() as { agents?: AgentSlot[] } }))
+    ]);
+    if (generation !== dashboardRefreshGeneration.current) return;
+    if (slotsRead.status === "fulfilled" && slotsRead.value.response.ok !== false && Array.isArray(slotsRead.value.data.agents)) {
+      setAgentSlots(slotsRead.value.data.agents);
+      setAgentSlotsStatus("available");
+    } else setAgentSlotsStatus("error");
+    if (dashboardRead.status === "fulfilled" && dashboardRead.value.response.ok !== false) {
+      const next = dashboardRead.value.data;
+      if (Array.isArray(next.tickets) && next.runtime && next.discovery) {
         setDashboard({ ...DEFAULT_DASHBOARD, ...next, activity: next.activity ?? [], providerCatalogs: next.providerCatalogs ?? [], proofs: next.proofs ?? DEFAULT_PROOFS });
         setDashboardStatus("available");
-      } else if (generation === dashboardRefreshGeneration.current) {
-        setDashboardStatus("error");
+        return;
       }
-    } catch {
-      if (generation === dashboardRefreshGeneration.current) setDashboardStatus("error");
     }
+    setDashboardStatus("error");
   }
 
   useEffect(() => {
     fetch("/api/agents")
-      .then((response) => response.json())
-      .then((data) => setAgents(data.agents))
-      .catch(() => setAgents([]));
+      .then(async (response) => ({ response, data: await response.json() as { agents?: AgentListItem[] } }))
+      .then(({ response, data }) => {
+        if (response.ok !== false && Array.isArray(data.agents)) { setAgents(data.agents); setAgentsStatus("available"); }
+        else setAgentsStatus("error");
+      })
+      .catch(() => setAgentsStatus("error"));
     void refreshDashboard();
     let boardDisposed = false;
     void readMissionControlBoard().then((result) => { if (!boardDisposed) setBoardLoad(result); });
@@ -586,7 +595,7 @@ export function App() {
   if (setup?.firstRun) return <main className="sarathi-shell"><section className="dashboard"><div className="panel"><span className="eyebrow">First run</span><h1>Connect Adhiṣṭhāna</h1><ol><li><strong>1. Work source</strong> — {setup.steps.workSource ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect work source</button></li><li><strong>2. Code host</strong> — {setup.steps.codeHost ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect code host</button></li><li><strong>3. Agent</strong> — {setup.steps.agent ? "connected" : "not connected"} <button onClick={() => setView("command")}>Connect agent</button></li></ol></div></section></main>;
 
   if (view === "command" && setup?.firstRun === false && (boardLoad.status === "available" || boardLoad.status === "error")) {
-    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} onAdvanced={() => setView("legacy")} onPause={() => { void togglePause(); }} onDecideAsk={(id, decision) => { void decideAsk(id, decision); }} />;
+    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} agents={agents} agentsStatus={agentsStatus} agentSlots={agentSlots} agentSlotsStatus={agentSlotsStatus} onAdvanced={() => setView("legacy")} onPause={() => { void togglePause(); }} onDecideAsk={(id, decision) => { void decideAsk(id, decision); }} />;
   }
 
 
