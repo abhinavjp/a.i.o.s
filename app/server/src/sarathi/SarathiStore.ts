@@ -7,6 +7,7 @@ import type { StoredTask } from "../TaskStore.js";
 import { defaultModelEnabled, isModelEligible } from "./ProviderCatalog.js";
 import { FLOOR_RULES, isFloorAskKind, isFloorRule } from "./DecisionFloor.js";
 import { riskOf, type AskRisk } from "./AskRisk.js";
+import type { MergeRequest, MergeRequestDiscussion } from "@aios/connectors";
 
 export type SarathiTicketStatus = "complete" | "blocked" | "unmeasured" | "pending";
 export type SpecialistStatus = "pending_approval" | "active";
@@ -66,6 +67,29 @@ export interface UpdateAuditEntry { action?: "rollback"; version: string; previo
 export interface ActivityEntry { id: string; occurredAt: string; agent: string; workItemId: string | null; what: string; dedupeKey?: string; }
 export interface StandingRule { id: string; label: string; askKind: string; scope: string | "all"; enabled: boolean; firedCount: number; permissionRule: PermissionRule; }
 
+export type GitLabDiscussionSyncState = "unconfigured" | "idle" | "syncing" | "available" | "failed";
+export interface GitLabDiscussionSyncStatus {
+  configured: boolean;
+  state: GitLabDiscussionSyncState;
+  stale: boolean;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastError: string | null;
+}
+export interface GitLabDiscussionObservation {
+  id: string;
+  workItemId: string;
+  mergeRequest: MergeRequest;
+  discussion: MergeRequestDiscussion;
+  askId: string | null;
+  firstObservedAt: string;
+  lastObservedAt: string;
+  status: "observed" | "not-observed" | "stale";
+}
+export interface GitLabDiscussionState { sync: GitLabDiscussionSyncStatus; observations: GitLabDiscussionObservation[]; }
+export interface GitLabDiscussionObservationInput { workItemId: string; mergeRequest: MergeRequest; discussion: MergeRequestDiscussion; }
+
 export interface SarathiDashboard {
   asks: PendingAsk[];
   automaticDecisions: AutomaticDecision[];
@@ -85,6 +109,7 @@ export interface SarathiDashboard {
   proofs: RuntimeProof[];
   controls: { manualPaused: boolean; changedAt: string | null };
   discovery: DiscoveryState;
+  gitLabDiscussions: GitLabDiscussionState;
   tickets: SarathiTicket[];
   specialists: Specialist[];
   recentTasks: Array<{
@@ -149,9 +174,12 @@ export interface SarathiStore {
   recordArtifactWritten(artifact: ArtifactReference, occurredAt?: string): ActivityEntry;
   recordUpdateAudit(entry: UpdateAuditEntry): UpdateAuditEntry;
   recordProof(proof: RuntimeProof): RuntimeProof;
+  markGitLabDiscussionSyncing(attemptedAt: string): GitLabDiscussionSyncStatus;
+  applyGitLabDiscussionObservationBatch(observations: ReadonlyArray<GitLabDiscussionObservationInput>, observedAt: string): { observations: number; asksCreated: number };
+  markGitLabDiscussionSyncFailed(failedAt: string, error: string): GitLabDiscussionSyncStatus;
 }
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 interface SarathiStoreDocument { schemaVersion: number; dashboard: SarathiDashboard; }
 const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   { fromVersion: 0, migrate: (document) => ({ ...document, schemaVersion: 1 }) },
@@ -161,6 +189,7 @@ const MIGRATIONS: ReadonlyArray<StoreMigration<SarathiStoreDocument>> = [
   , { fromVersion: 4, migrate: (document) => ({ ...document, schemaVersion: 5, dashboard: { ...document.dashboard, stallThresholds: document.dashboard.stallThresholds ?? defaultStallThresholds() } }) }
   , { fromVersion: 5, migrate: (document) => ({ ...document, schemaVersion: 6, dashboard: { ...document.dashboard, updateAudit: document.dashboard.updateAudit ?? [] } }) }
   , { fromVersion: 6, migrate: (document) => ({ ...document, schemaVersion: 7, dashboard: { ...document.dashboard, activity: document.dashboard.activity ?? [] } }) }
+  , { fromVersion: 7, migrate: (document) => ({ ...document, schemaVersion: 8, dashboard: { ...document.dashboard, gitLabDiscussions: document.dashboard.gitLabDiscussions ?? defaultGitLabDiscussionState() } }) }
 ];
 
 export class FileSarathiStore implements SarathiStore {
@@ -180,10 +209,121 @@ export class FileSarathiStore implements SarathiStore {
   }
 
   addPendingAsk(input: Omit<PendingAsk, "id" | "createdAt" | "risk">): PendingAsk {
+    const result = this.addPendingAskInternal(input, new Date().toISOString());
+    if (result.created) this.persist();
+    return clone(result.ask);
+  }
+
+  markGitLabDiscussionSyncing(attemptedAt: string): GitLabDiscussionSyncStatus {
+    const previous = this.state.gitLabDiscussions.sync;
+    this.state.gitLabDiscussions.sync = {
+      ...previous,
+      configured: true,
+      state: "syncing",
+      stale: previous.lastSuccessAt !== null,
+      lastAttemptAt: attemptedAt,
+      lastError: null
+    };
+    this.persist();
+    return clone(this.state.gitLabDiscussions.sync);
+  }
+
+  applyGitLabDiscussionObservationBatch(inputs: ReadonlyArray<GitLabDiscussionObservationInput>, observedAt: string): { observations: number; asksCreated: number } {
+    const previousDiscussions = clone(this.state.gitLabDiscussions);
+    const previousAsks = clone(this.state.asks);
+    const previousAudit = clone(this.state.askAudit);
+    try {
+      const collection = this.state.gitLabDiscussions.observations;
+      for (const observation of collection) observation.status = "not-observed";
+      let asksCreated = 0;
+      const seen = new Set<string>();
+      for (const input of inputs) {
+        const id = gitLabDiscussionIdentity(input.mergeRequest.repository, input.mergeRequest.number, input.discussion.discussionId);
+        if (seen.has(id)) continue;
+        seen.add(id);
+        const existingIndex = collection.findIndex((observation) => observation.id === id);
+        if (existingIndex >= 0) {
+          const existing = collection[existingIndex];
+          const askResult = existing.askId === null ? this.addGitLabDiscussionAsk(input, id, observedAt) : null;
+          if (askResult?.created) asksCreated += 1;
+          collection[existingIndex] = { ...existing, workItemId: input.workItemId, mergeRequest: clone(input.mergeRequest), discussion: clone(input.discussion), askId: askResult?.ask.id ?? existing.askId, lastObservedAt: observedAt, status: "observed" };
+          continue;
+        }
+
+        const askResult = this.addGitLabDiscussionAsk(input, id, observedAt);
+        if (askResult?.created) asksCreated += 1;
+        collection.push({
+          id,
+          workItemId: input.workItemId,
+          mergeRequest: clone(input.mergeRequest),
+          discussion: clone(input.discussion),
+          askId: askResult?.ask.id ?? null,
+          firstObservedAt: observedAt,
+          lastObservedAt: observedAt,
+          status: "observed"
+        });
+      }
+      const retiredAskIds = new Set(collection.filter((observation) => observation.askId && (observation.status === "not-observed" || observation.discussion.resolved)).map((observation) => observation.askId));
+      this.state.asks = this.state.asks.filter((ask) => !retiredAskIds.has(ask.id));
+      const previousSync = this.state.gitLabDiscussions.sync;
+      this.state.gitLabDiscussions.sync = {
+        ...previousSync,
+        configured: true,
+        state: "available",
+        stale: false,
+        lastSuccessAt: observedAt,
+        lastFailureAt: null,
+        lastError: null
+      };
+      this.persist();
+      return { observations: seen.size, asksCreated };
+    } catch (error) {
+      this.state.gitLabDiscussions = previousDiscussions;
+      this.state.asks = previousAsks;
+      this.state.askAudit = previousAudit;
+      throw error;
+    }
+  }
+
+  markGitLabDiscussionSyncFailed(failedAt: string, error: string): GitLabDiscussionSyncStatus {
+    const previous = this.state.gitLabDiscussions.sync;
+    this.state.gitLabDiscussions = {
+      ...this.state.gitLabDiscussions,
+      sync: { ...previous, configured: true, state: "failed", stale: previous.lastSuccessAt !== null, lastFailureAt: failedAt, lastError: error },
+      observations: this.state.gitLabDiscussions.observations.map((observation) => ({ ...observation, status: "stale" }))
+    };
+    this.persist();
+    return clone(this.state.gitLabDiscussions.sync);
+  }
+
+  private addGitLabDiscussionAsk(input: GitLabDiscussionObservationInput, id: string, observedAt: string): { ask: PendingAsk; created: boolean } | null {
+    const actionableNote = input.discussion.notes.find((note) => note.authorship === "human" && !note.system && note.resolvable && !note.resolved);
+    if (input.discussion.resolved || !actionableNote) return null;
+    return this.addPendingAskInternal({
+      kind: "gitlab.discussion.remediate",
+      workItemId: input.workItemId,
+      intent: {
+        tool: "gitlab",
+        operation: "discussion.remediate",
+        target: id,
+        context: {
+          workItemId: input.workItemId,
+          repository: input.mergeRequest.repository,
+          mergeRequestIid: String(input.mergeRequest.number),
+          discussionId: input.discussion.discussionId,
+          noteId: String(actionableNote.id),
+          body: actionableNote.body
+        }
+      }
+    }, observedAt);
+  }
+
+  private addPendingAskInternal(input: Omit<PendingAsk, "id" | "createdAt" | "risk">, createdAt: string): { ask: PendingAsk; created: boolean } {
     const existing = this.state.asks.find((ask) => ask.intent.tool === input.intent.tool && ask.intent.operation === input.intent.operation && ask.intent.target === input.intent.target && JSON.stringify(ask.intent.context) === JSON.stringify(input.intent.context));
-    if (existing) return clone(existing);
-    const ask = { ...input, risk: riskOf(input.kind), id: randomUUID(), createdAt: new Date().toISOString() };
-    this.state.asks.push(ask); this.persist(); return clone(ask);
+    if (existing) return { ask: existing, created: false };
+    const ask = { ...input, risk: riskOf(input.kind), id: randomUUID(), createdAt };
+    this.state.asks.push(ask);
+    return { ask, created: true };
   }
 
   getPendingAsk(id: string): PendingAsk | undefined { const ask = this.state.asks.find((candidate) => candidate.id === id); return ask && clone(ask); }
@@ -569,6 +709,7 @@ function defaultDashboard(): SarathiDashboard {
       lastCheckedAt: null,
       mergeRequests: []
     },
+    gitLabDiscussions: defaultGitLabDiscussionState(),
     tickets: TICKET_TITLES.map(([id, title]) => ({
       id,
       title,
@@ -607,6 +748,7 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.askAudit ??= [];
   state.updateAudit ??= [];
   state.activity ??= [];
+  state.gitLabDiscussions ??= defaultGitLabDiscussionState();
   state.standingRules ??= [];
   state.autopilot ??= defaultAutopilot();
   state.stallThresholds ??= defaultStallThresholds();
@@ -631,6 +773,15 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
 }
 
 function defaultAutopilot(): Autopilot { return { low: "ask", medium: "ask", high: "ask" }; }
+function defaultGitLabDiscussionState(): GitLabDiscussionState {
+  return {
+    sync: { configured: false, state: "unconfigured", stale: false, lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null },
+    observations: []
+  };
+}
+function gitLabDiscussionIdentity(projectId: string, mergeRequestIid: number, discussionId: string): string {
+  return `${encodeURIComponent(projectId)}:${mergeRequestIid}:${encodeURIComponent(discussionId)}`;
+}
 export function defaultStallThresholds(): StallThresholds { return { nudgeMinutes: 5, stopMinutes: 15 }; }
 
 function withFloorRules(state: SarathiDashboard): SarathiDashboard {

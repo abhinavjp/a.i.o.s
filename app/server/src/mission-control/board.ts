@@ -5,6 +5,7 @@ import type { WorkItemStore } from "../WorkItemStore.js";
 import type { ArtifactStore } from "../ArtifactStore.js";
 import type { PhaseStore } from "../PhaseStore.js";
 import type { TaskStore } from "../TaskStore.js";
+import type { SarathiStore } from "../sarathi/SarathiStore.js";
 
 type Available<T> = Extract<MissionControlRegion<T>, { status: "available" }>;
 
@@ -18,11 +19,30 @@ export function registerMissionControlBoardRoute(app: FastifyInstance, stores: {
   artifacts: ArtifactStore;
   phases: PhaseStore;
   tasks: TaskStore;
+  sarathi: SarathiStore;
   codeHost?: CodeHost;
 }): void {
   app.get("/api/mission-control/board", async (): Promise<MissionControlBoard> => {
+    const storedDiscussions = stores.sarathi.snapshot().gitLabDiscussions;
+    const gitLabDiscussions: MissionControlBoard["gitLabDiscussions"] = {
+      sync: storedDiscussions.sync,
+      observations: storedDiscussions.observations.map((observation) => ({
+        id: observation.id,
+        workItemId: observation.workItemId,
+        repository: observation.mergeRequest.repository,
+        mergeRequestIid: observation.mergeRequest.number,
+        mergeRequestTitle: observation.mergeRequest.title,
+        discussionId: observation.discussion.discussionId,
+        resolved: observation.discussion.resolved,
+        notes: observation.discussion.notes,
+        askId: observation.askId,
+        firstObservedAt: observation.firstObservedAt,
+        lastObservedAt: observation.lastObservedAt,
+        status: observation.status
+      }))
+    };
     const workItems = await region(() => stores.workItems.list());
-    if (workItems.status !== "available") return { workItems };
+    if (workItems.status !== "available") return { workItems, gitLabDiscussions };
     const items = await Promise.all(workItems.data.map(async (workItem): Promise<MissionControlBoardItem> => {
       const [phases, artifacts, mergeRequests] = await Promise.all([
         region(() => stores.phases.list(workItem.id).map((stored) => ({
@@ -44,6 +64,6 @@ export function registerMissionControlBoardRoute(app: FastifyInstance, stores: {
         mergeRequests
       };
     }));
-    return { workItems: { status: "available", data: items } };
+    return { workItems: { status: "available", data: items }, gitLabDiscussions };
   });
 }

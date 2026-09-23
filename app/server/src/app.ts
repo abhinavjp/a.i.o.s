@@ -31,6 +31,8 @@ import { FileArtifactStore, type ArtifactStore } from "./ArtifactStore.js";
 import { FilePhaseStore, type PhaseStore } from "./PhaseStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
 import { JiraSyncCoordinator, type JiraSyncScheduler } from "./JiraSyncCoordinator.js";
+import { GitLabDiscussionSyncCoordinator } from "./mission-control/GitLabDiscussionSyncCoordinator.js";
+import { registerGitLabDiscussionSyncRoutes } from "./mission-control/discussions.js";
 import { registerMissionControlBoardRoute } from "./mission-control/board.js";
 import { RUNNING_VERSION } from "./Version.js";
 import { DEFAULT_RELEASE_CHANNEL_PUBLIC_KEY, FetchReleaseChannelTransport, FileReleaseChannelStore, type ReleaseChannelStore, type ReleaseChannelTransport, ReleaseChannelManager } from "./ReleaseChannel.js";
@@ -50,6 +52,9 @@ export interface BuildAppOptions {
   jiraSyncIntervalMs?: number;
   jiraSyncNow?: () => number;
   jiraSyncScheduler?: JiraSyncScheduler;
+  gitLabDiscussionSyncIntervalMs?: number;
+  gitLabDiscussionSyncNow?: () => number;
+  gitLabDiscussionSyncScheduler?: JiraSyncScheduler;
   codeHost?: CodeHost;
   credentialStore?: CredentialReferenceStore;
   credentialManager?: CredentialManager;
@@ -90,6 +95,14 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     now: options.jiraSyncNow ?? (options.runtimeClock ? () => options.runtimeClock!.now() : undefined),
     scheduler: options.jiraSyncScheduler
   });
+  const gitLabDiscussionSync = new GitLabDiscussionSyncCoordinator({
+    codeHost: options.codeHost,
+    workItems: workItemStore,
+    sarathi: sarathiStore,
+    intervalMs: options.gitLabDiscussionSyncIntervalMs,
+    now: options.gitLabDiscussionSyncNow ?? (options.runtimeClock ? () => options.runtimeClock!.now() : undefined),
+    scheduler: options.gitLabDiscussionSyncScheduler
+  });
   const artifactStore = options.artifactStore ?? new FileArtifactStore(join(dataDirectory, "artifacts.json"));
   artifactStore.setActivityStore(sarathiStore);
   const phaseStore = options.phaseStore ?? new FilePhaseStore(join(dataDirectory, "phases.json"));
@@ -124,8 +137,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     async execute(intent) { if (intent.tool === "system-update") { await updateManager.apply(intent.context); return { output: "update installed" }; } throw new Error("system update execution is not configured"); }
   };
   const permissionEngine = new PermissionEngine(sarathiStore, withDeliveryPipelineTools(permissionTools), options.permissionSemanticClassifier);
-  app.addHook("onReady", async () => { await Promise.all([providerCatalogManager.refreshAll(), jiraSync.start()]); });
-  app.addHook("onClose", async () => jiraSync.close());
+  app.addHook("onReady", async () => { await Promise.all([providerCatalogManager.refreshAll(), jiraSync.start(), gitLabDiscussionSync.start()]); });
+  app.addHook("onClose", async () => { await Promise.all([jiraSync.close(), gitLabDiscussionSync.close()]); });
   // Task history is authoritative if the dashboard projection lagged a crash.
   for (const activity of workItemStore.stageActivity()) sarathiStore.recordStageState(activity);
   for (const activity of artifactStore.activityEntries()) sarathiStore.recordArtifactWritten(activity.artifact, activity.occurredAt);
@@ -166,7 +179,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore, permissionEngine, applyTrackChange, jiraSync);
-  registerMissionControlBoardRoute(app, { workItems: workItemStore, artifacts: artifactStore, phases: phaseStore, tasks: taskStore, codeHost: options.codeHost });
+  registerGitLabDiscussionSyncRoutes(app, gitLabDiscussionSync, sarathiStore);
+  registerMissionControlBoardRoute(app, { workItems: workItemStore, artifacts: artifactStore, phases: phaseStore, tasks: taskStore, sarathi: sarathiStore, codeHost: options.codeHost });
   registerCredentialRoutes(app, credentialManager);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
   app.get("/api/update-audit", async () => ({ entries: sarathiStore.snapshot().updateAudit }));

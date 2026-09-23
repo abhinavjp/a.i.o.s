@@ -29,3 +29,10 @@
 - Fixture provenance: discussion/note examples in `connectors/tests/ConnectorConfigurator.test.ts` are local synthetic fixtures shaped from the GitLab v4 discussions API; the pagination headers follow GitLab REST API documentation. They are not live observations.
 - Proof: 12 connector tests, 276 repository tests, connector/server/client/contracts typechecks, and `git diff --check` passed. Live self-managed GitLab remains `UNMEASURED`.
 - Direct review: kept the public fake-host MR response compatible with the existing route assertion; no external GitLab write method was added. No blocking scoped finding remains.
+
+## TSK-004
+
+- TDD RED: six initial cases failed for absent startup asks, sync routes and durable state. Direct review added failing cases for resolution/absence retirement, non-resolvable human notes and first actionable transition after an initially resolved observation.
+- GREEN: schema v8 migrates v7 documents additively; one startup/manual/interval coordinator collects complete linked MR/discussion reads, applies a durable observation batch, creates at most one ask per stable project/MR/discussion identity, and records stale failure/recovery state. Resolved or absent observations retire pending asks while preserving their identity/history; a previously resolved thread receives its first ask when it becomes actionable.
+- Proof: 9 focused discussion tests; 285 repository tests across 47 files; server, contracts and client typechecks; `git diff --check`. Scoped agent run also passed 34 tests across discussion, board, work-item route and migration files.
+- Direct review: fixed the three ask-lifecycle gaps above and updated the future-schema rejection fixture to v9 after the additive v8 migration. No blocking scoped finding remains. Live self-managed GitLab polling is `UNMEASURED`.

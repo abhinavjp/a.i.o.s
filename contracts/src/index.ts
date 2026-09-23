@@ -479,7 +479,44 @@ export interface MissionControlBoardItem {
   artifacts: MissionControlRegion<ReadonlyArray<ArtifactReference>>;
   mergeRequests: MissionControlRegion<ReadonlyArray<{ repository: string; number: number; title: string; branch: string; state: string; pipelineResult: "passed" | "failed" | "running"; jobsCompleted: number; jobsTotal: number }>>;
 }
-export interface MissionControlBoard { workItems: MissionControlRegion<ReadonlyArray<MissionControlBoardItem>>; }
+export interface MissionControlDiscussionNote {
+  id: number;
+  body: string;
+  author: { id: number | null; username: string | null; name: string | null } | null;
+  authorship: "human" | "system";
+  system: boolean;
+  resolvable: boolean;
+  resolved: boolean;
+  createdAt: string;
+  updatedAt: string;
+}
+export interface MissionControlDiscussionObservation {
+  id: string;
+  workItemId: string;
+  repository: string;
+  mergeRequestIid: number;
+  mergeRequestTitle: string;
+  discussionId: string;
+  resolved: boolean;
+  notes: ReadonlyArray<MissionControlDiscussionNote>;
+  askId: string | null;
+  firstObservedAt: string;
+  lastObservedAt: string;
+  status: "observed" | "not-observed" | "stale";
+}
+export interface MissionControlDiscussionSyncStatus {
+  configured: boolean;
+  state: "unconfigured" | "idle" | "syncing" | "available" | "failed";
+  stale: boolean;
+  lastAttemptAt: string | null;
+  lastSuccessAt: string | null;
+  lastFailureAt: string | null;
+  lastError: string | null;
+}
+export interface MissionControlBoard {
+  workItems: MissionControlRegion<ReadonlyArray<MissionControlBoardItem>>;
+  gitLabDiscussions: { sync: MissionControlDiscussionSyncStatus; observations: ReadonlyArray<MissionControlDiscussionObservation> };
+}
 
 export const ADHISTHANA_BRANCH_PREFIX = "adhisthana/";
 export function adhisthanaBranch(workSourceKey: string, stage: string): string { return `${ADHISTHANA_BRANCH_PREFIX}${workSourceKey}/${stage}`; }
