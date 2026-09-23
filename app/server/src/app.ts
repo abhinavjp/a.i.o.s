@@ -30,6 +30,7 @@ import { FileWorkItemStore, type WorkItemStore } from "./WorkItemStore.js";
 import { FileArtifactStore, type ArtifactStore } from "./ArtifactStore.js";
 import { FilePhaseStore, type PhaseStore } from "./PhaseStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
+import { registerMissionControlBoardRoute } from "./mission-control/board.js";
 import { RUNNING_VERSION } from "./Version.js";
 import { DEFAULT_RELEASE_CHANNEL_PUBLIC_KEY, FetchReleaseChannelTransport, FileReleaseChannelStore, type ReleaseChannelStore, type ReleaseChannelTransport, ReleaseChannelManager } from "./ReleaseChannel.js";
 import { registerReleaseChannelRoutes } from "./routes/releaseChannel.js";
@@ -153,6 +154,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   }, agentSlots);
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore, permissionEngine, applyTrackChange);
+  registerMissionControlBoardRoute(app, { workItems: workItemStore, artifacts: artifactStore, phases: phaseStore, tasks: taskStore, codeHost: options.codeHost });
   registerCredentialRoutes(app, credentialManager);
   registerReleaseChannelRoutes(app, releaseChannel, permissionEngine);
   app.get("/api/update-audit", async () => ({ entries: sarathiStore.snapshot().updateAudit }));

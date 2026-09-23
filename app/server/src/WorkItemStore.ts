@@ -6,16 +6,19 @@ import { runMigrations, type StoreMigration } from "./StoreMigrations.js";
 
 export interface StageActivity { id: string; workItemId: string; stageKind: StageKind; state: StageState; occurredAt: string; }
 interface WorkItemDocument { schemaVersion: number; workItems: WorkItem[]; stageActivity?: StageActivity[]; }
-const SCHEMA_VERSION = 3;
+const SCHEMA_VERSION = 4;
 const MIGRATIONS: ReadonlyArray<StoreMigration<WorkItemDocument>> = [
   { fromVersion: 1, migrate: (document) => ({ ...document, schemaVersion: 2, workItems: document.workItems.map((workItem) => ({ ...workItem, stages: workItem.stages ?? [] })) }) },
-  { fromVersion: 2, migrate: (document) => ({ ...document, schemaVersion: 3, stageActivity: document.stageActivity ?? [] }) }
+  { fromVersion: 2, migrate: (document) => ({ ...document, schemaVersion: 3, stageActivity: document.stageActivity ?? [] }) },
+  { fromVersion: 3, migrate: (document) => ({ ...document, schemaVersion: 4, workItems: document.workItems.map((item) => ({ ...item, sourceObservation: item.sourceObservation ?? (item.workSourceKey ? { source: "jira", status: "unobserved", lastObservedAt: null, lastCheckedAt: null, lastState: null } : null) })) }) }
 ];
 
 export interface WorkItemStore {
   list(): WorkItem[];
   create(input: { title: string; repositories: string[] }): WorkItem;
   import(input: { workSourceKey: string; title: string }): WorkItem | null;
+  upsertSourceObservation(input: { workSourceKey: string; title: string; state: string; observedAt: string }): WorkItem;
+  markSourceMissing(observedKeys: ReadonlyArray<string>, checkedAt: string): void;
   approveTrack(workItemId: string, stages: StageKind[]): WorkItem;
   insertStage(workItemId: string, stageKind: StageKind, index: number, expectedTrack: StageKind[], proposedTrack: StageKind[]): WorkItem;
   setStageState(workItemId: string, stageKind: StageKind, state: StageState): WorkItem;
@@ -25,12 +28,14 @@ export interface WorkItemStore {
 export class FileWorkItemStore implements WorkItemStore {
   private workItems: WorkItem[];
   private activity: StageActivity[];
+  private readonly documentExtras: Record<string, unknown>;
   private migratedOnOpen = false;
 
   constructor(private readonly filePath: string) {
     const document = this.load();
     this.workItems = document.workItems;
     this.activity = document.stageActivity;
+    this.documentExtras = document.extras;
     if (this.migratedOnOpen) this.persist();
   }
 
@@ -40,7 +45,7 @@ export class FileWorkItemStore implements WorkItemStore {
   create(input: { title: string; repositories: string[] }): WorkItem {
     const workItem: WorkItem = {
       id: randomUUID(), title: input.title.trim(), repositories: [...input.repositories],
-      workSourceKey: null, track: null, stages: [], createdAt: new Date().toISOString()
+      workSourceKey: null, track: null, stages: [], createdAt: new Date().toISOString(), sourceObservation: null
     };
     this.workItems.push(workItem);
     this.persist();
@@ -49,8 +54,34 @@ export class FileWorkItemStore implements WorkItemStore {
 
   import(input: { workSourceKey: string; title: string }): WorkItem | null {
     if (this.workItems.some((workItem) => workItem.workSourceKey === input.workSourceKey)) return null;
-    const workItem: WorkItem = { id: randomUUID(), title: input.title, repositories: [], workSourceKey: input.workSourceKey, track: null, stages: [], createdAt: new Date().toISOString() };
+    const workItem: WorkItem = { id: randomUUID(), title: input.title, repositories: [], workSourceKey: input.workSourceKey, track: null, stages: [], createdAt: new Date().toISOString(), sourceObservation: { source: "jira", status: "unobserved", lastObservedAt: null, lastCheckedAt: null, lastState: null } };
     this.workItems.push(workItem); this.persist(); return clone(workItem);
+  }
+
+  upsertSourceObservation(input: { workSourceKey: string; title: string; state: string; observedAt: string }): WorkItem {
+    if (!input.workSourceKey.trim() || !input.title.trim() || !input.state.trim() || !Number.isFinite(Date.parse(input.observedAt))) throw new Error("source observation is incomplete");
+    const index = this.workItems.findIndex((item) => item.workSourceKey === input.workSourceKey);
+    const observation = { source: "jira" as const, status: "observed" as const, lastObservedAt: input.observedAt, lastCheckedAt: input.observedAt, lastState: input.state };
+    if (index < 0) {
+      const item: WorkItem = { id: randomUUID(), title: input.title, repositories: [], workSourceKey: input.workSourceKey, track: null, stages: [], createdAt: new Date().toISOString(), sourceObservation: observation };
+      this.workItems.push(item); this.persist(); return clone(item);
+    }
+    const current = this.workItems[index];
+    const updated = { ...current, title: input.title, sourceObservation: observation };
+    if (JSON.stringify(current) !== JSON.stringify(updated)) { this.workItems[index] = updated; this.persist(); }
+    return clone(updated);
+  }
+
+  markSourceMissing(observedKeys: ReadonlyArray<string>, checkedAt: string): void {
+    if (!Number.isFinite(Date.parse(checkedAt))) throw new Error("source check time is invalid");
+    const seen = new Set(observedKeys);
+    let changed = false;
+    this.workItems = this.workItems.map((item) => {
+      if (!item.workSourceKey || seen.has(item.workSourceKey) || item.sourceObservation?.status === "missing") return item;
+      changed = true;
+      return { ...item, sourceObservation: { source: "jira" as const, status: "missing" as const, lastObservedAt: item.sourceObservation?.lastObservedAt ?? null, lastCheckedAt: checkedAt, lastState: item.sourceObservation?.lastState ?? null } };
+    });
+    if (changed) this.persist();
   }
 
   approveTrack(workItemId: string, stageKinds: StageKind[]): WorkItem {
@@ -95,20 +126,21 @@ export class FileWorkItemStore implements WorkItemStore {
     return clone(updated);
   }
 
-  private load(): Required<Pick<WorkItemDocument, "workItems" | "stageActivity">> {
-    if (!existsSync(this.filePath)) return { workItems: [], stageActivity: [] };
+  private load(): Required<Pick<WorkItemDocument, "workItems" | "stageActivity">> & { extras: Record<string, unknown> } {
+    if (!existsSync(this.filePath)) return { workItems: [], stageActivity: [], extras: {} };
     const parsed = JSON.parse(readFileSync(this.filePath, "utf8")) as WorkItemDocument;
     if (!parsed || typeof parsed.schemaVersion !== "number" || !Array.isArray(parsed.workItems)) throw new Error(`Invalid work-item store document: ${this.filePath}`);
     if (parsed.schemaVersion > SCHEMA_VERSION) throw new Error(`Work-item store schema version ${parsed.schemaVersion} is newer than supported version ${SCHEMA_VERSION}`);
     const migrated = runMigrations(parsed, SCHEMA_VERSION, MIGRATIONS);
     this.migratedOnOpen = migrated.schemaVersion !== parsed.schemaVersion;
-    return { workItems: clone(migrated.workItems), stageActivity: clone(migrated.stageActivity ?? []) };
+    const { schemaVersion: _schemaVersion, workItems, stageActivity, ...extras } = migrated as WorkItemDocument & Record<string, unknown>;
+    return { workItems: clone(workItems), stageActivity: clone(stageActivity ?? []), extras: clone(extras) };
   }
 
   private persist(): void {
     mkdirSync(dirname(this.filePath), { recursive: true });
     const temporaryPath = `${this.filePath}.${process.pid}.tmp`;
-    writeFileSync(temporaryPath, JSON.stringify({ schemaVersion: SCHEMA_VERSION, workItems: this.workItems, stageActivity: this.activity }, null, 2));
+    writeFileSync(temporaryPath, JSON.stringify({ ...this.documentExtras, schemaVersion: SCHEMA_VERSION, workItems: this.workItems, stageActivity: this.activity }, null, 2));
     renameSync(temporaryPath, this.filePath);
   }
 }

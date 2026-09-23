@@ -451,6 +451,14 @@ export interface AuthoredArtifactReference extends ArtifactReferenceBase { kind:
 export interface DerivedArtifactReference extends ArtifactReferenceBase { kind: "derived"; codeHostView: string; }
 export type ArtifactReference = AuthoredArtifactReference | DerivedArtifactReference;
 
+export interface WorkSourceObservation {
+  source: "jira";
+  status: "unobserved" | "observed" | "missing";
+  lastObservedAt: string | null;
+  lastCheckedAt: string | null;
+  lastState: string | null;
+}
+
 export interface WorkItem {
   id: string;
   title: string;
@@ -459,7 +467,19 @@ export interface WorkItem {
   track: Track | null;
   stages: ReadonlyArray<Stage>;
   createdAt: string;
+  sourceObservation?: WorkSourceObservation | null;
 }
+
+export type MissionControlRegion<T> = { status: "available"; data: T } | { status: "unavailable" | "error"; reason: string };
+export interface MissionControlBoardItem {
+  workItem: WorkItem;
+  stages: { completed: number; total: number };
+  tasks: { completed: number; total: number } | null;
+  phases: MissionControlRegion<ReadonlyArray<{ stageKind: StageKind; phase: Phase; tasks: ReadonlyArray<{ taskId: string; name: string; status: TaskStatus }> }>>;
+  artifacts: MissionControlRegion<ReadonlyArray<ArtifactReference>>;
+  mergeRequests: MissionControlRegion<ReadonlyArray<{ repository: string; number: number; title: string; branch: string; state: string; pipelineResult: "passed" | "failed" | "running"; jobsCompleted: number; jobsTotal: number }>>;
+}
+export interface MissionControlBoard { workItems: MissionControlRegion<ReadonlyArray<MissionControlBoardItem>>; }
 
 export const ADHISTHANA_BRANCH_PREFIX = "adhisthana/";
 export function adhisthanaBranch(workSourceKey: string, stage: string): string { return `${ADHISTHANA_BRANCH_PREFIX}${workSourceKey}/${stage}`; }
