@@ -17,7 +17,8 @@ import type {
 import { RoutingPage } from "./routing/RoutingPage.js";
 import { WorkItemsPage } from "./work-items/WorkItemsPage.js";
 import { MissionControlShell } from "./mission-control/MissionControlShell.js";
-import { decideCanonicalAsk, readMissionControlBoard, resolveCanonicalStandingRuleSuggestion, saveCanonicalAutopilot, setCanonicalStandingRule, undoCanonicalAutomaticDecision, type AutopilotSettings, type BoardLoad } from "./mission-control/api.js";
+import { ConnectorCenter } from "./mission-control/ConnectorCenter.js";
+import { decideCanonicalAsk, readConnectorOverview, readMissionControlBoard, refreshGitLabDiscussions, refreshJiraWorkItems, resolveCanonicalStandingRuleSuggestion, saveCanonicalAutopilot, saveCredentialToKeychain, setCanonicalStandingRule, undoCanonicalAutomaticDecision, type AutopilotSettings, type BoardLoad, type ConnectorOverview } from "./mission-control/api.js";
 import "./App.css";
 
 type AgentListItem = AgentInfo & { health: HealthStatus };
@@ -242,6 +243,7 @@ export function App() {
   const [dashboard, setDashboard] = useState<Dashboard>(DEFAULT_DASHBOARD);
   const [dashboardStatus, setDashboardStatus] = useState<"loading" | "available" | "error">("loading");
   const [boardLoad, setBoardLoad] = useState<BoardLoad>({ status: "loading" });
+  const [connectorOverview, setConnectorOverview] = useState<ConnectorOverview>({ workSource: { status: "loading" }, codeHost: { status: "loading" }, jiraSync: { status: "loading" }, gitLabSync: { status: "loading" } });
   const [task, setTask] = useState("");
   const [taskRouting, setTaskRouting] = useState({ specialistId: "", workflowId: "", capabilityTag: "", overridePrimary: false, primaryModel: "fake", overrideFallback: false, fallbackModel: "" });
   const [status, setStatus] = useState<RunStatus>("idle");
@@ -272,8 +274,10 @@ export function App() {
   const [routeMessage, setRouteMessage] = useState<string | null>(null);
   const [proofMessage, setProofMessage] = useState<string | null>(null);
   const [setup, setSetup] = useState<{ firstRun: boolean; steps: { workSource: boolean; codeHost: boolean; agent: boolean } } | null>(null);
+  const [setupDismissed, setSetupDismissed] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const dashboardRefreshGeneration = useRef(0);
+  const connectorRefreshGeneration = useRef(0);
 
   function openTaskStream(taskId: string) {
     eventSourceRef.current?.close();
@@ -321,6 +325,35 @@ export function App() {
     setDashboardStatus("error");
   }
 
+  async function refreshConnectorOverview() {
+    const generation = connectorRefreshGeneration.current + 1;
+    connectorRefreshGeneration.current = generation;
+    const next = await readConnectorOverview();
+    if (generation === connectorRefreshGeneration.current) setConnectorOverview(next);
+  }
+
+  async function refreshMissionControlBoard() {
+    setBoardLoad(await readMissionControlBoard());
+  }
+
+  async function refreshJiraFromMissionControl() {
+    const result = await refreshJiraWorkItems();
+    await Promise.all([refreshConnectorOverview(), refreshDashboard(), refreshMissionControlBoard()]);
+    return result;
+  }
+
+  async function refreshGitLabFromMissionControl() {
+    const result = await refreshGitLabDiscussions();
+    await Promise.all([refreshConnectorOverview(), refreshDashboard(), refreshMissionControlBoard()]);
+    return result;
+  }
+
+  async function saveConnectorCredential(reference: string, value: string) {
+    const result = await saveCredentialToKeychain(reference, value);
+    await refreshConnectorOverview();
+    return result;
+  }
+
   useEffect(() => {
     fetch("/api/agents")
       .then(async (response) => ({ response, data: await response.json() as { agents?: AgentListItem[] } }))
@@ -330,8 +363,8 @@ export function App() {
       })
       .catch(() => setAgentsStatus("error"));
     void refreshDashboard();
-    let boardDisposed = false;
-    void readMissionControlBoard().then((result) => { if (!boardDisposed) setBoardLoad(result); });
+    void refreshMissionControlBoard();
+    void refreshConnectorOverview();
     fetch("/api/version").then((response) => response.json()).then((data: { version?: unknown }) => {
       if (typeof data.version === "string") setRunningVersion(data.version);
     }).catch(() => setRunningVersion(null));
@@ -341,7 +374,7 @@ export function App() {
     if (lastTaskId) {
       openTaskStream(lastTaskId);
     }
-    return () => { boardDisposed = true; };
+    return () => { connectorRefreshGeneration.current += 1; };
   }, []);
 
   useEffect(() => () => eventSourceRef.current?.close(), []);
@@ -611,10 +644,10 @@ export function App() {
   const latestUsage = dashboard.recentTasks.find((task) => task.usage)?.usage;
   const todayLabel = formatToday();
 
-  if (setup?.firstRun) return <main className="sarathi-shell"><section className="dashboard"><div className="panel"><span className="eyebrow">First run</span><h1>Connect Adhiṣṭhāna</h1><ol><li><strong>1. Work source</strong> — {setup.steps.workSource ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect work source</button></li><li><strong>2. Code host</strong> — {setup.steps.codeHost ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect code host</button></li><li><strong>3. Agent</strong> — {setup.steps.agent ? "connected" : "not connected"} <button onClick={() => setView("command")}>Connect agent</button></li></ol></div></section></main>;
+  if (setup?.firstRun && !setupDismissed && view !== "legacy") return <ConnectorCenter overview={connectorOverview} agents={agents.map((agent) => ({ displayName: agent.displayName, health: agent.health }))} agentsStatus={agentsStatus} isSetup onRefreshJira={refreshJiraFromMissionControl} onRefreshGitLab={refreshGitLabFromMissionControl} onSaveCredential={saveConnectorCredential} onOpenAgentSettings={() => setView("legacy")} onContinue={() => { setSetupDismissed(true); setView("command"); }} />;
 
-  if (view === "command" && setup?.firstRun === false && (boardLoad.status === "available" || boardLoad.status === "error")) {
-    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} agents={agents} agentsStatus={agentsStatus} agentSlots={agentSlots} agentSlotsStatus={agentSlotsStatus} onAdvanced={() => setView("legacy")} onPause={() => { void togglePause(); }} onDecideAsk={decideAsk} onAutopilotChange={changeAutopilot} onStandingRuleToggle={toggleStandingRule} onResolveSuggestion={resolveStandingRuleSuggestion} onUndoAutomaticDecision={undoAutomaticDecision} />;
+  if (view === "command" && (setup?.firstRun === false || setupDismissed) && (boardLoad.status === "available" || boardLoad.status === "error")) {
+    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} agents={agents} agentsStatus={agentsStatus} agentSlots={agentSlots} agentSlotsStatus={agentSlotsStatus} connectorOverview={connectorOverview} onRefreshConnections={() => { void refreshConnectorOverview(); }} onRefreshJira={refreshJiraFromMissionControl} onRefreshGitLab={refreshGitLabFromMissionControl} onSaveCredential={saveConnectorCredential} onOpenAgentSettings={() => setView("legacy")} onAdvanced={() => setView("legacy")} onPause={() => { void togglePause(); }} onDecideAsk={decideAsk} onAutopilotChange={changeAutopilot} onStandingRuleToggle={toggleStandingRule} onResolveSuggestion={resolveStandingRuleSuggestion} onUndoAutomaticDecision={undoAutomaticDecision} />;
   }
 
 
@@ -646,6 +679,7 @@ export function App() {
       </aside>
 
       <main className="dashboard" id="command">
+        {setup?.firstRun && !setupDismissed && view === "legacy" && <section className="panel mc-setup-recovery"><div className="panel-heading"><div><span className="eyebrow">Setup</span><h2>Agent settings</h2></div><button type="button" onClick={() => setView("command")}>Back to setup</button></div></section>}
         <header className="topbar">
           <div><span className="eyebrow">{todayLabel}</span><p className="topbar-title">Operator view <span>/</span> Today</p></div>
           <div className="topbar-actions">

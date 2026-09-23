@@ -7,6 +7,18 @@ export type BoardLoad =
   | { status: "unsupported" };
 
 export type ActionResult = { ok: true } | { ok: false; message: string };
+export type ConnectorRead<T> = { status: "loading" } | { status: "available"; data: T } | { status: "unconfigured" } | { status: "error"; message: string };
+export type ConnectorConnection = { siteUrl: string; credentialReference: string; daysUntilExpiry: number | null; expiresSoon: boolean };
+export type JiraSyncEvidence = { configured: boolean; state: "unconfigured" | "idle" | "syncing" | "available" | "failed"; lastAttemptAt: string | null; lastSuccessAt: string | null; lastFailureAt: string | null; failed: boolean };
+export type GitLabSyncEvidence = Pick<MissionControlBoard["gitLabDiscussions"]["sync"], "configured" | "state" | "stale" | "lastAttemptAt" | "lastSuccessAt" | "lastFailureAt"> & { failed: boolean };
+export interface ConnectorOverview {
+  workSource: ConnectorRead<ConnectorConnection>;
+  codeHost: ConnectorRead<ConnectorConnection>;
+  jiraSync: ConnectorRead<JiraSyncEvidence>;
+  gitLabSync: ConnectorRead<GitLabSyncEvidence>;
+}
+export type JiraRefreshResult = { ok: true; imported: number; updated: number; skipped: number; missing: number } | { ok: false; message: string };
+export type DiscussionRefreshResult = ActionResult;
 export type DecisionTier = "ask" | "automatic";
 export type AutopilotSettings = { low: DecisionTier; medium: DecisionTier; high: DecisionTier };
 
@@ -60,6 +72,114 @@ export async function readMissionControlBoard(): Promise<BoardLoad> {
     return { status: "error", message: error instanceof Error ? error.message : "Mission Control is unavailable" };
   }
 }
+
+export async function readConnectorOverview(): Promise<ConnectorOverview> {
+  const [workSource, codeHost, jiraSync, gitLabSync] = await Promise.all([
+    readConnection("/api/work-items/connection"),
+    readConnection("/api/code-host/connection"),
+    readJiraSync(),
+    readGitLabSync()
+  ]);
+  return { workSource, codeHost, jiraSync, gitLabSync };
+}
+
+export async function saveCredentialToKeychain(reference: string, value: string): Promise<ActionResult> {
+  try {
+    const response = await fetch("/api/credentials/keychain", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ reference: reference.trim(), value })
+    });
+    if (!response.ok) return { ok: false, message: "Credential could not be stored. Check local keychain availability." };
+    return { ok: true };
+  } catch {
+    return { ok: false, message: "Credential could not be stored. Check local keychain availability." };
+  }
+}
+
+export async function refreshJiraWorkItems(): Promise<JiraRefreshResult> {
+  try {
+    const response = await fetch("/api/work-items/import", { method: "POST" });
+    if (!response.ok) return { ok: false, message: `Jira refresh failed (${response.status}). Check the connection and credential reference.` };
+    const data: unknown = await response.json();
+    if (!isJiraCountResult(data)) return { ok: false, message: "Jira refresh returned an incomplete result." };
+    return { ok: true, imported: data.imported, updated: data.updated, skipped: data.skipped, missing: data.missing };
+  } catch {
+    return { ok: false, message: "Jira refresh is unavailable. Check the connection and credential reference." };
+  }
+}
+
+export async function refreshGitLabDiscussions(): Promise<DiscussionRefreshResult> {
+  try {
+    const response = await fetch("/api/code-host/discussions/sync", { method: "POST" });
+    if (!response.ok) return { ok: false, message: `GitLab discussion refresh failed (${response.status}).` };
+    return { ok: true };
+  } catch {
+    return { ok: false, message: "GitLab discussion refresh is unavailable." };
+  }
+}
+
+async function readConnection(path: string): Promise<ConnectorRead<ConnectorConnection>> {
+  try {
+    const response = await fetch(path);
+    if (!response.ok) return { status: "error", message: "Connection check unavailable." };
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("connection" in body)) return { status: "error", message: "Connection check returned an incomplete result." };
+    const connection = (body as { connection?: unknown }).connection;
+    if (connection === null) return { status: "unconfigured" };
+    if (!connection || typeof connection !== "object") return { status: "error", message: "Connection check returned an incomplete result." };
+    const value = connection as Partial<ConnectorConnection>;
+    if (typeof value.siteUrl !== "string" || typeof value.credentialReference !== "string" ||
+      !(value.daysUntilExpiry === null || typeof value.daysUntilExpiry === "number" && Number.isFinite(value.daysUntilExpiry)) || typeof value.expiresSoon !== "boolean") {
+      return { status: "error", message: "Connection check returned an incomplete result." };
+    }
+    return { status: "available", data: { siteUrl: value.siteUrl, credentialReference: value.credentialReference, daysUntilExpiry: value.daysUntilExpiry, expiresSoon: value.expiresSoon } };
+  } catch {
+    return { status: "error", message: "Connection check unavailable." };
+  }
+}
+
+async function readJiraSync(): Promise<ConnectorRead<JiraSyncEvidence>> {
+  try {
+    const response = await fetch("/api/work-items/sync");
+    if (!response.ok) return { status: "error", message: "Jira sync status unavailable." };
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("sync" in body)) return { status: "error", message: "Jira sync status is incomplete." };
+    const sync = (body as { sync?: unknown }).sync;
+    if (!sync || typeof sync !== "object") return { status: "error", message: "Jira sync status is incomplete." };
+    const value = sync as Partial<JiraSyncEvidence> & { lastError?: unknown };
+    if (typeof value.configured !== "boolean" || !isJiraSyncState(value.state) || !isNullableString(value.lastAttemptAt) || !isNullableString(value.lastSuccessAt) || !isNullableString(value.lastFailureAt)) return { status: "error", message: "Jira sync status is incomplete." };
+    return { status: "available", data: { configured: value.configured, state: value.state, lastAttemptAt: value.lastAttemptAt, lastSuccessAt: value.lastSuccessAt, lastFailureAt: value.lastFailureAt, failed: value.state === "failed" || typeof value.lastError === "string" } };
+  } catch {
+    return { status: "error", message: "Jira sync status unavailable." };
+  }
+}
+
+async function readGitLabSync(): Promise<ConnectorRead<GitLabSyncEvidence>> {
+  try {
+    const response = await fetch("/api/code-host/discussions/sync");
+    if (!response.ok) return { status: "error", message: "GitLab discussion sync status unavailable." };
+    const body: unknown = await response.json();
+    if (!body || typeof body !== "object" || !("sync" in body)) return { status: "error", message: "GitLab discussion sync status is incomplete." };
+    const sync = (body as { sync?: unknown }).sync;
+    if (!sync || typeof sync !== "object") return { status: "error", message: "GitLab discussion sync status is incomplete." };
+    const value = sync as Partial<MissionControlBoard["gitLabDiscussions"]["sync"]>;
+    if (typeof value.configured !== "boolean" || !isGitLabSyncState(value.state) || typeof value.stale !== "boolean" || !isNullableString(value.lastAttemptAt) || !isNullableString(value.lastSuccessAt) || !isNullableString(value.lastFailureAt)) return { status: "error", message: "GitLab discussion sync status is incomplete." };
+    return { status: "available", data: { configured: value.configured, state: value.state, stale: value.stale, lastAttemptAt: value.lastAttemptAt, lastSuccessAt: value.lastSuccessAt, lastFailureAt: value.lastFailureAt, failed: value.state === "failed" || typeof value.lastError === "string" } };
+  } catch {
+    return { status: "error", message: "GitLab discussion sync status unavailable." };
+  }
+}
+
+function isCount(value: unknown): value is number { return typeof value === "number" && Number.isInteger(value) && value >= 0; }
+function isJiraCountResult(value: unknown): value is { imported: number; updated: number; skipped: number; missing: number } {
+  if (!value || typeof value !== "object") return false;
+  const result = value as { imported?: unknown; updated?: unknown; skipped?: unknown; missing?: unknown };
+  return isCount(result.imported) && isCount(result.updated) && isCount(result.skipped) && isCount(result.missing);
+}
+function isNullableString(value: unknown): value is string | null { return value === null || typeof value === "string"; }
+function isJiraSyncState(value: unknown): value is JiraSyncEvidence["state"] { return value === "unconfigured" || value === "idle" || value === "syncing" || value === "available" || value === "failed"; }
+function isGitLabSyncState(value: unknown): value is MissionControlBoard["gitLabDiscussions"]["sync"]["state"] { return value === "unconfigured" || value === "idle" || value === "syncing" || value === "available" || value === "failed"; }
 
 function isBoard(value: unknown): value is MissionControlBoard {
   if (!value || typeof value !== "object") return false;

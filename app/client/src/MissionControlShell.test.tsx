@@ -26,6 +26,50 @@ afterEach(() => {
 });
 
 describe("Mission Control shell", () => {
+  test("shows GitLab discussion admission and observed remediation milestones without claiming an unresolved thread is fixed", () => {
+    const board = makeBoard([]);
+    const timestamp = "2026-09-23T10:00:00.000Z";
+    const note = { id: 31, body: "Please handle this review note", author: { id: 7, username: "reviewer", name: "Reviewer" }, authorship: "human" as const, system: false, resolvable: true, resolved: false, createdAt: timestamp, updatedAt: timestamp };
+    const sync = { configured: true, state: "available" as const, stale: false, lastAttemptAt: timestamp, lastSuccessAt: timestamp, lastFailureAt: null, lastError: null };
+    board.gitLabDiscussions = { sync, observations: [
+      { id: "discussion-blocked", workItemId: "work-1", repository: "group/api", mergeRequestIid: 42, mergeRequestTitle: "Add endpoint", discussionId: "thread-blocked", resolved: false, notes: [note], askId: "ask-blocked", firstObservedAt: timestamp, lastObservedAt: timestamp, status: "observed", admissionState: "blocked", blockedReason: "No agent advertises gitlab.discussion.remediate", taskId: null, milestones: { admitted: null, fixProduced: null, pushed: null, pipeline: null, resolved: null } },
+      { id: "discussion-admitted", workItemId: "work-1", repository: "group/api", mergeRequestIid: 43, mergeRequestTitle: "Add another endpoint", discussionId: "thread-admitted", resolved: false, notes: [note], askId: "ask-admitted", firstObservedAt: timestamp, lastObservedAt: timestamp, status: "observed", admissionState: "admitted", blockedReason: null, taskId: "task-1", milestones: {
+        admitted: { taskId: "task-1", observedAt: timestamp, source: "sarathi", pipelineIdAtAdmission: "17", pipelineShaAtAdmission: "abc123" },
+        fixProduced: { taskId: "task-1", observedAt: timestamp, source: "sarathi-task-outcome" },
+        pushed: { commitSha: "def456", pipelineId: "18", observedAt: timestamp, source: "gitlab" },
+        pipeline: { pipelineId: "18", result: "passed", commitSha: "def456", ref: "branch", observedAt: timestamp, source: "gitlab" },
+        resolved: null
+      } }
+    ] };
+    const dashboard = emptyDashboard();
+    dashboard.asks.push({ id: "ask-blocked", kind: "gitlab.discussion.remediate", workItemId: "work-1", createdAt: timestamp, intent: { tool: "gitlab", operation: "discussion.remediate", target: "discussion-blocked", context: { body: note.body } } });
+
+    const view = render(<MissionControlShell board={{ status: "available", board }} dashboard={dashboard} dashboardStatus="available" agents={[]} agentsStatus="available" agentSlots={[]} agentSlotsStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={vi.fn()} />);
+    const discussions = screen.getByRole("region", { name: "GitLab discussions and remediation" });
+    expect(discussions.textContent).toContain("No agent advertises gitlab.discussion.remediate");
+    expect(within(discussions).getByRole("button", { name: "Review canonical ask" })).toBeTruthy();
+    expect(discussions.textContent).toContain("Task admitted: task-1");
+    expect(discussions.textContent).toContain("Fix produced");
+    expect(discussions.textContent).toContain("Commit pushed: def456");
+    expect(discussions.textContent).toContain("Pipeline passed");
+    expect(discussions.textContent).not.toContain("Thread fixed");
+
+    const resolvedBoard = { ...board, gitLabDiscussions: { sync, observations: board.gitLabDiscussions.observations.map((observation) => observation.id === "discussion-admitted" ? { ...observation, resolved: true, milestones: { ...observation.milestones, resolved: { discussionId: "thread-admitted", observedAt: timestamp, source: "gitlab" as const } } } : observation) } };
+    view.rerender(<MissionControlShell board={{ status: "available", board: resolvedBoard }} dashboard={dashboard} dashboardStatus="available" agents={[]} agentsStatus="available" agentSlots={[]} agentSlotsStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={vi.fn()} />);
+    expect(screen.getByText("Thread resolved by GitLab")).toBeTruthy();
+  });
+
+  test("does not present an empty discussion list after GitLab refresh failure", () => {
+    const board = makeBoard([]);
+    board.gitLabDiscussions = { sync: { configured: true, state: "failed", stale: true, lastAttemptAt: "2026-09-23T10:00:00Z", lastSuccessAt: null, lastFailureAt: "2026-09-23T10:00:00Z", lastError: "private transport diagnostic" }, observations: [] };
+    render(<MissionControlShell board={{ status: "available", board }} dashboard={emptyDashboard()} dashboardStatus="available" agents={[]} agentsStatus="available" agentSlots={[]} agentSlotsStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={vi.fn()} />);
+
+    const discussions = screen.getByRole("region", { name: "GitLab discussions and remediation" });
+    expect(discussions.textContent).toContain("Last GitLab discussion read failed. No empty result was recorded.");
+    expect(discussions.textContent).not.toContain("No GitLab discussions observed.");
+    expect(discussions.textContent).not.toContain("private transport diagnostic");
+  });
+
   test("rejects a malformed board before rendering its regions", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => ({ ok: true, json: async () => ({ workItems: { status: "available", data: {} }, gitLabDiscussions: { observations: [] } }) })));
     expect(await readMissionControlBoard()).toEqual({ status: "unsupported" });

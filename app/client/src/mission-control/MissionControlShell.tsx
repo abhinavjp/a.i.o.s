@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { MissionControlBoard, MissionControlBoardItem, MissionControlRegion, StageKind } from "@aios/contracts";
-import type { ActionResult, AutopilotSettings, BoardLoad } from "./api.js";
+import type { ActionResult, AutopilotSettings, BoardLoad, ConnectorOverview, DiscussionRefreshResult, JiraRefreshResult } from "./api.js";
+import { ConnectorCenter } from "./ConnectorCenter.js";
 import "./MissionControlShell.css";
 
 type ShellAsk = { id: string; kind: string; risk?: "low" | "medium" | "high"; workItemId: string | null; createdAt: string; intent: { tool: string; operation?: string; target?: string; context: Record<string, string> } };
@@ -53,13 +54,21 @@ export function MissionControlShell(props: {
   onStandingRuleToggle?: (id: string, enabled: boolean) => ShellAction | Promise<ShellAction>;
   onResolveSuggestion?: (id: string, action: "accept" | "dismiss") => ShellAction | Promise<ShellAction>;
   onUndoAutomaticDecision?: (id: string) => ShellAction | Promise<ShellAction>;
+  connectorOverview?: ConnectorOverview;
+  onRefreshJira?: () => Promise<JiraRefreshResult>;
+  onRefreshGitLab?: () => Promise<DiscussionRefreshResult>;
+  onSaveCredential?: (reference: string, value: string) => Promise<ActionResult>;
+  onRefreshConnections?: () => void;
+  onOpenAgentSettings?: () => void;
 }) {
   const [railOpen, setRailOpen] = useState(false);
+  const [connectionsOpen, setConnectionsOpen] = useState(false);
   const [catchUpOpen, setCatchUpOpen] = useState(false);
   const [catchUpIndex, setCatchUpIndex] = useState(0);
   const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const catchUpButton = useRef<HTMLButtonElement>(null);
+  const connectionsButton = useRef<HTMLButtonElement>(null);
   const detailCloseButton = useRef<HTMLButtonElement>(null);
   const detailTrigger = useRef<HTMLElement | null>(null);
   const progressReadId = useRef(0);
@@ -146,6 +155,7 @@ export function MissionControlShell(props: {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape" && connectionsOpen) { setConnectionsOpen(false); connectionsButton.current?.focus(); return; }
       if (event.key === "Escape" && catchUpOpen) { closeCatchUp(); return; }
       if (event.key === "Escape" && detail) { closeDetail(); return; }
       const target = event.target;
@@ -168,7 +178,7 @@ export function MissionControlShell(props: {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [catchUpOpen, detail, props.dashboard.asks, catchUpIndex]);
+  }, [connectionsOpen, catchUpOpen, detail, props.dashboard.asks, catchUpIndex]);
 
   const items = props.board.status === "available" && props.board.board.workItems.status === "available" ? props.board.board.workItems.data : [];
   const asks = props.dashboard.asks;
@@ -187,6 +197,7 @@ export function MissionControlShell(props: {
       <div className="mc-header-actions">
         <span className={`mc-connection mc-${props.dashboard.runtime.state}`}>{props.dashboard.runtime.name} · {props.dashboard.runtime.state}</span>
         <button type="button" className="mc-tool" onClick={props.onPause}>{props.dashboard.controls.manualPaused ? "Resume" : "Pause"}</button>
+        <button ref={connectionsButton} type="button" className="mc-tool" onClick={() => { props.onRefreshConnections?.(); setConnectionsOpen(true); }}>Connections</button>
         <button type="button" className="mc-tool" onClick={props.onAdvanced}>Advanced controls</button>
         <button type="button" className="mc-tool mc-agent-toggle" onClick={() => setRailOpen((open) => !open)} aria-expanded={railOpen} aria-controls="mc-agent-rail">Agents</button>
       </div>
@@ -222,6 +233,7 @@ export function MissionControlShell(props: {
           <SectionHeading eyebrow="Current work" title="Work pipeline" detail={props.board.status === "available" && props.board.board.workItems.status === "available" ? `${items.length} work items` : "Observation"} />
           <WorkPipeline board={props.board} onOpenWork={openWork} onOpenStage={openStage} />
         </section>
+        <DiscussionRemediation board={props.board} asks={asks} onReviewAsk={openAsk} />
         <section className="mc-section" role="region" aria-label="Activity">
           <SectionHeading eyebrow="Latest signals" title="Activity" detail={props.dashboard.activity.length > 0 ? `${props.dashboard.activity.length} events` : "Quiet"} />
           {props.dashboardStatus === "loading" ? <StateText>Loading activity…</StateText> : props.dashboardStatus === "error" ? <StateText>Activity is unavailable.</StateText> : props.dashboard.activity.length === 0 ? <StateText>No activity recorded yet.</StateText> : <ol className="mc-activity-list">{props.dashboard.activity.slice(0, 8).map((entry) => <li key={entry.id}><time dateTime={entry.occurredAt}>{entry.occurredAt}</time><span>{entry.what}</span><small>{entry.agent}{entry.workItemId ? ` · ${entry.workItemId}` : ""}</small></li>)}</ol>}
@@ -266,7 +278,80 @@ export function MissionControlShell(props: {
       {detail.type === "engine" && <section className="mc-detail-section"><h3>Observed health</h3><p>Engine: {detail.engine.kind}</p><p>Health: {detail.engine.health.ok ? "healthy" : `unavailable: ${detail.engine.health.reason}`}</p><p>Slot capacity unknown: runtime health has no specialist slot assignment.</p></section>}
     </section></div>}
     {catchUpOpen && <div className="mc-modal-backdrop"><section className="mc-catchup" role="dialog" aria-modal="true" aria-label="Catch up"><div className="mc-catchup-header"><h2>Decisions waiting</h2><button type="button" onClick={closeCatchUp} autoFocus>Leave catch-up</button></div>{catchUpAsk ? <article key={catchUpAsk.id}><span>{catchUpIndex + 1} of {asks.length}</span><strong>{catchUpAsk.kind.replaceAll(".", " · ")}</strong><p>{catchUpAsk.intent.context.body ?? catchUpAsk.workItemId ?? catchUpAsk.intent.target ?? "Sarathi decision"}</p>{catchUpAsk.kind === "track.change" && <TrackChangeDetails context={catchUpAsk.intent.context} />}<div><button type="button" onClick={() => void decideCatchUpAsk("approved")}>Approve (A)</button><button type="button" onClick={() => void decideCatchUpAsk("declined")}>Decline (D)</button><button type="button" onClick={() => setCatchUpIndex((index) => (index + 1) % asks.length)}>Skip (S)</button></div></article> : <article><p>No asks are waiting in the canonical queue.</p><button type="button" onClick={closeCatchUp}>Leave catch-up</button></article>}{actionMessage && <p role="alert" className="mc-action-message">{actionMessage}</p>}</section></div>}
+    {connectionsOpen && <div className="mc-modal-backdrop"><section className="mc-connector-dialog" role="dialog" aria-modal="true" aria-label="Connections and setup"><ConnectorCenter
+      overview={props.connectorOverview ?? loadingConnectorOverview}
+      agents={agents.map((agent) => ({ displayName: agent.displayName, health: agent.health }))}
+      agentsStatus={agentsStatus}
+      isSetup={false}
+      onRefreshJira={props.onRefreshJira ?? (async () => ({ ok: false, message: "Jira refresh is unavailable." }))}
+      onRefreshGitLab={props.onRefreshGitLab ?? (async () => ({ ok: false, message: "GitLab discussion refresh is unavailable." }))}
+      onSaveCredential={props.onSaveCredential ?? (async () => ({ ok: false, message: "Credential storage is unavailable." }))}
+      onOpenAgentSettings={props.onOpenAgentSettings ?? props.onAdvanced}
+      onClose={() => { setConnectionsOpen(false); connectionsButton.current?.focus(); }}
+    /></section></div>}
   </main>;
+}
+
+const loadingConnectorOverview: ConnectorOverview = {
+  workSource: { status: "loading" },
+  codeHost: { status: "loading" },
+  jiraSync: { status: "loading" },
+  gitLabSync: { status: "loading" }
+};
+
+function DiscussionRemediation(props: { board: BoardLoad; asks: ReadonlyArray<ShellAsk>; onReviewAsk: (ask: ShellAsk, trigger: HTMLElement) => void }) {
+  return <section className="mc-section" role="region" aria-label="GitLab discussions and remediation">
+    <SectionHeading eyebrow="Observed code review" title="GitLab discussions" detail={discussionSummary(props.board)} />
+    {props.board.status === "loading" ? <StateText>Loading GitLab discussions…</StateText>
+      : props.board.status === "error" ? <StateText>GitLab discussion observation is unavailable: {props.board.message}</StateText>
+        : props.board.status === "unsupported" ? <StateText>GitLab discussion observation is unsupported by this server.</StateText>
+          : props.board.board.gitLabDiscussions.observations.length === 0 ? <StateText>{emptyDiscussionMessage(props.board.board.gitLabDiscussions.sync)}</StateText>
+            : <div className="mc-discussion-list">{props.board.board.gitLabDiscussions.observations.map((observation) => {
+              const linkedAsk = observation.askId ? props.asks.find((ask) => ask.id === observation.askId) : undefined;
+              const milestones = observation.milestones;
+              return <article className="mc-discussion-card" key={observation.id}>
+                <header><div><p className="mc-eyebrow">{observation.repository} !{observation.mergeRequestIid}</p><h3>{observation.mergeRequestTitle}</h3></div><span className={`mc-discussion-state mc-discussion-${observation.status}`}>{discussionStatus(observation)}</span></header>
+                <p className="mc-discussion-identity">Discussion {observation.discussionId} · last observed {observation.lastObservedAt}</p>
+                {observation.notes.length > 0 ? <ul className="mc-discussion-notes">{observation.notes.map((note) => <li key={note.id}><span>{note.author?.name ?? note.author?.username ?? (note.system ? "GitLab system" : "GitLab user")}{note.system ? " · system note" : ""}</span><p>{note.body}</p></li>)}</ul> : <p className="mc-discussion-identity">No discussion notes observed.</p>}
+                {observation.admissionState === "blocked" && <p className="mc-discussion-blocked">Blocked: {observation.blockedReason ?? "No eligible agent capability was observed."}</p>}
+                {observation.admissionState === "pending" && <p className="mc-discussion-identity">{linkedAsk ? "Waiting for the canonical Sarathi decision." : "Admission has not been observed."}</p>}
+                {observation.admissionState === "admitted" && <p className="mc-discussion-identity">{milestones.admitted ? `Task admitted: ${milestones.admitted.taskId}` : observation.taskId ? `Task admitted: ${observation.taskId}` : "Admission observed; task identifier unavailable."}</p>}
+                <ul className="mc-remediation-milestones" aria-label="Remediation milestones">
+                  <li>Task admitted: {milestones.admitted ? milestones.admitted.taskId : "not observed"}</li>
+                  <li>Fix produced: {milestones.fixProduced ? milestones.fixProduced.taskId : "not observed"}</li>
+                  <li>Commit pushed: {milestones.pushed ? milestones.pushed.commitSha : "not observed"}</li>
+                  <li>Pipeline {milestones.pipeline ? `${milestones.pipeline.result} · ${milestones.pipeline.pipelineId}` : "result not observed"}</li>
+                  <li>{milestones.resolved || observation.resolved ? "Thread resolved by GitLab" : "Thread resolution not observed"}</li>
+                </ul>
+                {linkedAsk ? <button type="button" className="mc-tool" aria-label="Review canonical ask" onClick={(event) => props.onReviewAsk(linkedAsk, event.currentTarget)}>Review canonical ask</button> : observation.askId ? <p className="mc-discussion-identity">Canonical ask is no longer pending.</p> : null}
+              </article>;
+            })}</div>}
+  </section>;
+}
+
+function discussionSummary(board: BoardLoad): string {
+  if (board.status !== "available") return "Observation state";
+  const status = board.board.gitLabDiscussions.sync;
+  if (status.state === "failed") return "Last refresh failed";
+  if (status.stale) return "Stale observation";
+  if (status.state === "syncing") return "Refresh in progress";
+  if (status.lastSuccessAt) return `Last read ${status.lastSuccessAt}`;
+  return status.configured ? "Waiting for first read" : "Not configured";
+}
+
+function emptyDiscussionMessage(sync: MissionControlBoard["gitLabDiscussions"]["sync"]): string {
+  if (sync.state === "failed") return "Last GitLab discussion read failed. No empty result was recorded.";
+  if (sync.stale) return "GitLab discussion observation is stale. No current empty result is available.";
+  if (sync.state === "syncing") return "GitLab discussion refresh is in progress.";
+  if (!sync.configured || sync.state === "unconfigured") return "GitLab discussions are not configured.";
+  if (!sync.lastSuccessAt) return "Waiting for a successful GitLab discussion read.";
+  return "No GitLab discussions observed in the last successful read.";
+}
+
+function discussionStatus(observation: MissionControlBoard["gitLabDiscussions"]["observations"][number]): string {
+  if (observation.status === "stale") return "Stale observation";
+  if (observation.status === "not-observed") return "Not in latest read";
+  return observation.resolved || observation.milestones.resolved ? "Resolved by GitLab" : "Open at last read";
 }
 
 function WorkPipeline(props: { board: BoardLoad; onOpenWork: (item: MissionControlBoardItem, trigger: HTMLElement) => void; onOpenStage: (item: MissionControlBoardItem, stageKind: StageKind, trigger: HTMLElement) => void }) {
