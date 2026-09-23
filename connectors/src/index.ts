@@ -215,10 +215,14 @@ function jiraDescriptionText(value: unknown): string {
   return `${typeof node.text === "string" ? node.text : ""}${Array.isArray(node.content) ? node.content.map(jiraDescriptionText).join("") : ""}`;
 }
 
-export interface MergeRequest { repository: string; number: number; title: string; branch: string; state: string; pipelineResult: "passed" | "failed" | "running"; jobsCompleted: number; jobsTotal: number; }
+export interface MergeRequest { repository: string; number: number; title: string; branch: string; state: string; pipelineId?: string | null; pipelineResult: "passed" | "failed" | "running"; jobsCompleted: number; jobsTotal: number; }
+export interface CodeHostPipeline { id: string; repository: string; status: string; ref: string | null; sha: string | null; webUrl: string | null; updatedAt: string | null; }
+export interface MergeRequestDiscussionNote { id: number; body: string; author: { id: number | null; username: string | null; name: string | null } | null; authorship: "human" | "system"; system: boolean; resolvable: boolean; resolved: boolean; createdAt: string; updatedAt: string; }
+export interface MergeRequestDiscussion { projectId: string; mergeRequestIid: number; discussionId: string; resolved: boolean; notes: ReadonlyArray<MergeRequestDiscussionNote>; }
 export interface CodeHost {
   listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>>;
-  readPipeline(pipelineId: string): Promise<unknown | null>;
+  readPipeline(pipelineId: string): Promise<CodeHostPipeline | null>;
+  listDiscussions(mergeRequestIid: number): Promise<ReadonlyArray<MergeRequestDiscussion>>;
   readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }>;
   readDiffSummary(branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }>;
   connectionStatus?(): Promise<WorkSourceConnection>;
@@ -229,18 +233,20 @@ export interface CodeHost {
 function assertAdhisthanaBranch(branch: string): void { if (!isAdhisthanaBranch(branch)) throw new Error("code host writes require an Adhisthana branch"); }
 function forbiddenWrite(action: string): never { throw new Error(`code host permanently refuses ${action}`); }
 
-export interface GitLabMergeRequest { iid: number; title: string; source_branch: string; state: string; head_pipeline?: { status: string; detailed_status?: { details_path?: string } }; }
+export interface GitLabMergeRequest { iid: number; title: string; source_branch: string; state: string; head_pipeline?: { id?: number | string; status: string; detailed_status?: { details_path?: string } }; }
 export interface GitLabTransport {
   listMergeRequests(input: { siteUrl: string; projectId: string; branch: string; token: string }): Promise<ReadonlyArray<GitLabMergeRequest>>;
   readPipeline(input: { siteUrl: string; projectId: string; pipelineId: string; token: string }): Promise<unknown | null>;
+  listDiscussions(input: { siteUrl: string; projectId: string; mergeRequestIid: number; token: string }): Promise<ReadonlyArray<unknown>>;
   readFile(input: { siteUrl: string; projectId: string; branch: string; path: string; token: string }): Promise<string | null>;
   readDiff(input: { siteUrl: string; projectId: string; baseBranch: string; branch: string; token: string }): Promise<string | null>;
 }
 export interface GitLabCodeHostOptions { siteUrl: string; projectId: string; credentialReference: string; credentialResolver: JiraCredentialResolver; defaultBranch: string; transport?: GitLabTransport; expiryWarningDays?: number; }
 export class GitLabCodeHost implements CodeHost {
   constructor(private readonly options: GitLabCodeHostOptions, private readonly now: () => number = Date.now) {}
-  async listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>> { const credential = await this.credential(); return (await this.transport.listMergeRequests({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch, token: credential.value })).map((item) => ({ repository: this.options.projectId, number: item.iid, title: item.title, branch: item.source_branch, state: item.state, pipelineResult: pipelineResult(item.head_pipeline?.status), jobsCompleted: 0, jobsTotal: 0 })); }
-  async readPipeline(pipelineId: string): Promise<unknown | null> { const credential = await this.credential(); return this.transport.readPipeline({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, pipelineId, token: credential.value }); }
+  async listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>> { const credential = await this.credential(); return (await this.transport.listMergeRequests({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch, token: credential.value })).map((item) => normalizeMergeRequest(this.options.projectId, item)); }
+  async readPipeline(pipelineId: string): Promise<CodeHostPipeline | null> { const credential = await this.credential(); const pipeline = await this.transport.readPipeline({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, pipelineId, token: credential.value }); return pipeline === null ? null : normalizePipeline(this.options.projectId, pipeline); }
+  async listDiscussions(mergeRequestIid: number): Promise<ReadonlyArray<MergeRequestDiscussion>> { const credential = await this.credential(); const discussions = await this.transport.listDiscussions({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, mergeRequestIid, token: credential.value }); return discussions.map((discussion) => normalizeDiscussion(this.options.projectId, mergeRequestIid, discussion)); }
   async readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }> { const credential = await this.credential(); const content = await this.transport.readFile({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch, path, token: credential.value }); return { available: content !== null, content }; }
   async readDiffSummary(branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }> { const credential = await this.credential(); const diff = await this.transport.readDiff({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, baseBranch: this.options.defaultBranch, branch, token: credential.value }); if (diff === null) return { available: false, filesChanged: 0, linesAdded: 0, linesRemoved: 0 }; return { available: true, filesChanged: diff.split("\n").filter((line) => line.startsWith("diff --git")).length, linesAdded: diff.split("\n").filter((line) => line.startsWith("+") && !line.startsWith("+++")).length, linesRemoved: diff.split("\n").filter((line) => line.startsWith("-") && !line.startsWith("---")).length }; }
   async connectionStatus(): Promise<WorkSourceConnection> { const credential = await this.credential(); await this.transport.listMergeRequests({ siteUrl: this.options.siteUrl, projectId: this.options.projectId, branch: this.options.defaultBranch, token: credential.value }); const expiresAt = credential.expiresAt ? Date.parse(credential.expiresAt) : Number.NaN; const daysUntilExpiry = Number.isFinite(expiresAt) ? Math.max(0, Math.ceil((expiresAt - this.now()) / 86_400_000)) : null; return { siteUrl: this.options.siteUrl, credentialReference: this.options.credentialReference, daysUntilExpiry, expiresSoon: daysUntilExpiry !== null && daysUntilExpiry <= (this.options.expiryWarningDays ?? 7) }; }
@@ -255,12 +261,100 @@ export class GitLabCodeHost implements CodeHost {
 }
 export class FetchGitLabTransport implements GitLabTransport {
   private async get(siteUrl: string, path: string, token: string): Promise<Response> { const response = await fetch(`${siteUrl.replace(/\/$/, "")}${path}`, { headers: { "PRIVATE-TOKEN": token, Accept: "application/json" } }); if (!response.ok && response.status !== 404) throw new Error(`GitLab read failed (${response.status})`); return response; }
-  async listMergeRequests(input: { siteUrl: string; projectId: string; branch: string; token: string }): Promise<ReadonlyArray<GitLabMergeRequest>> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/merge_requests?${new URLSearchParams({ source_branch: input.branch })}`, input.token); if (response.status === 404) throw new Error("GitLab project read failed (404)"); return await response.json() as GitLabMergeRequest[]; }
+  async listMergeRequests(input: { siteUrl: string; projectId: string; branch: string; token: string }): Promise<ReadonlyArray<GitLabMergeRequest>> { return this.listPages<GitLabMergeRequest>(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/merge_requests`, new URLSearchParams({ source_branch: input.branch }), input.token, "GitLab project read failed (404)", "GitLab merge request read returned an invalid page"); }
   async readPipeline(input: { siteUrl: string; projectId: string; pipelineId: string; token: string }): Promise<unknown | null> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/pipelines/${encodeURIComponent(input.pipelineId)}`, input.token); return response.status === 404 ? null : await response.json(); }
+  async listDiscussions(input: { siteUrl: string; projectId: string; mergeRequestIid: number; token: string }): Promise<ReadonlyArray<unknown>> { return this.listPages<unknown>(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/merge_requests/${encodeURIComponent(String(input.mergeRequestIid))}/discussions`, new URLSearchParams(), input.token, "GitLab discussion read failed (404)", "GitLab discussion read returned an invalid page"); }
   async readFile(input: { siteUrl: string; projectId: string; branch: string; path: string; token: string }): Promise<string | null> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/repository/files/${encodeURIComponent(input.path)}?${new URLSearchParams({ ref: input.branch })}`, input.token); if (response.status === 404) return null; const body = await response.json() as { content?: string }; return body.content ? Buffer.from(body.content, "base64").toString("utf8") : null; }
   async readDiff(input: { siteUrl: string; projectId: string; baseBranch: string; branch: string; token: string }): Promise<string | null> { const response = await this.get(input.siteUrl, `/api/v4/projects/${encodeURIComponent(input.projectId)}/repository/compare?${new URLSearchParams({ from: input.baseBranch, to: input.branch })}`, input.token); if (response.status === 404) return null; const body = await response.json() as { diffs?: Array<{ diff: string }> }; return body.diffs?.map((item) => item.diff).join("\n") ?? null; }
+  private async listPages<T>(siteUrl: string, path: string, baseQuery: URLSearchParams, token: string, notFoundMessage: string, invalidPageMessage: string): Promise<ReadonlyArray<T>> {
+    const items: T[] = [];
+    const seenPages = new Set<number>();
+    let page = 1;
+    for (let pageCount = 0; pageCount < 100; pageCount += 1) {
+      if (seenPages.has(page)) throw new Error("GitLab read returned a repeated page");
+      seenPages.add(page);
+      const query = new URLSearchParams(baseQuery);
+      query.set("per_page", "100");
+      query.set("page", String(page));
+      const response = await this.get(siteUrl, `${path}?${query}`, token);
+      if (response.status === 404) throw new Error(notFoundMessage);
+      const values: unknown = await response.json();
+      if (!Array.isArray(values)) throw new Error(invalidPageMessage);
+      items.push(...values as T[]);
+      const nextPage = gitLabNextPage(response, page);
+      if (nextPage === null) return items;
+      if (nextPage === undefined) {
+        if (values.length < 100) return items;
+        page += 1;
+      } else {
+        page = nextPage;
+      }
+    }
+    throw new Error("GitLab read exceeded its page limit");
+  }
+}
+function gitLabNextPage(response: Response, currentPage: number): number | null | undefined {
+  const nextPageHeader = response.headers.get("x-next-page");
+  if (nextPageHeader !== null) {
+    if (!nextPageHeader.trim()) return null;
+    const nextPage = Number(nextPageHeader);
+    if (!Number.isSafeInteger(nextPage) || nextPage <= currentPage) throw new Error("GitLab read returned an invalid next page");
+    return nextPage;
+  }
+  const linkHeader = response.headers.get("link");
+  if (linkHeader !== null) {
+    const nextLink = linkHeader.split(",").map((part) => part.trim()).find((part) => /;\s*rel\s*=\s*"?next"?/i.test(part));
+    if (!nextLink) return null;
+    const urlMatch = /^<([^>]+)>/.exec(nextLink);
+    if (!urlMatch) throw new Error("GitLab read returned an invalid next link");
+    const nextPageText = new URL(urlMatch[1]).searchParams.get("page");
+    const nextPage = nextPageText ? Number(nextPageText) : Number.NaN;
+    if (!Number.isSafeInteger(nextPage) || nextPage <= currentPage) throw new Error("GitLab read returned an invalid next page");
+    return nextPage;
+  }
+  return undefined;
+}
+function normalizePipeline(repository: string, value: unknown): CodeHostPipeline {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("GitLab pipeline response was invalid");
+  const pipeline = value as { id?: unknown; status?: unknown; ref?: unknown; sha?: unknown; web_url?: unknown; updated_at?: unknown };
+  const id = typeof pipeline.id === "number" && Number.isSafeInteger(pipeline.id) ? String(pipeline.id) : typeof pipeline.id === "string" && pipeline.id.trim() ? pipeline.id : null;
+  if (!id || typeof pipeline.status !== "string" || !pipeline.status.trim()) throw new Error("GitLab pipeline response was incomplete");
+  return { id, repository, status: pipeline.status, ref: typeof pipeline.ref === "string" ? pipeline.ref : null, sha: typeof pipeline.sha === "string" ? pipeline.sha : null, webUrl: typeof pipeline.web_url === "string" ? pipeline.web_url : null, updatedAt: typeof pipeline.updated_at === "string" ? pipeline.updated_at : null };
+}
+function normalizeMergeRequest(repository: string, value: unknown): MergeRequest {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("GitLab merge request response was invalid");
+  const item = value as Partial<GitLabMergeRequest>;
+  if (!Number.isSafeInteger(item.iid) || !item.iid || item.iid <= 0 ||
+    typeof item.title !== "string" || !item.title.trim() ||
+    typeof item.source_branch !== "string" || !item.source_branch.trim() ||
+    typeof item.state !== "string" || !item.state.trim() ||
+    (item.head_pipeline !== undefined && (typeof item.head_pipeline !== "object" || typeof item.head_pipeline.status !== "string"))) {
+    throw new Error("GitLab merge request response was incomplete");
+  }
+  return { repository, number: item.iid, title: item.title, branch: item.source_branch, state: item.state, pipelineId: gitLabId(item.head_pipeline?.id), pipelineResult: pipelineResult(item.head_pipeline?.status), jobsCompleted: 0, jobsTotal: 0 };
+}
+function normalizeDiscussion(projectId: string, mergeRequestIid: number, value: unknown): MergeRequestDiscussion {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("GitLab discussion response was invalid");
+  const discussion = value as { id?: unknown; individual_note?: unknown; notes?: unknown };
+  const discussionId = typeof discussion.id === "string" && discussion.id.trim() ? discussion.id : typeof discussion.id === "number" && Number.isSafeInteger(discussion.id) ? String(discussion.id) : null;
+  if (!discussionId || typeof discussion.individual_note !== "boolean" || !Array.isArray(discussion.notes) || discussion.notes.length === 0) throw new Error("GitLab discussion response was incomplete");
+  const notes = discussion.notes.map(normalizeDiscussionNote);
+  const resolvableNotes = notes.filter((note) => note.resolvable);
+  return { projectId, mergeRequestIid, discussionId, resolved: resolvableNotes.length > 0 && resolvableNotes.every((note) => note.resolved), notes };
+}
+function normalizeDiscussionNote(value: unknown): MergeRequestDiscussionNote {
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("GitLab discussion note was invalid");
+  const note = value as { id?: unknown; body?: unknown; author?: unknown; created_at?: unknown; updated_at?: unknown; system?: unknown; resolvable?: unknown; resolved?: unknown };
+  if (typeof note.id !== "number" || !Number.isSafeInteger(note.id) || typeof note.body !== "string" || typeof note.system !== "boolean" || typeof note.resolvable !== "boolean" || typeof note.resolved !== "boolean" || typeof note.created_at !== "string" || typeof note.updated_at !== "string") throw new Error("GitLab discussion note was incomplete");
+  let author: MergeRequestDiscussionNote["author"] = null;
+  if (note.author !== null && typeof note.author === "object" && !Array.isArray(note.author)) {
+    const rawAuthor = note.author as { id?: unknown; username?: unknown; name?: unknown };
+    author = { id: typeof rawAuthor.id === "number" && Number.isSafeInteger(rawAuthor.id) ? rawAuthor.id : null, username: typeof rawAuthor.username === "string" ? rawAuthor.username : null, name: typeof rawAuthor.name === "string" ? rawAuthor.name : null };
+  } else if (note.author !== null && note.author !== undefined) throw new Error("GitLab discussion note author was invalid");
+  return { id: note.id, body: note.body, author, authorship: note.system ? "system" : "human", system: note.system, resolvable: note.resolvable, resolved: note.resolved, createdAt: note.created_at, updatedAt: note.updated_at };
 }
 function pipelineResult(status: string | undefined): MergeRequest["pipelineResult"] { return status === "success" ? "passed" : status === "failed" ? "failed" : "running"; }
+function gitLabId(value: number | string | undefined): string | null { return typeof value === "number" && Number.isSafeInteger(value) ? String(value) : typeof value === "string" && value.trim() ? value : null; }
 
 export class NullWorkSource implements WorkSource {
   async listAssignedTickets(): Promise<ReadonlyArray<WorkSourceTicket>> { return []; }
@@ -278,7 +372,8 @@ export class FakeWorkSource implements WorkSource {
 
 export class NullCodeHost implements CodeHost {
   async listMergeRequests(_branch: string): Promise<ReadonlyArray<MergeRequest>> { return []; }
-  async readPipeline(_pipelineId: string): Promise<unknown | null> { return null; }
+  async readPipeline(_pipelineId: string): Promise<CodeHostPipeline | null> { return null; }
+  async listDiscussions(_mergeRequestIid: number): Promise<ReadonlyArray<MergeRequestDiscussion>> { return []; }
   async readFile(_branch: string, _path: string): Promise<{ available: boolean; content: string | null }> { return { available: false, content: null }; }
   async readDiffSummary(_branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }> { return { available: false, filesChanged: 0, linesAdded: 0, linesRemoved: 0 }; }
   async createBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async push(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async openDraftMergeRequest(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }
@@ -287,7 +382,8 @@ export class NullCodeHost implements CodeHost {
 
 export class FakeCodeHost implements CodeHost {
   async listMergeRequests(branch: string): Promise<ReadonlyArray<MergeRequest>> { return branch ? [{ repository: "payroll-api", number: 42, title: "Repair export batching", branch, state: "opened", pipelineResult: "running", jobsCompleted: 3, jobsTotal: 5 }] : []; }
-  async readPipeline(_pipelineId: string): Promise<unknown | null> { return null; }
+  async readPipeline(_pipelineId: string): Promise<CodeHostPipeline | null> { return null; }
+  async listDiscussions(mergeRequestIid: number): Promise<ReadonlyArray<MergeRequestDiscussion>> { return mergeRequestIid === 42 ? [{ projectId: "payroll-api", mergeRequestIid, discussionId: "fake-thread-1", resolved: false, notes: [{ id: 101, body: "Please handle empty exports.", author: { id: 8, username: "reviewer", name: "Review User" }, authorship: "human", system: false, resolvable: true, resolved: false, createdAt: "2026-09-22T10:00:00Z", updatedAt: "2026-09-22T10:00:00Z" }] }] : []; }
   async readFile(branch: string, path: string): Promise<{ available: boolean; content: string | null }> { return { available: true, content: `# ${path}\n\nPreview from ${branch}.` }; }
   async readDiffSummary(_branch: string): Promise<{ available: boolean; filesChanged: number; linesAdded: number; linesRemoved: number }> { return { available: true, filesChanged: 4, linesAdded: 26, linesRemoved: 8 }; }
   async createBranch(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async push(branch: string): Promise<void> { assertAdhisthanaBranch(branch); } async openDraftMergeRequest(branch: string): Promise<void> { assertAdhisthanaBranch(branch); }

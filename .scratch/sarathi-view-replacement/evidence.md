@@ -20,3 +20,12 @@
 - Implementer proof: 32 focused tests, 272 repository tests, connector/contract/server typechecks and `git diff --check` passed.
 - Independent scoped re-review: all three PHS-01 findings addressed; no new blocking breakage found. The reviewer did not run live Jira.
 - Bounded pagination follows Atlassian's enhanced Jira issue-search API (`/rest/api/3/search/jql`, `nextPageToken`, `isLast`). A search exceeding the 100-page budget fails with an explicit error rather than treating a partial result as complete.
+- Delivered: `5ce94ad3f011e608770163420bf9dd5c0dc8f5f5` on local `HEAD`, `origin/main`, and remote `refs/heads/main`.
+
+## TSK-003
+
+- TDD RED: malformed merge-request identity reached the public projection; the repository suite also exposed an extra fake-host response field outside the existing route contract. Both failures passed after scoped fixes.
+- GREEN: normalized merge requests include stable project/IID and optional pipeline identity; pipeline and discussion reads normalize IDs, authorship, system and resolution flags. Null and fake hosts implement the new discussion read. GitLab MR and discussion pages use bounded pagination, reject malformed pages and 404s explicitly, and keep credentials in request headers.
+- Fixture provenance: discussion/note examples in `connectors/tests/ConnectorConfigurator.test.ts` are local synthetic fixtures shaped from the GitLab v4 discussions API; the pagination headers follow GitLab REST API documentation. They are not live observations.
+- Proof: 12 connector tests, 276 repository tests, connector/server/client/contracts typechecks, and `git diff --check` passed. Live self-managed GitLab remains `UNMEASURED`.
+- Direct review: kept the public fake-host MR response compatible with the existing route assertion; no external GitLab write method was added. No blocking scoped finding remains.
