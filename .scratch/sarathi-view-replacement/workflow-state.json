@@ -1,0 +1,72 @@
+{
+  "workflow": "sarathi-view-replacement",
+  "current_actor": "codex",
+  "requires_spec_approval": true,
+  "status": "plan-approved",
+  "plan_mode": "detailed",
+  "artifacts": {
+    "specification": {
+      "path": ".scratch/sarathi-view-replacement/spec.md",
+      "revision": "spec-r1",
+      "hash": "2bee86f62c03cf6edca0598ace6bb01cb9e3c70454c06a522ce079cbf320e947",
+      "author": "codex",
+      "status": "approved",
+      "approval": {
+        "actor": "user",
+        "intent": "artifact",
+        "revision": "spec-r1",
+        "artifact_hash": "2bee86f62c03cf6edca0598ace6bb01cb9e3c70454c06a522ce079cbf320e947",
+        "approved_at": 4,
+        "natural_language": "Approved."
+      }
+    },
+    "plan": {
+      "path": ".scratch/sarathi-view-replacement/plan.md",
+      "revision": "plan-r1",
+      "hash": "d3e043c8880c572c5c6bc24079f0ad758ac38cfaa5951c54d82514b96265be0d",
+      "hash_kind": "canonical ordered detailed-tree",
+      "author": "codex",
+      "status": "approved",
+      "approval": {
+        "actor": "user",
+        "intent": "artifact",
+        "revision": "plan-r1",
+        "artifact_hash": "d3e043c8880c572c5c6bc24079f0ad758ac38cfaa5951c54d82514b96265be0d",
+        "approved_at": 6,
+        "natural_language": "Approved. COmmit and push if not done"
+      },
+      "members": {
+        "plan.md": "596592662665414051a14ade8165e067b7422ef999d9c3af0c8b141920d9a713",
+        "phases/01-durable-work-projection/phase.md": "af4e1e993874d76416ba9aa20b447e6dfb1d40302250f8702754ee429763d3be",
+        "phases/01-durable-work-projection/01-board-projection.md": "4f9ef3da0ede02f8d15a691fa02c2556231d42e4b34cee7bfb1b7db0066d5310",
+        "phases/01-durable-work-projection/02-jira-sync.md": "98c2f0f33ef9794385fb45c2f940dd2e510528cbd79dc162bd47e9dc111f7344",
+        "phases/02-gitlab-observation/phase.md": "89ddeefa89c6065d12e8c3adc051250b907ab279239f7e6316817c1675758cd8",
+        "phases/02-gitlab-observation/03-discussion-connector.md": "35ecc08a6963527dda78b9f03bde247378056226623430465dd6894f9071b911",
+        "phases/02-gitlab-observation/04-discussion-sync-and-asks.md": "80eadf6b85387c3add0d48e858fb1cbcb702342d9ce7c9442fac49610d16be24",
+        "phases/03-remediation-admission/phase.md": "7f4fc6489d0c0d6853a5f72a19aa1692c7ecaa876df1f443f805a3b4c7522f24",
+        "phases/03-remediation-admission/05-capability-aware-admission.md": "26652445f921fe31d3381744354d4a5db04b6e315bd24a44b52216938256f454",
+        "phases/03-remediation-admission/06-corroborated-milestones.md": "26fc6f05cdf19c5b92785fac5bb81d0a3a1c3c1e3ef8a412c9d7da9d47b55671",
+        "phases/04-control-room-shell/phase.md": "92dcf7fdd6999bb0b5e2c0cbc7e55e7fe45f2b94028b4050d605b2e0f40d327f",
+        "phases/04-control-room-shell/07-responsive-shell.md": "b8e1822f3524751b4178b9655e42d1bb5f63a81bb0a2f348efcb703e08ae420c",
+        "phases/04-control-room-shell/08-work-and-detail-surfaces.md": "a10af0be2153d960f72297d0eba037b9008bd05290fa07b83d9d17ef64fadba4",
+        "phases/05-decisions-and-connections/phase.md": "e88b5201ab2d27087b3a46a030090024be0a711151758bd6677bc8cce81da096",
+        "phases/05-decisions-and-connections/09-asks-catchup-and-tracks.md": "1443b7776033f0f008c7da3d6548940641b2c2d3f447ebc09470d5e6fa267e58",
+        "phases/05-decisions-and-connections/10-connectors-setup-and-remediation.md": "1fad0aa4e2839a9214be16015dd31a3947262a26d44de6064b5363815565d2d5",
+        "phases/06-migration-and-acceptance/phase.md": "c63582edf883cefd8f0c8cf2abe6f270d6769afdcb85c9290558c81605174738",
+        "phases/06-migration-and-acceptance/11-advanced-control-migration.md": "75f449141e87127ea6f201ea46734145aabfec71696b9150cd4fb73c40e569f6",
+        "phases/06-migration-and-acceptance/12-visual-and-full-acceptance.md": "fc025cf36a25a18f431eaf6b9780e7581f0f8c1b250a6f0201efd371ffd3bbc2"
+      }
+    }
+  },
+  "mutations": [
+    {
+      "stage": "specification",
+      "at": 3
+    },
+    {
+      "stage": "planning",
+      "at": 5
+    }
+  ],
+  "next_order": 7
+}
