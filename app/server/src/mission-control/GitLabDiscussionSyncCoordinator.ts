@@ -19,6 +19,7 @@ export interface GitLabDiscussionSyncCoordinatorOptions {
   intervalMs?: number;
   now?: () => number;
   scheduler?: JiraSyncScheduler;
+  afterObservationBatch?: () => void | Promise<void>;
 }
 
 const systemScheduler: JiraSyncScheduler = {
@@ -89,6 +90,7 @@ export class GitLabDiscussionSyncCoordinator {
       }
       const observedAt = this.timestamp();
       const result = this.options.sarathi.applyGitLabDiscussionObservationBatch(observations, observedAt);
+      await this.options.afterObservationBatch?.();
       return { state: "available", observations: result.observations, asksCreated: result.asksCreated, error: null };
     } catch (error) {
       const message = error instanceof Error ? error.message : "unknown connection failure";

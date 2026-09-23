@@ -56,10 +56,27 @@ export class PermissionEngine {
     return this.store.addPermissionRule(this.buildRule(input));
   }
 
+  /** Applies the canonical permission decision to a bounded remediation task admission. */
+  async executeTaskAdmission<T>(intent: ToolIntent, admission: "approval" | "standing-rule", admit: () => Promise<T>): Promise<{ decision: PermissionDecision; value?: T; error?: string }> {
+    if (intent.tool !== "gitlab" || intent.operation !== "discussion.remediate") {
+      return { decision: { outcome: "denied", reason: "this intent is not a remediation task admission" } };
+    }
+    const decision = await this.evaluate(intent, undefined, admission);
+    if (decision.outcome !== "allowed") return { decision };
+    try {
+      const value = await admit();
+      if (decision.automatic) this.store.addAutomaticDecision({ intent, ...decision.automatic, workItemId: intent.context.workItemId ?? null, undoable: false });
+      return { decision, value };
+    } catch (error) {
+      return { decision, error: error instanceof Error ? error.message : "remediation task admission failed" };
+    }
+  }
+
   /** A standing rule is an allow rule for one ask kind; the floor refuses to be covered. */
   buildStandingRule(askKind: string, scope: string | "all"): PermissionRule {
     if (isFloorAskKind(askKind)) throw new Error("floor actions cannot be covered by a standing rule");
-    return this.buildRule({ decision: "allow", tool: "*", operation: askKind, target: "*", lifetime: "global", context: scope === "all" ? {} : { repository: scope } });
+    const operation = askKind === "gitlab.discussion.remediate" ? "discussion.remediate" : askKind;
+    return this.buildRule({ decision: "allow", tool: "*", operation, target: "*", lifetime: "global", context: scope === "all" ? {} : { repository: scope } });
   }
 
   /** Validates a rule against the floor and returns it without storing it. */
@@ -91,7 +108,7 @@ export class PermissionEngine {
     return this.store.undoAutomaticDecision(id) ?? "not-found";
   }
 
-  private async evaluate(intent: ToolIntent, signal?: AbortSignal): Promise<EngineDecision> {
+  private async evaluate(intent: ToolIntent, signal?: AbortSignal, taskAdmission?: "approval" | "standing-rule"): Promise<EngineDecision> {
     if (isFloorIntent(intent)) {
       const approval = this.store.findMatchingApproval(intent);
       return approval ? this.useApproval(approval, "floor approval") : { outcome: "requires_approval", reason: "floor action requires operator approval" };
@@ -103,8 +120,21 @@ export class PermissionEngine {
 
     const ask = rules.some((rule) => rule.decision === "ask");
     const approval = this.store.findMatchingApproval(intent);
+    if (taskAdmission === "standing-rule" && ask) {
+      return { outcome: "requires_approval", reason: "scoped ask" };
+    }
     if (ask) {
       return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "scoped ask" };
+    }
+    if (taskAdmission === "approval") {
+      return approval ? this.useApproval(approval, "action-bound approval") : { outcome: "requires_approval", reason: "remediation admission requires operator approval" };
+    }
+    if (taskAdmission === "standing-rule") {
+      const standingRule = this.store.matchAndConsumeStandingRule(intent);
+      if (standingRule) {
+        return { outcome: "allowed", reason: "standing rule", automatic: { source: "standing rule", sourceDetail: standingRule.label } };
+      }
+      return { outcome: "requires_approval", reason: "remediation admission requires a standing rule" };
     }
     // Floor intents returned above, so a standing rule can never settle one.
     const standingRule = this.canUndo(intent) ? this.store.matchAndConsumeStandingRule(intent) : undefined;

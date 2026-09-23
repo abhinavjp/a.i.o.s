@@ -86,6 +86,9 @@ export interface GitLabDiscussionObservation {
   firstObservedAt: string;
   lastObservedAt: string;
   status: "observed" | "not-observed" | "stale";
+  admissionState: "pending" | "blocked" | "admitted";
+  blockedReason: string | null;
+  taskId: string | null;
 }
 export interface GitLabDiscussionState { sync: GitLabDiscussionSyncStatus; observations: GitLabDiscussionObservation[]; }
 export interface GitLabDiscussionObservationInput { workItemId: string; mergeRequest: MergeRequest; discussion: MergeRequestDiscussion; }
@@ -176,6 +179,8 @@ export interface SarathiStore {
   recordProof(proof: RuntimeProof): RuntimeProof;
   markGitLabDiscussionSyncing(attemptedAt: string): GitLabDiscussionSyncStatus;
   applyGitLabDiscussionObservationBatch(observations: ReadonlyArray<GitLabDiscussionObservationInput>, observedAt: string): { observations: number; asksCreated: number };
+  recordGitLabDiscussionAdmission(id: string, admission: { state: "pending" } | { state: "blocked"; reason: string } | { state: "admitted"; taskId: string }): GitLabDiscussionObservation | undefined;
+  retireAskAfterAutomaticAdmission(id: string): PendingAsk | undefined;
   markGitLabDiscussionSyncFailed(failedAt: string, error: string): GitLabDiscussionSyncStatus;
 }
 
@@ -234,7 +239,13 @@ export class FileSarathiStore implements SarathiStore {
     const previousAudit = clone(this.state.askAudit);
     try {
       const collection = this.state.gitLabDiscussions.observations;
-      for (const observation of collection) observation.status = "not-observed";
+      for (const observation of collection) {
+        observation.status = "not-observed";
+        if (!observation.taskId) {
+          observation.admissionState = "blocked";
+          observation.blockedReason = "the discussion was not present in the latest GitLab observation";
+        }
+      }
       let asksCreated = 0;
       const seen = new Set<string>();
       for (const input of inputs) {
@@ -246,7 +257,10 @@ export class FileSarathiStore implements SarathiStore {
           const existing = collection[existingIndex];
           const askResult = existing.askId === null ? this.addGitLabDiscussionAsk(input, id, observedAt) : null;
           if (askResult?.created) asksCreated += 1;
-          collection[existingIndex] = { ...existing, workItemId: input.workItemId, mergeRequest: clone(input.mergeRequest), discussion: clone(input.discussion), askId: askResult?.ask.id ?? existing.askId, lastObservedAt: observedAt, status: "observed" };
+          const resolvedBeforeAdmission = input.discussion.resolved && !existing.taskId;
+          collection[existingIndex] = { ...existing, workItemId: input.workItemId, mergeRequest: clone(input.mergeRequest), discussion: clone(input.discussion), askId: askResult?.ask.id ?? existing.askId, lastObservedAt: observedAt, status: "observed",
+            admissionState: resolvedBeforeAdmission ? "blocked" : existing.admissionState,
+            blockedReason: resolvedBeforeAdmission ? "GitLab reports that this discussion is resolved" : existing.blockedReason };
           continue;
         }
 
@@ -260,7 +274,10 @@ export class FileSarathiStore implements SarathiStore {
           askId: askResult?.ask.id ?? null,
           firstObservedAt: observedAt,
           lastObservedAt: observedAt,
-          status: "observed"
+          status: "observed",
+          admissionState: "pending",
+          blockedReason: null,
+          taskId: null
         });
       }
       const retiredAskIds = new Set(collection.filter((observation) => observation.askId && (observation.status === "not-observed" || observation.discussion.resolved)).map((observation) => observation.askId));
@@ -285,12 +302,46 @@ export class FileSarathiStore implements SarathiStore {
     }
   }
 
+  recordGitLabDiscussionAdmission(id: string, admission: { state: "pending" } | { state: "blocked"; reason: string } | { state: "admitted"; taskId: string }): GitLabDiscussionObservation | undefined {
+    const observation = this.state.gitLabDiscussions.observations.find((entry) => entry.id === id);
+    if (!observation) return undefined;
+    if (admission.state === "pending" && !observation.taskId) {
+      observation.admissionState = "pending";
+      observation.blockedReason = null;
+    } else if (admission.state === "admitted") {
+      if (observation.taskId) return clone(observation);
+      if (observation.status !== "observed" || observation.discussion.resolved) {
+        observation.admissionState = "blocked";
+        observation.blockedReason = observation.discussion.resolved ? "GitLab reports that this discussion is resolved" : "latest GitLab discussion observation is stale";
+      } else {
+        observation.admissionState = "admitted";
+        observation.blockedReason = null;
+        observation.taskId = admission.taskId;
+      }
+    } else if (admission.state === "blocked" && !observation.taskId) {
+      observation.admissionState = "blocked";
+      observation.blockedReason = admission.reason;
+    }
+    this.persist();
+    return clone(observation);
+  }
+
+  retireAskAfterAutomaticAdmission(id: string): PendingAsk | undefined {
+    const index = this.state.asks.findIndex((ask) => ask.id === id);
+    if (index < 0) return undefined;
+    const [ask] = this.state.asks.splice(index, 1);
+    this.recordActivity({ agent: "Sarathi", workItemId: ask.workItemId, what: "Discussion remediation admitted by standing rule" });
+    this.persist();
+    return clone(ask);
+  }
+
   markGitLabDiscussionSyncFailed(failedAt: string, error: string): GitLabDiscussionSyncStatus {
     const previous = this.state.gitLabDiscussions.sync;
     this.state.gitLabDiscussions = {
       ...this.state.gitLabDiscussions,
       sync: { ...previous, configured: true, state: "failed", stale: previous.lastSuccessAt !== null, lastFailureAt: failedAt, lastError: error },
-      observations: this.state.gitLabDiscussions.observations.map((observation) => ({ ...observation, status: "stale" }))
+      observations: this.state.gitLabDiscussions.observations.map((observation) => ({ ...observation, status: "stale",
+        ...(observation.taskId ? {} : { admissionState: "blocked" as const, blockedReason: "latest GitLab discussion observation is stale" }) }))
     };
     this.persist();
     return clone(this.state.gitLabDiscussions.sync);
@@ -749,6 +800,12 @@ function normalizeDashboard(state: SarathiDashboard): SarathiDashboard {
   state.updateAudit ??= [];
   state.activity ??= [];
   state.gitLabDiscussions ??= defaultGitLabDiscussionState();
+  state.gitLabDiscussions.observations = state.gitLabDiscussions.observations.map((observation) => ({
+    ...observation,
+    admissionState: observation.admissionState ?? "pending",
+    blockedReason: observation.blockedReason ?? null,
+    taskId: observation.taskId ?? null
+  }));
   state.standingRules ??= [];
   state.autopilot ??= defaultAutopilot();
   state.stallThresholds ??= defaultStallThresholds();

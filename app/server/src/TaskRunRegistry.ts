@@ -15,6 +15,8 @@ export interface TaskStall { state: "active" | "nudge" | "stop"; lastOutputAt: s
 type Execution = { taskId: string; task: string; sessionKey: string; plan: ResolvedExecutionPlan; agent: AgentAbstraction; signal: AbortSignal };
 
 export interface TaskAdmissionMetadata {
+  taskId?: string;
+  admissionGuard?: () => { allowed: true } | { allowed: false; reason: string };
   resolvedEnginePlan?: ResolvedEnginePlan;
   executedEngineRoute?: EngineRoute;
   attemptedEngineRoutes?: EngineRoute[];
@@ -44,7 +46,8 @@ export class TaskRunRegistry {
   async start(agent: AgentAbstraction, task: string, sessionKey: string,
     routing: { specialistId?: string; workflowId?: string; taskPolicy?: RoutePolicyOverride; agentId?: string } = {},
     metadata: TaskAdmissionMetadata = {}): Promise<string> {
-    const taskId = randomUUID();
+    const taskId = metadata.taskId ?? randomUUID();
+    if (this.store.get(taskId)) return taskId;
     const now = new Date(this.clock.now()).toISOString();
     const resolved = this.planResolver.resolve({ taskId, task, agent, ...routing });
     const selected = this.fixedRouteSelector ? await this.fixedRouteSelector.select(resolved) : resolved;
@@ -53,6 +56,8 @@ export class TaskRunRegistry {
     this.assertSelectedAgentHealthy(agent, plan);
     const agentId = this.agentSlots?.assignedAgentId(routing.agentId) ?? routing.agentId ?? "sarathi";
     this.agentSlots?.assertFree(agentId);
+    const guard = metadata.admissionGuard?.();
+    if (guard && !guard.allowed) throw new Error(guard.reason);
     this.store.create({ taskId, task, sessionKey, agentId, chunks: [], status: "running", outcome: null,
       createdAt: now, updatedAt: now, resolvedExecutionPlan: plan, attempts: [this.attempt(plan)],
       resolvedEnginePlan: metadata.resolvedEnginePlan, readiness: metadata.readiness,

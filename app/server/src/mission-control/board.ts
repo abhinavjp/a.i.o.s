@@ -38,7 +38,10 @@ export function registerMissionControlBoardRoute(app: FastifyInstance, stores: {
         askId: observation.askId,
         firstObservedAt: observation.firstObservedAt,
         lastObservedAt: observation.lastObservedAt,
-        status: observation.status
+        status: observation.status,
+        admissionState: observation.admissionState,
+        blockedReason: observation.blockedReason,
+        taskId: observation.taskId
       }))
     };
     const workItems = await region(() => stores.workItems.list());

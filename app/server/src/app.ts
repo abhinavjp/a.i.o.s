@@ -32,6 +32,7 @@ import { FilePhaseStore, type PhaseStore } from "./PhaseStore.js";
 import { registerWorkItemRoutes } from "./routes/workItems.js";
 import { JiraSyncCoordinator, type JiraSyncScheduler } from "./JiraSyncCoordinator.js";
 import { GitLabDiscussionSyncCoordinator } from "./mission-control/GitLabDiscussionSyncCoordinator.js";
+import { RemediationAdmissionCoordinator } from "./mission-control/RemediationAdmissionCoordinator.js";
 import { registerGitLabDiscussionSyncRoutes } from "./mission-control/discussions.js";
 import { registerMissionControlBoardRoute } from "./mission-control/board.js";
 import { RUNNING_VERSION } from "./Version.js";
@@ -95,13 +96,15 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     now: options.jiraSyncNow ?? (options.runtimeClock ? () => options.runtimeClock!.now() : undefined),
     scheduler: options.jiraSyncScheduler
   });
+  let processStandingRuleAdmissions: () => Promise<void> = async () => undefined;
   const gitLabDiscussionSync = new GitLabDiscussionSyncCoordinator({
     codeHost: options.codeHost,
     workItems: workItemStore,
     sarathi: sarathiStore,
     intervalMs: options.gitLabDiscussionSyncIntervalMs,
     now: options.gitLabDiscussionSyncNow ?? (options.runtimeClock ? () => options.runtimeClock!.now() : undefined),
-    scheduler: options.gitLabDiscussionSyncScheduler
+    scheduler: options.gitLabDiscussionSyncScheduler,
+    afterObservationBatch: () => processStandingRuleAdmissions()
   });
   const artifactStore = options.artifactStore ?? new FileArtifactStore(join(dataDirectory, "artifacts.json"));
   artifactStore.setActivityStore(sarathiStore);
@@ -143,7 +146,7 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
   for (const activity of workItemStore.stageActivity()) sarathiStore.recordStageState(activity);
   for (const activity of artifactStore.activityEntries()) sarathiStore.recordArtifactWritten(activity.artifact, activity.occurredAt);
   for (const task of taskStore.list().sort((a, b) => a.updatedAt.localeCompare(b.updatedAt))) sarathiStore.recordTask(task, phaseStore.workItemForTask(task.taskId));
-  registerTaskRoutes(app, manager, taskStore, {
+  const taskRegistry = registerTaskRoutes(app, manager, taskStore, {
     runtimeRouter,
     planResolver: options.executionPlanResolver ?? new LayeredExecutionPlanResolver(sarathiStore),
     executionObserver: { record: (task) => sarathiStore.recordTask(task, phaseStore.workItemForTask(task.taskId)) },
@@ -154,6 +157,8 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     agentSlots,
     stallThresholds: () => sarathiStore.snapshot().stallThresholds
   }, engineConfigStore);
+  const remediationAdmission = new RemediationAdmissionCoordinator(sarathiStore, agentSlots, permissionEngine, taskRegistry, manager);
+  processStandingRuleAdmissions = () => remediationAdmission.processStandingRules();
   const applyTrackChange = (intent: ToolIntent): void => {
     const stageKind = intent.context.stageKind as StageKind;
     const index = Number(intent.context.index);
@@ -176,7 +181,9 @@ export function buildApp(manager: AgentManager, options: BuildAppOptions = {}) {
     if (!artifact || (artifact.approvalState !== "draft" && artifact.approvalState !== "rejected")) return undefined;
     artifactStore.update(artifactId, { approvalState: "awaiting", rejectionNote: undefined });
     return { tool: "delivery-pipeline", operation: "artifact.approve", target: artifactId, context: { workItemId: artifact.workItemId } };
-  }, agentSlots);
+  }, agentSlots,
+  (ask, decision) => decision === "approved" ? remediationAdmission.preflight(ask) : undefined,
+  (ask) => remediationAdmission.admitApproved(ask));
   registerEngineRoutes(app, engineConfigStore, manager);
   registerWorkItemRoutes(app, workItemStore, options.workSource, options.codeHost, artifactStore, phaseStore, taskStore, sarathiStore, permissionEngine, applyTrackChange, jiraSync);
   registerGitLabDiscussionSyncRoutes(app, gitLabDiscussionSync, sarathiStore);

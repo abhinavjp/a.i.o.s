@@ -47,7 +47,7 @@ export function registerTaskRoutes(
   store: TaskStore,
   options: TaskRouteOptions = {},
   engineStore?: EngineConfigStore
-): void {
+): TaskRunRegistry {
   const registry = new TaskRunRegistry(
     store,
     options.runtimeRouter,
@@ -223,6 +223,7 @@ export function registerTaskRoutes(
       });
     }
   );
+  return registry;
 }
 
 function toLayer(policy: StoredEnginePolicy | null): { policy: EnginePolicyOverride; version: number } | null {

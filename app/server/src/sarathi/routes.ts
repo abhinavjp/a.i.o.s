@@ -1,6 +1,6 @@
 import type { FastifyInstance } from "fastify";
 import type { ApprovalLifetime, LiveProofRoute, PermissionRuleDecision, ResolvedRoute, RoutePolicyOverride, RuntimeRouter, ToolIntent } from "@aios/contracts";
-import type { SarathiStore, StallThresholds } from "./SarathiStore.js";
+import type { PendingAsk, SarathiStore, StallThresholds } from "./SarathiStore.js";
 import { randomUUID } from "node:crypto";
 import { isRoutePolicyOverride } from "./RoutePolicy.js";
 import type { ProviderCatalogManager } from "./ProviderCatalog.js";
@@ -46,6 +46,7 @@ interface ApprovalBody {
 interface StandingRuleBody { label?: unknown; askKind?: unknown; scope?: unknown; }
 interface AutopilotBody { low?: unknown; medium?: unknown; high?: unknown; }
 interface StallThresholdsBody { nudgeMinutes?: unknown; stopMinutes?: unknown; }
+type AskAdmissionResult = { state: "blocked"; reason: string } | { state: "admitted"; taskId: string };
 
 export function registerSarathiRoutes(
   app: FastifyInstance,
@@ -57,7 +58,9 @@ export function registerSarathiRoutes(
   proofHarness?: LiveProofHarness,
   onAskDecision?: (intent: ToolIntent, decision: "approved" | "declined", note?: string) => void | Promise<void>,
   onArtifactAwait?: (artifactId: string) => ToolIntent | undefined,
-  agentSlots?: AgentSlotManager
+  agentSlots?: AgentSlotManager,
+  beforeAskDecision?: (ask: PendingAsk, decision: "approved" | "declined") => Promise<AskAdmissionResult | undefined> | AskAdmissionResult | undefined,
+  onAskApproved?: (ask: PendingAsk) => Promise<AskAdmissionResult | undefined> | AskAdmissionResult | undefined
 ): void {
   app.get("/api/sarathi/dashboard", async () => store.snapshot());
   app.get("/api/sarathi/agents", async () => ({ agents: agentSlots?.list() ?? [] }));
@@ -205,9 +208,17 @@ export function registerSarathiRoutes(
     if (!permissionEngine || (request.body?.decision !== "approved" && request.body?.decision !== "declined")) { reply.code(400); return { error: "decision must be approved or declined" }; }
     const ask = store.getPendingAsk(request.params.askId);
     if (!ask) { reply.code(409); return { error: "ask was already decided or does not exist" }; }
+    const preflight = await beforeAskDecision?.(ask, request.body.decision);
+    if (preflight?.state === "blocked") { reply.code(409); return { ask, decision: request.body.decision, admission: preflight }; }
     await onAskDecision?.(ask.intent, request.body.decision, request.body.note);
     store.decideAsk(request.params.askId, request.body.decision);
-    if (request.body.decision === "approved") { permissionEngine.approve(ask.intent, "once"); store.recordApprovedAsk(ask); }
+    if (request.body.decision === "approved") {
+      permissionEngine.approve(ask.intent, "once");
+      store.recordApprovedAsk(ask);
+      const admission = await onAskApproved?.(ask);
+      if (admission?.state === "blocked") { reply.code(409); return { ask, decision: request.body.decision, admission }; }
+      return { ask, decision: request.body.decision, ...(admission ? { admission } : {}) };
+    }
     else permissionEngine.saveRule({ decision: "deny", tool: ask.intent.tool, operation: ask.intent.operation, target: ask.intent.target, context: ask.intent.context, lifetime: "once" });
     return { ask, decision: request.body.decision };
   });
