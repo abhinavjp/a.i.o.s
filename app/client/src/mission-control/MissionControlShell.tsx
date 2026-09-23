@@ -1,10 +1,16 @@
 import { useEffect, useRef, useState, type ReactNode } from "react";
 import type { MissionControlBoard, MissionControlBoardItem, MissionControlRegion, StageKind } from "@aios/contracts";
-import type { BoardLoad } from "./api.js";
+import type { ActionResult, AutopilotSettings, BoardLoad } from "./api.js";
 import "./MissionControlShell.css";
 
+type ShellAsk = { id: string; kind: string; risk?: "low" | "medium" | "high"; workItemId: string | null; createdAt: string; intent: { tool: string; operation?: string; target?: string; context: Record<string, string> } };
+type ShellAction = ActionResult | void;
 interface ShellDashboard {
-  asks: ReadonlyArray<{ id: string; kind: string; workItemId: string | null; createdAt: string; intent: { tool: string; context: Record<string, string> } }>;
+  asks: ReadonlyArray<ShellAsk>;
+  automaticDecisions?: ReadonlyArray<{ id: string; intent: { operation: string; target: string }; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean }>;
+  standingRuleSuggestions?: ReadonlyArray<{ id: string; askKind: string; scope: string; state?: "offered" | "accepted" | "dismissed" }>;
+  standingRules?: ReadonlyArray<{ id: string; label: string; askKind: string; scope: string; enabled: boolean; firedCount: number }>;
+  autopilot?: AutopilotSettings;
   activity: ReadonlyArray<{ id: string; occurredAt: string; agent: string; workItemId: string | null; what: string }>;
   specialists: ReadonlyArray<{ id: string; name: string; role: string; runtime?: string; status: "pending_approval" | "active"; scope?: string; slotLimit: number; capabilityTags?: ReadonlyArray<string> }>;
   recentTasks?: ReadonlyArray<{ id: string; title: string; status: string }>;
@@ -21,6 +27,7 @@ type WorkPhase = AvailableRegion<MissionControlBoardItem["phases"]>[number];
 type WorkArtifact = AvailableRegion<MissionControlBoardItem["artifacts"]>[number];
 type WorkMergeRequest = AvailableRegion<MissionControlBoardItem["mergeRequests"]>[number];
 type DetailTarget =
+  | { type: "ask"; ask: ShellAsk }
   | { type: "work"; item: MissionControlBoardItem }
   | { type: "stage"; item: MissionControlBoardItem; stageKind: StageKind }
   | { type: "phase"; item: MissionControlBoardItem; phase: WorkPhase }
@@ -41,10 +48,16 @@ export function MissionControlShell(props: {
   agentSlotsStatus?: "loading" | "available" | "error";
   onAdvanced: () => void;
   onPause: () => void;
-  onDecideAsk: (id: string, decision: "approved" | "declined") => void;
+  onDecideAsk: (id: string, decision: "approved" | "declined") => ShellAction | Promise<ShellAction>;
+  onAutopilotChange?: (settings: AutopilotSettings) => ShellAction | Promise<ShellAction>;
+  onStandingRuleToggle?: (id: string, enabled: boolean) => ShellAction | Promise<ShellAction>;
+  onResolveSuggestion?: (id: string, action: "accept" | "dismiss") => ShellAction | Promise<ShellAction>;
+  onUndoAutomaticDecision?: (id: string) => ShellAction | Promise<ShellAction>;
 }) {
   const [railOpen, setRailOpen] = useState(false);
   const [catchUpOpen, setCatchUpOpen] = useState(false);
+  const [catchUpIndex, setCatchUpIndex] = useState(0);
+  const [actionMessage, setActionMessage] = useState<string | null>(null);
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const catchUpButton = useRef<HTMLButtonElement>(null);
   const detailCloseButton = useRef<HTMLButtonElement>(null);
@@ -57,7 +70,7 @@ export function MissionControlShell(props: {
   const agentsStatus = props.agentsStatus ?? "loading";
   const agentSlots = props.agentSlots ?? [];
   const agentSlotsStatus = props.agentSlotsStatus ?? "loading";
-  const closeCatchUp = () => { setCatchUpOpen(false); catchUpButton.current?.focus(); };
+  const closeCatchUp = () => { setCatchUpOpen(false); setCatchUpIndex(0); catchUpButton.current?.focus(); };
   const closeDetail = () => { progressReadId.current += 1; artifactReadId.current += 1; setDetail(null); detailTrigger.current?.focus(); };
   const openWork = (item: MissionControlBoardItem, trigger: HTMLElement) => {
     const readId = ++progressReadId.current;
@@ -96,6 +109,38 @@ export function MissionControlShell(props: {
   const backToWork = (item: MissionControlBoardItem) => setDetail({ type: "work", item });
   const openSpecialist = (specialist: ShellDashboard["specialists"][number], trigger: HTMLElement) => { detailTrigger.current = trigger; setDetail({ type: "agent", specialist }); };
   const openEngine = (engine: ShellAgentHealth, trigger: HTMLElement) => { detailTrigger.current = trigger; setDetail({ type: "engine", engine }); };
+  const openAsk = (ask: ShellAsk, trigger: HTMLElement) => { detailTrigger.current = trigger; setActionMessage(null); setDetail({ type: "ask", ask }); };
+  const runAction = async (action: (() => ShellAction | Promise<ShellAction>) | undefined) => {
+    if (!action) return;
+    setActionMessage(null);
+    try {
+      const result = await action();
+      if (result && !result.ok) setActionMessage(result.message);
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : "Sarathi could not complete the action.");
+    }
+  };
+  const decideAsk = async (askId: string, decision: "approved" | "declined") => {
+    setActionMessage(null);
+    try {
+      const result = await props.onDecideAsk(askId, decision);
+      if (result && !result.ok) { setActionMessage(result.message); return false; }
+      return true;
+    } catch (error) {
+      setActionMessage(error instanceof Error ? error.message : "Sarathi could not complete this decision.");
+      return false;
+    }
+  };
+  const decideCatchUpAsk = async (decision: "approved" | "declined") => {
+    const ask = asks[catchUpIndex];
+    if (!ask) return;
+    const currentIndex = catchUpIndex;
+    const remaining = asks.length;
+    if (await decideAsk(ask.id, decision)) {
+      if (remaining <= 1) closeCatchUp();
+      else setCatchUpIndex(Math.min(currentIndex, remaining - 2));
+    }
+  };
 
   useEffect(() => { if (detail) detailCloseButton.current?.focus(); }, [detail]);
 
@@ -104,17 +149,35 @@ export function MissionControlShell(props: {
       if (event.key === "Escape" && catchUpOpen) { closeCatchUp(); return; }
       if (event.key === "Escape" && detail) { closeDetail(); return; }
       const target = event.target;
-      if (event.key.toLowerCase() === "c" && !event.altKey && !event.ctrlKey && !event.metaKey && !(target instanceof Element && target.closest("input, textarea, select, [contenteditable=true]")) && props.dashboard.asks.length > 0) {
+      const editable = target instanceof Element && target.closest("input, textarea, select, [contenteditable=true]");
+      if (editable || event.altKey || event.ctrlKey || event.metaKey) return;
+      if (event.key.toLowerCase() === "c" && !catchUpOpen && props.dashboard.asks.length > 0) {
         event.preventDefault();
+        setCatchUpIndex(0);
         setCatchUpOpen(true);
+      } else if (catchUpOpen && event.key.toLowerCase() === "s" && asks.length > 0) {
+        event.preventDefault();
+        setCatchUpIndex((index) => (index + 1) % asks.length);
+      } else if (catchUpOpen && event.key.toLowerCase() === "a") {
+        event.preventDefault();
+        void decideCatchUpAsk("approved");
+      } else if (catchUpOpen && event.key.toLowerCase() === "d") {
+        event.preventDefault();
+        void decideCatchUpAsk("declined");
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [catchUpOpen, detail, props.dashboard.asks.length]);
+  }, [catchUpOpen, detail, props.dashboard.asks, catchUpIndex]);
 
   const items = props.board.status === "available" && props.board.board.workItems.status === "available" ? props.board.board.workItems.data : [];
   const asks = props.dashboard.asks;
+  const automaticDecisions = props.dashboard.automaticDecisions ?? [];
+  const standingRuleSuggestions = (props.dashboard.standingRuleSuggestions ?? []).filter((suggestion) => !suggestion.state || suggestion.state === "offered");
+  const standingRules = props.dashboard.standingRules ?? [];
+  const autopilot = props.dashboard.autopilot ?? { low: "ask", medium: "ask", high: "ask" };
+  const catchUpAsk = asks[catchUpIndex];
+  const detailAskPending = detail?.type !== "ask" || asks.some((ask) => ask.id === detail.ask.id);
   const specialists = props.dashboard.specialists;
 
   return <main className={`mc-root${railOpen ? " mc-rail-expanded" : ""}`} aria-label="Sarathi Mission Control">
@@ -140,7 +203,20 @@ export function MissionControlShell(props: {
         <section id="mc-asks" className="mc-section" role="region" aria-label="Asks">
           <SectionHeading eyebrow="Decision queue" title="Asks" detail={asks.length > 0 ? `${asks.length} waiting` : "All clear"} />
           {props.dashboardStatus === "loading" ? <StateText>Loading decisions…</StateText> : props.dashboardStatus === "error" ? <StateText>Decisions are unavailable. Try again from Advanced controls.</StateText> : asks.length === 0 ? <StateText>No asks are waiting.</StateText> :
-            <div className="mc-ask-grid">{asks.slice(0, 3).map((ask) => <article className="mc-ask" key={ask.id}><span className="mc-ask-kind">{ask.kind.replaceAll(".", " · ")}</span><h3>{ask.intent.context.repository ?? ask.workItemId ?? "Sarathi decision"}</h3><p>{ask.intent.context.body ?? "Your decision is needed before this work can continue."}</p><span className="mc-ask-time">Observed {ask.createdAt}</span></article>)}</div>}
+            <div className="mc-ask-grid">{asks.slice(0, 3).map((ask) => <article className="mc-ask" key={ask.id}><span className="mc-ask-kind">{ask.kind.replaceAll(".", " · ")}</span><h3>{ask.intent.context.repository ?? ask.workItemId ?? ask.intent.target ?? "Sarathi decision"}</h3><p>{ask.intent.context.body ?? "Your decision is needed before this work can continue."}</p><span className="mc-ask-time">{ask.risk ? `${ask.risk} risk · ` : ""}Observed {ask.createdAt}</span><button type="button" aria-label={`Review ${ask.kind}`} onClick={(event) => openAsk(ask, event.currentTarget)}>Review decision</button></article>)}</div>}
+        </section>
+        <section className="mc-section mc-rules" role="region" aria-label="Rules and autopilot">
+          <SectionHeading eyebrow="Decision policy" title="Rules & autopilot" detail={props.dashboardStatus === "available" ? `${standingRules.filter((rule) => rule.enabled).length} enabled rules` : "Observation"} />
+          {props.dashboardStatus === "loading" ? <StateText>Loading decision policy…</StateText> : props.dashboardStatus === "error" ? <StateText>Decision policy unavailable.</StateText> : <>
+          <p className="mc-floor-note">The immutable floor always takes precedence over standing rules and autopilot.</p>
+          <div className="mc-policy-grid">
+            <section className="mc-policy-card" aria-label="Standing rule suggestions"><h3>Suggestions</h3>{standingRuleSuggestions.length === 0 ? <p>No standing rule suggestions.</p> : standingRuleSuggestions.map((suggestion) => <div className="mc-policy-row" key={suggestion.id}><span><strong>{suggestion.askKind}</strong><small>{suggestion.scope}</small></span><button type="button" onClick={() => void runAction(() => props.onResolveSuggestion?.(suggestion.id, "accept"))} aria-label={`Accept suggestion ${suggestion.askKind}`}>Accept</button><button type="button" onClick={() => void runAction(() => props.onResolveSuggestion?.(suggestion.id, "dismiss"))} aria-label={`Dismiss suggestion ${suggestion.askKind}`}>Dismiss</button></div>)}</section>
+            <section className="mc-policy-card" aria-label="Standing rules"><h3>Standing rules</h3>{standingRules.length === 0 ? <p>No standing rules are configured.</p> : standingRules.map((rule) => <div className="mc-policy-row" key={rule.id}><span><strong>{rule.label}</strong><small>{rule.askKind} · {rule.scope} · fired {rule.firedCount} times</small></span><button type="button" onClick={() => void runAction(() => props.onStandingRuleToggle?.(rule.id, !rule.enabled))} aria-label={`${rule.enabled ? "Disable" : "Enable"} rule ${rule.label}`}>{rule.enabled ? "Disable" : "Enable"}</button></div>)}</section>
+            <section className="mc-policy-card" aria-label="Autopilot tiers"><h3>Autopilot</h3>{(["low", "medium", "high"] as const).map((tier) => <label className="mc-tier-row" key={tier} htmlFor={`mc-autopilot-${tier}`}>{tier} risk decisions<select id={`mc-autopilot-${tier}`} aria-label={`Autopilot ${tier}-risk decisions`} value={autopilot[tier]} onChange={(event) => void runAction(() => props.onAutopilotChange?.({ ...autopilot, [tier]: event.target.value as "ask" | "automatic" }))}><option value="ask">Ask first</option><option value="automatic">Automatic when allowed</option></select></label>)}</section>
+            <section className="mc-policy-card" aria-label="Automatic decision audit"><h3>Automatic decision audit</h3>{automaticDecisions.length === 0 ? <p>No automatic decisions recorded.</p> : automaticDecisions.map((decision) => <div className="mc-policy-row" key={decision.id}><span><strong>Automatic decision: {decision.intent.operation} · {decision.intent.target}</strong><small>{decision.source}: {decision.sourceDetail} · {decision.workItemId ?? "No work item"} · {decision.createdAt}{decision.undone ? " · undone" : decision.undoable ? " · undo available" : " · cannot be undone"}</small></span><button type="button" disabled={decision.undone || !decision.undoable} onClick={() => void runAction(() => props.onUndoAutomaticDecision?.(decision.id))} aria-label={`Undo ${decision.id}`}>Undo</button></div>)}</section>
+          </div>
+          {actionMessage && <p className="mc-action-message" role="alert">{actionMessage}</p>}
+          </>}
         </section>
         <section className="mc-section" role="region" aria-label="Work pipeline">
           <SectionHeading eyebrow="Current work" title="Work pipeline" detail={props.board.status === "available" && props.board.board.workItems.status === "available" ? `${items.length} work items` : "Observation"} />
@@ -156,8 +232,22 @@ export function MissionControlShell(props: {
         {railOpen && <section className="mc-engine-health"><h3>Runtime health</h3>{agentsStatus === "loading" ? <p>Loading agent health…</p> : agentsStatus === "error" ? <p>Agent health unavailable.</p> : agents.length === 0 ? <p>No agent health observations.</p> : agents.map((engine) => <button type="button" key={engine.id} onClick={(event) => openEngine(engine, event.currentTarget)}>{engine.displayName} · {engine.health.ok ? "healthy" : "unavailable"}</button>)}</section>}
       </aside>
     </div>
-    {detail && <div className="mc-drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDetail(); }}><section className="mc-drawer" role="dialog" aria-modal="true" aria-label={detail.type === "work" ? "Work item details" : detail.type === "stage" ? "Stage details" : detail.type === "phase" ? "Phase details" : detail.type === "task" ? "Task details" : detail.type === "artifact" ? "Artifact details" : detail.type === "merge-request" ? "Merge request details" : "Agent details"}>
-      <div className="mc-drawer-header"><div><p className="mc-eyebrow">{detail.type === "work" ? "Work item" : detail.type === "stage" ? "Stage" : detail.type === "phase" ? "Phase" : detail.type === "task" ? "Task" : detail.type === "artifact" ? "Artifact" : detail.type === "merge-request" ? "Merge request" : detail.type === "agent" ? "Specialist" : "Agent engine"}</p><h2>{detail.type === "work" ? detail.item.workItem.title : detail.type === "stage" ? stageLabel(detail.stageKind) : detail.type === "phase" ? detail.phase.phase.name : detail.type === "task" ? detail.task.name : detail.type === "artifact" ? detail.artifact.name : detail.type === "merge-request" ? detail.mergeRequest.title : detail.type === "agent" ? detail.specialist.name : detail.engine.displayName}</h2></div><button ref={detailCloseButton} type="button" onClick={closeDetail} aria-label="Close details">Close</button></div>
+    {detail && <div className="mc-drawer-backdrop" onMouseDown={(event) => { if (event.target === event.currentTarget) closeDetail(); }}><section className="mc-drawer" role="dialog" aria-modal="true" aria-label={detail.type === "ask" ? "Decision details" : detail.type === "work" ? "Work item details" : detail.type === "stage" ? "Stage details" : detail.type === "phase" ? "Phase details" : detail.type === "task" ? "Task details" : detail.type === "artifact" ? "Artifact details" : detail.type === "merge-request" ? "Merge request details" : "Agent details"}>
+      <div className="mc-drawer-header"><div><p className="mc-eyebrow">{detail.type === "ask" ? "Pending decision" : detail.type === "work" ? "Work item" : detail.type === "stage" ? "Stage" : detail.type === "phase" ? "Phase" : detail.type === "task" ? "Task" : detail.type === "artifact" ? "Artifact" : detail.type === "merge-request" ? "Merge request" : detail.type === "agent" ? "Specialist" : "Agent engine"}</p><h2>{detail.type === "ask" ? detail.ask.kind : detail.type === "work" ? detail.item.workItem.title : detail.type === "stage" ? stageLabel(detail.stageKind) : detail.type === "phase" ? detail.phase.phase.name : detail.type === "task" ? detail.task.name : detail.type === "artifact" ? detail.artifact.name : detail.type === "merge-request" ? detail.mergeRequest.title : detail.type === "agent" ? detail.specialist.name : detail.engine.displayName}</h2></div><button ref={detailCloseButton} type="button" onClick={closeDetail} aria-label="Close details">Close</button></div>
+      {detail.type === "ask" && <>
+        <section className="mc-detail-section"><h3>Decision context</h3><p>Risk: <strong>{detail.ask.risk ?? "unknown"}</strong></p><p>Tool: {detail.ask.intent.tool}</p><p>Operation: {detail.ask.intent.operation ?? detail.ask.kind}</p><p>Target: {detail.ask.intent.target ?? detail.ask.workItemId ?? "unknown"}</p><p>Work item: {detail.ask.workItemId ?? "No work item linked"}</p><p>Created: <time dateTime={detail.ask.createdAt}>{detail.ask.createdAt}</time></p>
+          {detail.ask.intent.context.repository && <p>Repository: {detail.ask.intent.context.repository}</p>}
+          {detail.ask.intent.context.mergeRequestIid && <p>Merge request: !{detail.ask.intent.context.mergeRequestIid}</p>}
+          {detail.ask.intent.context.version && <p>Version: {detail.ask.intent.context.version} · {detail.ask.intent.context.channel ?? "channel unknown"}</p>}
+          {detail.ask.intent.context.notes && <p>Notes: {detail.ask.intent.context.notes}</p>}
+          {detail.ask.intent.context.body && <p>Observed request: {detail.ask.intent.context.body}</p>}
+          {detail.ask.kind === "track.change" && <TrackChangeDetails context={detail.ask.intent.context} />}
+          <p>This decision is handled by Sarathi’s permission engine. The immutable floor remains in force.</p>
+        </section>
+        {actionMessage && <p className="mc-action-message" role="alert">{actionMessage}</p>}
+        {!detailAskPending && <p className="mc-action-message" role="status">This decision is no longer pending in Sarathi.</p>}
+        <div className="mc-decision-actions"><button type="button" disabled={!detailAskPending} onClick={() => void decideAsk(detail.ask.id, "approved").then((ok) => { if (ok) closeDetail(); })}>Approve</button><button type="button" disabled={!detailAskPending} onClick={() => void decideAsk(detail.ask.id, "declined").then((ok) => { if (ok) closeDetail(); })}>Decline</button></div>
+      </>}
       {detail.type === "work" && <>
         <p className="mc-drawer-source">{detail.item.workItem.workSourceKey ?? "Local work"} · {detail.item.workItem.repositories.join(", ") || "No repositories"}</p>
         <section className="mc-detail-section"><h3>Counted progress</h3><p>{detail.item.stages.completed} / {detail.item.stages.total} stages complete</p><p>{detail.item.tasks ? `${detail.item.tasks.completed} / ${detail.item.tasks.total} phase tasks complete` : "Task progress unknown"}</p>
@@ -175,7 +265,7 @@ export function MissionControlShell(props: {
       {detail.type === "agent" && <section className="mc-detail-section"><h3>Assignment</h3><p>Role: {detail.specialist.role}</p><p>Runtime: {detail.specialist.runtime ?? "unknown"}</p><p>Approval state: {detail.specialist.status === "active" ? "active" : "pending approval"}</p><p>Health: {describeAgentHealth(detail.specialist.runtime, agents, agentsStatus)}</p><p>Slots in use: {describeAgentSlots(detail.specialist.id, agentSlots, agentSlotsStatus)}</p><p>Scope: {detail.specialist.scope || "No scope recorded"}</p><h3>Capability tags</h3>{detail.specialist.capabilityTags?.length ? <ul className="mc-capability-list">{detail.specialist.capabilityTags.map((tag) => <li key={tag}>{tag}</li>)}</ul> : <p>No capability tags configured.</p>}<h3>Recent task state</h3><p>System-wide; specialist attribution unavailable.</p>{props.dashboard.recentTasks?.length ? <ul className="mc-capability-list">{props.dashboard.recentTasks.slice(0, 5).map((task) => <li key={task.id}>{task.title} · {task.status}</li>)}</ul> : <p>No recent tasks recorded.</p>}</section>}
       {detail.type === "engine" && <section className="mc-detail-section"><h3>Observed health</h3><p>Engine: {detail.engine.kind}</p><p>Health: {detail.engine.health.ok ? "healthy" : `unavailable: ${detail.engine.health.reason}`}</p><p>Slot capacity unknown: runtime health has no specialist slot assignment.</p></section>}
     </section></div>}
-    {catchUpOpen && <div className="mc-modal-backdrop"><section className="mc-catchup" role="dialog" aria-modal="true" aria-label="Catch up"><div className="mc-catchup-header"><h2>Decisions waiting</h2><button type="button" onClick={closeCatchUp} autoFocus>Close</button></div>{asks.map((ask) => <article key={ask.id}><strong>{ask.kind.replaceAll(".", " · ")}</strong><p>{ask.intent.context.body ?? ask.workItemId ?? "Sarathi decision"}</p><div><button type="button" onClick={() => { props.onDecideAsk(ask.id, "approved"); closeCatchUp(); }}>Approve</button><button type="button" onClick={() => { props.onDecideAsk(ask.id, "declined"); closeCatchUp(); }}>Decline</button></div></article>)}</section></div>}
+    {catchUpOpen && <div className="mc-modal-backdrop"><section className="mc-catchup" role="dialog" aria-modal="true" aria-label="Catch up"><div className="mc-catchup-header"><h2>Decisions waiting</h2><button type="button" onClick={closeCatchUp} autoFocus>Leave catch-up</button></div>{catchUpAsk ? <article key={catchUpAsk.id}><span>{catchUpIndex + 1} of {asks.length}</span><strong>{catchUpAsk.kind.replaceAll(".", " · ")}</strong><p>{catchUpAsk.intent.context.body ?? catchUpAsk.workItemId ?? catchUpAsk.intent.target ?? "Sarathi decision"}</p>{catchUpAsk.kind === "track.change" && <TrackChangeDetails context={catchUpAsk.intent.context} />}<div><button type="button" onClick={() => void decideCatchUpAsk("approved")}>Approve (A)</button><button type="button" onClick={() => void decideCatchUpAsk("declined")}>Decline (D)</button><button type="button" onClick={() => setCatchUpIndex((index) => (index + 1) % asks.length)}>Skip (S)</button></div></article> : <article><p>No asks are waiting in the canonical queue.</p><button type="button" onClick={closeCatchUp}>Leave catch-up</button></article>}{actionMessage && <p role="alert" className="mc-action-message">{actionMessage}</p>}</section></div>}
   </main>;
 }
 
@@ -214,6 +304,21 @@ function BoardSummary(props: { board: BoardLoad; count: number }) {
   if (props.board.status === "unsupported") return <span>Work item observation is unsupported</span>;
   if (props.board.board.workItems.status !== "available") return <span>Work item observation unavailable: {props.board.board.workItems.reason}</span>;
   return <span><strong>{props.count}</strong> observed work items</span>;
+}
+
+function TrackChangeDetails(props: { context: Readonly<Record<string, string>> }) {
+  const current = parseTrackStages(props.context.currentTrack);
+  const proposed = parseTrackStages(props.context.proposedTrack);
+  if (!current || !proposed) return <p>Current and proposed track details are unavailable.</p>;
+  return <div className="mc-track-change-details"><p>Current track: {current.join(" → ")}</p><p>Proposed track: {proposed.join(" → ")}</p>{props.context.stageKind && <p>Stage to add: {props.context.stageKind} at position {props.context.index ?? "unknown"}</p>}</div>;
+}
+
+function parseTrackStages(value: string | undefined): string[] | null {
+  if (!value) return null;
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) && parsed.every((stage) => typeof stage === "string") ? parsed : null;
+  } catch { return null; }
 }
 
 function DetailRegion<T>(props: { title: string; region: MissionControlRegion<ReadonlyArray<T>>; empty: string; children: (data: ReadonlyArray<T>) => ReactNode }) {

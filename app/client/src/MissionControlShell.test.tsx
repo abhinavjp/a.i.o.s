@@ -5,6 +5,20 @@ import { MissionControlShell } from "./mission-control/MissionControlShell.js";
 import { readMissionControlBoard } from "./mission-control/api.js";
 import type { MissionControlBoard, MissionControlBoardItem, StageKind } from "@aios/contracts";
 
+type DecisionAskFixture = { id: string; kind: string; risk?: "low" | "medium" | "high"; workItemId: string | null; createdAt: string; intent: { tool: string; operation?: string; target?: string; context: Record<string, string> } };
+type DecisionDashboardFixture = {
+  asks: DecisionAskFixture[];
+  automaticDecisions: Array<{ id: string; intent: { operation: string; target: string }; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean }>;
+  standingRuleSuggestions: Array<{ id: string; askKind: string; scope: string; state?: "offered" | "accepted" | "dismissed" }>;
+  standingRules: Array<{ id: string; label: string; askKind: string; scope: string; enabled: boolean; firedCount: number }>;
+  autopilot: { low: "ask" | "automatic"; medium: "ask" | "automatic"; high: "ask" | "automatic" };
+  activity: Array<{ id: string; occurredAt: string; agent: string; workItemId: string | null; what: string }>;
+  specialists: Array<{ id: string; name: string; role: string; runtime?: string; status: "pending_approval" | "active"; slotLimit: number; scope?: string; capabilityTags?: string[] }>;
+  recentTasks: Array<{ id: string; title: string; status: string }>;
+  controls: { manualPaused: boolean };
+  runtime: { name: string; state: "unavailable" | "unverified" | "ready" };
+};
+
 afterEach(() => {
   cleanup();
   localStorage.clear();
@@ -59,6 +73,8 @@ describe("Mission Control shell", () => {
     expect(screen.getByText("Decisions are unavailable. Try again from Advanced controls.")).toBeTruthy();
     expect(screen.getByText("GitLab read failed")).toBeTruthy();
     expect(screen.getByText("Activity is unavailable.")).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Rules and autopilot" }).textContent).toContain("Decision policy unavailable");
+    expect(screen.queryByLabelText("Autopilot low-risk decisions")).toBeNull();
   });
 
   test("toggles the agent rail and returns focus after the catch-up shortcut", () => {
@@ -80,6 +96,104 @@ describe("Mission Control shell", () => {
     fireEvent.keyDown(window, { key: "Escape" });
     expect(screen.queryByRole("dialog", { name: "Catch up" })).toBeNull();
     expect(document.activeElement).toBe(catchUp);
+  });
+
+  test("keeps server ask ranking and opens canonical track-change context", () => {
+    const dashboard = emptyDashboard();
+    dashboard.asks = [
+      { id: "urgent", kind: "urgent.review", workItemId: "work-urgent", createdAt: "2026-09-23T10:00:00Z", intent: { tool: "review", context: { body: "First by server rank" } } },
+      { id: "track-change-1", kind: "track.change", workItemId: "work-1", createdAt: "2026-09-22T00:00:00Z", intent: { tool: "delivery-pipeline", context: {
+        workItemId: "work-1", stageKind: "technical-analysis", index: "0",
+        currentTrack: JSON.stringify(["plan", "implementation", "merge"]), proposedTrack: JSON.stringify(["technical-analysis", "plan", "implementation", "merge"])
+      } } }
+    ];
+    render(<MissionControlShell board={{ status: "available", board: makeBoard([]) }} dashboard={dashboard} dashboardStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={vi.fn()} />);
+
+    const asks = screen.getByRole("region", { name: "Asks" });
+    expect(asks.textContent!.indexOf("urgent · review")).toBeLessThan(asks.textContent!.indexOf("track · change"));
+    fireEvent.click(within(asks).getByRole("button", { name: /Review track.change/ }));
+    const detail = screen.getByRole("dialog", { name: "Decision details" });
+    expect(detail.textContent).toContain("Current track: plan → implementation → merge");
+    expect(detail.textContent).toContain("Proposed track: technical-analysis → plan → implementation → merge");
+    expect(detail.textContent).toContain("work-1");
+    expect(within(detail).getByRole("button", { name: "Approve" })).toBeTruthy();
+    expect(within(detail).getByRole("button", { name: "Decline" })).toBeTruthy();
+  });
+
+  test("catch-up skips without deciding and keyboard decisions use the canonical ask", () => {
+    const dashboard = emptyDashboard();
+    dashboard.asks = [
+      { id: "ask-1", kind: "review.first", workItemId: "work-1", createdAt: "2026-09-23T10:00:00Z", intent: { tool: "review", context: { body: "First decision" } } },
+      { id: "ask-2", kind: "review.second", workItemId: "work-2", createdAt: "2026-09-23T10:01:00Z", intent: { tool: "review", context: { body: "Second decision" } } }
+    ];
+    const onDecideAsk = vi.fn();
+    render(<MissionControlShell board={{ status: "available", board: makeBoard([]) }} dashboard={dashboard} dashboardStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={onDecideAsk} />);
+
+    const launch = screen.getByRole("button", { name: "Catch up on 2" });
+    fireEvent.keyDown(window, { key: "c" });
+    const dialog = screen.getByRole("dialog", { name: "Catch up" });
+    expect(dialog.textContent).toContain("First decision");
+    fireEvent.keyDown(window, { key: "s" });
+    expect(dialog.textContent).toContain("Second decision");
+    expect(onDecideAsk).not.toHaveBeenCalled();
+    fireEvent.keyDown(window, { key: "a" });
+    expect(onDecideAsk).toHaveBeenCalledWith("ask-2", "approved");
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(document.activeElement).toBe(launch);
+  });
+
+  test("catch-up shortcuts do not consume keys from editable controls", () => {
+    const dashboard = emptyDashboard();
+    dashboard.asks = [{ id: "ask-1", kind: "review.first", workItemId: "work-1", createdAt: "2026-09-23T10:00:00Z", intent: { tool: "review", context: {} } }];
+    const onDecideAsk = vi.fn();
+    render(<MissionControlShell board={{ status: "available", board: makeBoard([]) }} dashboard={dashboard} dashboardStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={onDecideAsk} />);
+
+    const editable = screen.getByLabelText("Autopilot low-risk decisions");
+    fireEvent.keyDown(editable, { key: "c" });
+    expect(screen.queryByRole("dialog", { name: "Catch up" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Catch up on 1" }));
+    fireEvent.keyDown(editable, { key: "a" });
+    fireEvent.keyDown(editable, { key: "s" });
+    expect(onDecideAsk).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog", { name: "Catch up" }).textContent).toContain("1 of 1");
+  });
+
+  test("shows floor-protected automatic outcomes as non-undoable and keeps rules and autopilot state visible", () => {
+    const dashboard = emptyDashboard();
+    dashboard.standingRuleSuggestions = [{ id: "suggestion-1", askKind: "gitlab.discussion.remediate", scope: "group/payroll", state: "offered" }, { id: "old-suggestion", askKind: "old.review", scope: "group/payroll", state: "accepted" }];
+    dashboard.standingRules = [{ id: "rule-1", label: "Review payroll", askKind: "gitlab.discussion.remediate", scope: "group/payroll", enabled: true, firedCount: 3 }];
+    dashboard.autopilot = { low: "automatic", medium: "ask", high: "automatic" };
+    dashboard.automaticDecisions = [{ id: "floor-decision", intent: { operation: "gitlab.discussion.resolve", target: "discussion-1" }, source: "autopilot", sourceDetail: "high", workItemId: "work-1", createdAt: "2026-09-23T10:00:00Z", undone: false, undoable: false }];
+    const onAutopilotChange = vi.fn();
+    const onStandingRuleToggle = vi.fn();
+    const onResolveSuggestion = vi.fn();
+    const onUndoAutomaticDecision = vi.fn();
+    render(<MissionControlShell board={{ status: "available", board: makeBoard([]) }} dashboard={dashboard} dashboardStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={vi.fn()} onAutopilotChange={onAutopilotChange} onStandingRuleToggle={onStandingRuleToggle} onResolveSuggestion={onResolveSuggestion} onUndoAutomaticDecision={onUndoAutomaticDecision} />);
+
+    expect(screen.getByRole("region", { name: "Rules and autopilot" }).textContent?.toLowerCase()).toContain("immutable floor always takes precedence");
+    expect(screen.getByText("Automatic decision: gitlab.discussion.resolve · discussion-1")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Undo floor-decision" }).hasAttribute("disabled")).toBe(true);
+    expect(screen.getByRole("button", { name: "Accept suggestion gitlab.discussion.remediate" })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: "Accept suggestion old.review" })).toBeNull();
+    expect(screen.getByRole("button", { name: "Disable rule Review payroll" })).toBeTruthy();
+    expect(screen.getByLabelText("Autopilot low-risk decisions")).toHaveProperty("value", "automatic");
+    fireEvent.click(screen.getByRole("button", { name: "Accept suggestion gitlab.discussion.remediate" }));
+    fireEvent.click(screen.getByRole("button", { name: "Disable rule Review payroll" }));
+    fireEvent.change(screen.getByLabelText("Autopilot low-risk decisions"), { target: { value: "ask" } });
+    expect(onResolveSuggestion).toHaveBeenCalledWith("suggestion-1", "accept");
+    expect(onStandingRuleToggle).toHaveBeenCalledWith("rule-1", false);
+    expect(onAutopilotChange).toHaveBeenCalledWith({ low: "ask", medium: "ask", high: "automatic" });
+    expect(onUndoAutomaticDecision).not.toHaveBeenCalled();
+  });
+
+  test("shows a canonical floor denial without inventing an autopilot change", async () => {
+    const dashboard = emptyDashboard();
+    const onAutopilotChange = vi.fn(async () => ({ ok: false as const, message: "Immutable floor denied this policy" }));
+    render(<MissionControlShell board={{ status: "available", board: makeBoard([]) }} dashboard={dashboard} dashboardStatus="available" onAdvanced={vi.fn()} onPause={vi.fn()} onDecideAsk={vi.fn()} onAutopilotChange={onAutopilotChange} />);
+    const tier = screen.getByLabelText("Autopilot high-risk decisions") as HTMLSelectElement;
+    fireEvent.change(tier, { target: { value: "automatic" } });
+    expect((await screen.findByRole("alert")).textContent).toContain("Immutable floor denied");
+    expect(tier.value).toBe("ask");
   });
 
   test("groups mixed work by track and stage and opens truthful work and stage details", () => {
@@ -204,8 +318,19 @@ describe("Mission Control shell", () => {
   });
 });
 
-function emptyDashboard() {
-  return { asks: [], activity: [], specialists: [] as Array<{ id: string; name: string; role: string; runtime?: string; status: "pending_approval" | "active"; slotLimit: number; scope?: string; capabilityTags?: string[] }>, recentTasks: [] as Array<{ id: string; title: string; status: string }>, controls: { manualPaused: false }, runtime: { name: "Sarathi", state: "ready" as const } };
+function emptyDashboard(): DecisionDashboardFixture {
+  return {
+    asks: [],
+    automaticDecisions: [],
+    standingRuleSuggestions: [],
+    standingRules: [],
+    autopilot: { low: "ask", medium: "ask", high: "ask" },
+    activity: [],
+    specialists: [],
+    recentTasks: [],
+    controls: { manualPaused: false },
+    runtime: { name: "Sarathi", state: "ready" }
+  };
 }
 
 function makeBoard(workItems: MissionControlBoardItem[]): MissionControlBoard {

@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test, vi } from "vitest";
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { App } from "./App.js";
 
 afterEach(() => {
@@ -46,6 +46,42 @@ function stubAgentsFetch() {
 }
 
 describe("App", () => {
+  test("shows a stale track decision failure and refreshes canonical ask state", async () => {
+    let dashboardReads = 0;
+    const stale = "the track changed after this ask was created";
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/sarathi/dashboard") {
+        dashboardReads += 1;
+        return Promise.resolve({ ok: true, json: async () => ({
+          runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" }, controls: { manualPaused: false, changedAt: null }, discovery: { status: "blocked", reason: "blocked", mergeRequests: [] }, tickets: [],
+          asks: dashboardReads === 1 ? [{ id: "track-change-1", kind: "track.change", risk: "medium", workItemId: "work-1", createdAt: "2026-09-22T00:00:00.000Z", intent: { tool: "delivery-pipeline", operation: "track.change", target: "work-1", context: {
+            workItemId: "work-1", stageKind: "technical-analysis", index: "0", currentTrack: JSON.stringify(["plan", "implementation", "merge"]), proposedTrack: JSON.stringify(["technical-analysis", "plan", "implementation", "merge"])
+          } } }] : []
+        }) });
+      }
+      if (url === "/api/mission-control/board") return Promise.resolve({ ok: true, json: async () => ({ workItems: { status: "available", data: [] }, gitLabDiscussions: { observations: [], sync: { configured: false, state: "unconfigured", stale: false, lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null } } }) });
+      if (url === "/api/setup") return Promise.resolve({ ok: true, json: async () => ({ firstRun: false, steps: { workSource: true, codeHost: true, agent: true } }) });
+      if (url === "/api/agents" || url === "/api/sarathi/agents") return Promise.resolve({ ok: true, json: async () => ({ agents: [] }) });
+      if (url === "/api/version") return Promise.resolve({ ok: true, json: async () => ({ version: "1.0.0" }) });
+      if (url === "/api/sarathi/asks/track-change-1/decide" && init?.method === "POST") return Promise.resolve({ ok: false, status: 409, json: async () => ({ error: stale }) });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    const ask = await screen.findByRole("button", { name: /Review track.change/ });
+    fireEvent.click(ask);
+    const detail = screen.getByRole("dialog", { name: "Decision details" });
+    fireEvent.click(within(detail).getByRole("button", { name: "Approve" }));
+
+    expect((await within(detail).findByRole("alert")).textContent).toContain(stale);
+    expect(dashboardReads).toBeGreaterThan(1);
+    expect(await screen.findByText("No asks are waiting.")).toBeTruthy();
+    expect(detail.textContent).toContain("no longer pending");
+    expect(within(detail).getByRole("button", { name: "Approve" }).hasAttribute("disabled")).toBe(true);
+  });
+
   test("shows current and proposed tracks for a track change ask", async () => {
     vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };

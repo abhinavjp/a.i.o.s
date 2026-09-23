@@ -17,7 +17,7 @@ import type {
 import { RoutingPage } from "./routing/RoutingPage.js";
 import { WorkItemsPage } from "./work-items/WorkItemsPage.js";
 import { MissionControlShell } from "./mission-control/MissionControlShell.js";
-import { readMissionControlBoard, type BoardLoad } from "./mission-control/api.js";
+import { decideCanonicalAsk, readMissionControlBoard, resolveCanonicalStandingRuleSuggestion, saveCanonicalAutopilot, setCanonicalStandingRule, undoCanonicalAutomaticDecision, type AutopilotSettings, type BoardLoad } from "./mission-control/api.js";
 import "./App.css";
 
 type AgentListItem = AgentInfo & { health: HealthStatus };
@@ -27,9 +27,11 @@ type TaskStall = { state: "active" | "nudge" | "stop"; lastOutputAt: string | nu
 
 type Dashboard = {
   activity: Array<{ id: string; occurredAt: string; agent: string; workItemId: string | null; what: string }>;
-  asks: Array<{ id: string; kind: string; workItemId: string | null; createdAt: string; intent: { tool: string; context: Record<string, string> } }>;
+  asks: Array<{ id: string; kind: string; risk?: "low" | "medium" | "high"; workItemId: string | null; createdAt: string; intent: { tool: string; operation?: string; target?: string; context: Record<string, string> } }>;
   automaticDecisions: Array<{ id: string; intent: { operation: string; target: string }; source: "standing rule" | "autopilot"; sourceDetail: string; workItemId: string | null; createdAt: string; undone: boolean; undoable: boolean }>;
-  standingRuleSuggestions: Array<{ id: string; askKind: string; scope: string }>;
+  standingRuleSuggestions: Array<{ id: string; askKind: string; scope: string; state?: "offered" | "accepted" | "dismissed" }>;
+  standingRules: Array<{ id: string; label: string; askKind: string; scope: string; enabled: boolean; firedCount: number }>;
+  autopilot: AutopilotSettings;
   runtime: {
     name: string;
     state: "unavailable" | "unverified" | "ready";
@@ -126,6 +128,8 @@ const DEFAULT_DASHBOARD: Dashboard = {
   asks: [],
   automaticDecisions: [],
   standingRuleSuggestions: [],
+  standingRules: [],
+  autopilot: { low: "ask", medium: "ask", high: "ask" },
   runtime: {
     name: "Hermes",
     state: "unavailable",
@@ -413,8 +417,9 @@ export function App() {
   }
 
   async function decideAsk(askId: string, decision: "approved" | "declined") {
-    const response = await fetch(`/api/sarathi/asks/${askId}/decide`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ decision }) });
-    if (response.ok) setDashboard((current) => ({ ...current, asks: current.asks.filter((ask) => ask.id !== askId) }));
+    const result = await decideCanonicalAsk(askId, decision);
+    await refreshDashboard();
+    return result;
   }
 
   async function rollbackUpdate() {
@@ -424,13 +429,27 @@ export function App() {
   }
 
   async function undoAutomaticDecision(decisionId: string) {
-    const response = await fetch(`/api/sarathi/automatic-decisions/${decisionId}/undo`, { method: "POST" });
-    if (response.ok) void refreshDashboard();
+    const result = await undoCanonicalAutomaticDecision(decisionId);
+    await refreshDashboard();
+    return result;
   }
 
   async function resolveStandingRuleSuggestion(id: string, action: "accept" | "dismiss") {
-    const response = await fetch(`/api/sarathi/standing-rule-suggestions/${id}/${action}`, { method: "POST" });
-    if (response.ok) void refreshDashboard();
+    const result = await resolveCanonicalStandingRuleSuggestion(id, action);
+    await refreshDashboard();
+    return result;
+  }
+
+  async function toggleStandingRule(id: string, enabled: boolean) {
+    const result = await setCanonicalStandingRule(id, enabled);
+    await refreshDashboard();
+    return result;
+  }
+
+  async function changeAutopilot(settings: AutopilotSettings) {
+    const result = await saveCanonicalAutopilot(settings);
+    await refreshDashboard();
+    return result;
   }
 
   useEffect(() => {
@@ -595,7 +614,7 @@ export function App() {
   if (setup?.firstRun) return <main className="sarathi-shell"><section className="dashboard"><div className="panel"><span className="eyebrow">First run</span><h1>Connect Adhiṣṭhāna</h1><ol><li><strong>1. Work source</strong> — {setup.steps.workSource ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect work source</button></li><li><strong>2. Code host</strong> — {setup.steps.codeHost ? "connected" : "not connected"} <button onClick={() => setView("work-items")}>Connect code host</button></li><li><strong>3. Agent</strong> — {setup.steps.agent ? "connected" : "not connected"} <button onClick={() => setView("command")}>Connect agent</button></li></ol></div></section></main>;
 
   if (view === "command" && setup?.firstRun === false && (boardLoad.status === "available" || boardLoad.status === "error")) {
-    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} agents={agents} agentsStatus={agentsStatus} agentSlots={agentSlots} agentSlotsStatus={agentSlotsStatus} onAdvanced={() => setView("legacy")} onPause={() => { void togglePause(); }} onDecideAsk={(id, decision) => { void decideAsk(id, decision); }} />;
+    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} agents={agents} agentsStatus={agentsStatus} agentSlots={agentSlots} agentSlotsStatus={agentSlotsStatus} onAdvanced={() => setView("legacy")} onPause={() => { void togglePause(); }} onDecideAsk={decideAsk} onAutopilotChange={changeAutopilot} onStandingRuleToggle={toggleStandingRule} onResolveSuggestion={resolveStandingRuleSuggestion} onUndoAutomaticDecision={undoAutomaticDecision} />;
   }
 
 
