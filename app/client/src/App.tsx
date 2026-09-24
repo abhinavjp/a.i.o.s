@@ -18,7 +18,6 @@ import { RoutingPage } from "./routing/RoutingPage.js";
 import { WorkItemsPage } from "./work-items/WorkItemsPage.js";
 import { MissionControlShell } from "./mission-control/MissionControlShell.js";
 import { AdvancedControls } from "./mission-control/AdvancedControls.js";
-import { ConnectorCenter } from "./mission-control/ConnectorCenter.js";
 import { decideCanonicalAsk, readConnectorOverview, readMissionControlBoard, refreshGitLabDiscussions, refreshJiraWorkItems, resolveCanonicalStandingRuleSuggestion, saveCanonicalAutopilot, saveCredentialToKeychain, setCanonicalStandingRule, undoCanonicalAutomaticDecision, type AutopilotSettings, type BoardLoad, type ConnectorOverview } from "./mission-control/api.js";
 import "./App.css";
 
@@ -266,7 +265,6 @@ export function App() {
   const [specialistMessage, setSpecialistMessage] = useState<string | null>(null);
   const [view, setView] = useState<"command" | "advanced">("command");
   const [advancedSpecialistId, setAdvancedSpecialistId] = useState<string | null>(null);
-  const [advancedReturnToSetup, setAdvancedReturnToSetup] = useState(false);
   const [catchUpIndex, setCatchUpIndex] = useState<number | null>(null);
   const [taskEngine, setTaskEngine] = useState<"inherit" | AgentEngineKind>("inherit");
   const [taskConfiguration, setTaskConfiguration] = useState("default");
@@ -275,9 +273,7 @@ export function App() {
   const [routeDraft, setRouteDraft] = useState({ scope: "global" as "global" | "specialist" | "workflow", id: "", primaryModel: "fake", fallbackModel: "", overridePrimary: true, overrideFallback: false });
   const [routeMessage, setRouteMessage] = useState<string | null>(null);
   const [proofMessage, setProofMessage] = useState<string | null>(null);
-  const [setup, setSetup] = useState<{ firstRun: boolean; steps: { workSource: boolean; codeHost: boolean; agent: boolean } } | null>(null);
   const [setupStatus, setSetupStatus] = useState<"loading" | "available" | "error">("loading");
-  const [setupDismissed, setSetupDismissed] = useState(false);
   const eventSourceRef = useRef<EventSource | null>(null);
   const dashboardRefreshGeneration = useRef(0);
   const connectorRefreshGeneration = useRef(0);
@@ -345,10 +341,8 @@ export function App() {
       const response = await fetch("/api/setup");
       const data = await response.json() as { firstRun?: unknown; steps?: { workSource?: unknown; codeHost?: unknown; agent?: unknown } };
       if (response.ok === false || typeof data.firstRun !== "boolean") throw new Error("Setup status could not be read.");
-      setSetup({ firstRun: data.firstRun, steps: { workSource: data.steps?.workSource === true, codeHost: data.steps?.codeHost === true, agent: data.steps?.agent === true } });
       setSetupStatus("available");
     } catch {
-      setSetup(null);
       setSetupStatus("error");
     }
   }
@@ -659,7 +653,7 @@ export function App() {
   const blockedTickets = dashboard.tickets.filter((ticket) => ticket.status === "blocked");
   const activeAgent = agents[0];
 
-  if (view === "advanced") return <AdvancedControls manualPaused={dashboard.controls.manualPaused} backLabel={advancedReturnToSetup ? "Back to setup" : "Back to Mission Control"} onBack={() => { setView("command"); if (advancedReturnToSetup) { setSetupDismissed(false); setAdvancedReturnToSetup(false); } }} onPause={() => { void togglePause(); }}>
+  if (view === "advanced") return <AdvancedControls manualPaused={dashboard.controls.manualPaused} backLabel="Back to Mission Control" onBack={() => setView("command")} onPause={() => { void togglePause(); }}>
     <WorkItemsPage availableTasks={dashboard.recentTasks.map((attempt) => ({ id: attempt.id, title: attempt.title }))} />
 
     <section className="mc-advanced-section mc-section" id="mc-advanced-agents" aria-label="Agents and tasks">
@@ -705,11 +699,8 @@ export function App() {
     </section>
   </AdvancedControls>;
 
-  if (setupStatus === "loading") return <main className="mc-root mc-loading" aria-label="Sarathi Mission Control"><p role="status">Loading Mission Control…</p></main>;
-  if (setupStatus === "error") return <main className="mc-root mc-setup-error" aria-label="Sarathi Mission Control"><h1>Setup status is unavailable</h1><p role="alert">Could not read setup status. Retry to continue.</p><button type="button" onClick={() => void refreshSetup()}>Retry setup read</button></main>;
-  if (setup?.firstRun && !setupDismissed) return <ConnectorCenter overview={connectorOverview} agents={agents.map((agent) => ({ displayName: agent.displayName, health: agent.health }))} agentsStatus={agentsStatus} isSetup onRefreshJira={refreshJiraFromMissionControl} onRefreshGitLab={refreshGitLabFromMissionControl} onSaveCredential={saveConnectorCredential} onOpenAgentSettings={() => { setAdvancedReturnToSetup(true); setView("advanced"); }} onContinue={() => { setSetupDismissed(true); setView("command"); }} />;
-  if (view === "command" && (setup?.firstRun !== true || setupDismissed) && boardLoad.status !== "loading") {
-    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} agents={agents} agentsStatus={agentsStatus} agentSlots={agentSlots} agentSlotsStatus={agentSlotsStatus} connectorOverview={connectorOverview} onRefreshConnections={() => { void refreshConnectorOverview(); }} onRefreshJira={refreshJiraFromMissionControl} onRefreshGitLab={refreshGitLabFromMissionControl} onSaveCredential={saveConnectorCredential} onOpenAgentSettings={() => { setAdvancedReturnToSetup(false); setView("advanced"); }} onAdvanced={() => { setAdvancedReturnToSetup(false); setView("advanced"); }} onPause={() => { void togglePause(); }} onDecideAsk={decideAsk} onAutopilotChange={changeAutopilot} onStandingRuleToggle={toggleStandingRule} onResolveSuggestion={resolveStandingRuleSuggestion} onUndoAutomaticDecision={undoAutomaticDecision} />;
+  if (view === "command" && boardLoad.status !== "loading") {
+    return <MissionControlShell board={boardLoad} dashboard={dashboard} dashboardStatus={dashboardStatus} agents={agents} agentsStatus={agentsStatus} agentSlots={agentSlots} agentSlotsStatus={agentSlotsStatus} connectorOverview={connectorOverview} setupReadFailed={setupStatus === "error"} onRetrySetup={() => void refreshSetup()} onRefreshConnections={() => { void refreshConnectorOverview(); }} onRefreshJira={refreshJiraFromMissionControl} onRefreshGitLab={refreshGitLabFromMissionControl} onSaveCredential={saveConnectorCredential} onOpenAgentSettings={() => setView("advanced")} onAdvanced={() => setView("advanced")} onPause={() => { void togglePause(); }} onDecideAsk={decideAsk} onAutopilotChange={changeAutopilot} onStandingRuleToggle={toggleStandingRule} onResolveSuggestion={resolveStandingRuleSuggestion} onUndoAutomaticDecision={undoAutomaticDecision} />;
   }
   return <main className="mc-root mc-loading" aria-label="Sarathi Mission Control"><p role="status">Loading work and connection status…</p></main>;
 }

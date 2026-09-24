@@ -55,6 +55,8 @@ export function MissionControlShell(props: {
   onResolveSuggestion?: (id: string, action: "accept" | "dismiss") => ShellAction | Promise<ShellAction>;
   onUndoAutomaticDecision?: (id: string) => ShellAction | Promise<ShellAction>;
   connectorOverview?: ConnectorOverview;
+  setupReadFailed?: boolean;
+  onRetrySetup?: () => void;
   onRefreshJira?: () => Promise<JiraRefreshResult>;
   onRefreshGitLab?: () => Promise<DiscussionRefreshResult>;
   onSaveCredential?: (reference: string, value: string) => Promise<ActionResult>;
@@ -69,6 +71,7 @@ export function MissionControlShell(props: {
   const [detail, setDetail] = useState<DetailTarget | null>(null);
   const catchUpButton = useRef<HTMLButtonElement>(null);
   const connectionsButton = useRef<HTMLButtonElement>(null);
+  const connectionsTrigger = useRef<HTMLButtonElement | null>(null);
   const detailCloseButton = useRef<HTMLButtonElement>(null);
   const detailTrigger = useRef<HTMLElement | null>(null);
   const progressReadId = useRef(0);
@@ -178,7 +181,7 @@ export function MissionControlShell(props: {
           }
         }
       }
-      if (event.key === "Escape" && connectionsOpen) { setConnectionsOpen(false); connectionsButton.current?.focus(); return; }
+      if (event.key === "Escape" && connectionsOpen) { setConnectionsOpen(false); (connectionsTrigger.current ?? connectionsButton.current)?.focus(); return; }
       if (event.key === "Escape" && catchUpOpen) { closeCatchUp(); return; }
       if (event.key === "Escape" && detail) { closeDetail(); return; }
       const target = event.target;
@@ -212,6 +215,8 @@ export function MissionControlShell(props: {
   const catchUpAsk = asks[catchUpIndex];
   const detailAskPending = detail?.type !== "ask" || asks.some((ask) => ask.id === detail.ask.id);
   const specialists = props.dashboard.specialists;
+  const connectionIssue = (agentsStatus === "available" && !agents.some((agent) => agent.health.ok)) || (props.connectorOverview && ([props.connectorOverview.workSource, props.connectorOverview.codeHost].some((connection) => connection.status === "unconfigured" || connection.status === "error") || (props.connectorOverview.jiraSync.status === "available" && props.connectorOverview.jiraSync.data.state !== "available") || (props.connectorOverview.gitLabSync.status === "available" && props.connectorOverview.gitLabSync.data.state !== "available")));
+  const openConnections = (trigger: HTMLButtonElement) => { connectionsTrigger.current = trigger; props.onRefreshConnections?.(); setConnectionsOpen(true); };
 
   return <main className={`mc-root${railOpen ? " mc-rail-expanded" : ""}`} aria-label="Sarathi Mission Control">
     <a className="mc-skip" href="#mc-asks">Skip to asks</a>
@@ -220,13 +225,17 @@ export function MissionControlShell(props: {
       <div className="mc-header-actions">
         <span className={`mc-connection mc-${props.dashboard.runtime.state}`}>{props.dashboard.runtime.name} · {props.dashboard.runtime.state}</span>
         <button type="button" className="mc-tool" onClick={props.onPause}>{props.dashboard.controls.manualPaused ? "Resume" : "Pause"}</button>
-        <button ref={connectionsButton} type="button" className="mc-tool" onClick={() => { props.onRefreshConnections?.(); setConnectionsOpen(true); }}>Connections</button>
+        <button ref={connectionsButton} type="button" className="mc-tool" onClick={(event) => openConnections(event.currentTarget)}>Connections</button>
         <button type="button" className="mc-tool" onClick={props.onAdvanced}>Advanced controls</button>
         <button type="button" className="mc-tool mc-agent-toggle" onClick={() => setRailOpen((open) => !open)} aria-expanded={railOpen} aria-controls="mc-agent-rail">Agents</button>
       </div>
     </header>
     <div className="mc-layout">
       <div className="mc-page">
+        {(props.setupReadFailed || connectionIssue) && <section className="mc-connection-notice" aria-label="Connection status">
+          <div><p className="mc-eyebrow">Getting started</p><h2>{props.setupReadFailed ? "Connection status could not be checked" : "Bring your work into Mission Control"}</h2><p role={props.setupReadFailed ? "alert" : undefined}>{props.setupReadFailed ? "Could not read setup status. Mission Control is still available. Retry the status check, or open Connections to inspect Jira and GitLab." : "Set up Jira for work items, GitLab for code reviews, and an agent to run tasks. You can explore Mission Control while setup is incomplete."}</p></div>
+          <div className="mc-connection-notice-actions"><button type="button" className="mc-primary" onClick={(event) => openConnections(event.currentTarget)}>Set up connections</button>{props.setupReadFailed && <button type="button" className="mc-tool" onClick={props.onRetrySetup}>Retry setup read</button>}</div>
+        </section>}
         <section className="mc-hero" aria-labelledby="mc-hero-title">
           <div><p className="mc-eyebrow">Your control room</p><h1 id="mc-hero-title">{props.dashboardStatus === "error" ? "Decisions unavailable" : props.dashboardStatus === "loading" ? "Loading decisions" : asks.length > 0 ? `${asks.length} ${asks.length === 1 ? "thing" : "things"} need you` : "No decisions waiting"}</h1>
             <p className="mc-hero-detail">{props.dashboardStatus === "error" ? "Sarathi could not read the latest decisions." : props.dashboardStatus === "loading" ? "Reading the latest decisions and activity." : asks.length > 0 ? "Review the decisions waiting for you, then follow work as it moves." : "There are no decisions waiting for you right now."}</p>
@@ -310,7 +319,7 @@ export function MissionControlShell(props: {
       onRefreshGitLab={props.onRefreshGitLab ?? (async () => ({ ok: false, message: "GitLab discussion refresh is unavailable." }))}
       onSaveCredential={props.onSaveCredential ?? (async () => ({ ok: false, message: "Credential storage is unavailable." }))}
       onOpenAgentSettings={props.onOpenAgentSettings ?? props.onAdvanced}
-      onClose={() => { setConnectionsOpen(false); connectionsButton.current?.focus(); }}
+      onClose={() => { setConnectionsOpen(false); (connectionsTrigger.current ?? connectionsButton.current)?.focus(); }}
     /></section></div>}
   </main>;
 }

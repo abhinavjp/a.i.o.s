@@ -142,7 +142,7 @@ test("REQ-004: ask, work, catch-up and connection dialogs wrap first/last Tab an
   await trigger.click();
   await assertDialogFocusLoop(page, page.getByRole("dialog", { name: "Catch up" }), trigger);
 
-  trigger = page.getByRole("button", { name: "Connections" });
+  trigger = page.getByRole("button", { name: "Connections", exact: true });
   await trigger.click();
   await assertDialogFocusLoop(page, page.getByRole("dialog", { name: "Connections and setup" }), trigger);
   await closeFixturePage(context);
@@ -203,7 +203,7 @@ test("AC-04/05: Jira and GitLab actions show observed outcomes without external 
   assert.ok(await discussions.getByText("Thread resolution not observed").count());
   assert.equal(await discussions.getByText("Thread resolved by GitLab").count(), 0);
 
-  await page.getByRole("button", { name: "Connections" }).click();
+  await page.getByRole("button", { name: "Connections", exact: true }).click();
   const connections = page.getByRole("dialog", { name: "Connections and setup" });
   await connections.getByRole("button", { name: "Check Jira for work items" }).click();
   await connections.getByRole("status").filter({ hasText: "Jira check complete: 1 new work items" }).waitFor();
@@ -218,12 +218,10 @@ test("AC-04/05: Jira and GitLab actions show observed outcomes without external 
 test("AC-06: first-run readiness stays incomplete, secrets clear, and setup failures remain recoverable", async () => {
   const secret = "fixture-only-secret-value";
   const setup = await openFixturePage({ overrides: { setup: { firstRun: true, steps: { workSource: false, codeHost: false, agent: false } } } });
-  await setup.page.getByRole("main", { name: "Sarathi setup" }).waitFor();
-  await setup.page.getByRole("heading", { name: "Connect Sarathi" }).waitFor();
-  assert.ok(await setup.page.getByRole("heading", { name: "1. Jira work items" }).count());
-  assert.ok(await setup.page.getByRole("heading", { name: "2. GitLab code reviews" }).count());
-  assert.ok(await setup.page.getByRole("heading", { name: "3. Agents" }).count());
-  assert.equal(await setup.page.getByRole("button", { name: "Continue to command center" }).count(), 0);
+  await setup.page.getByRole("main", { name: "Sarathi Mission Control" }).waitFor();
+  await setup.page.getByRole("region", { name: "Work pipeline" }).waitFor();
+  await setup.page.getByRole("button", { name: "Connections", exact: true }).click();
+  await setup.page.getByRole("dialog", { name: "Connections and setup" }).waitFor();
   await setup.page.getByLabel("Jira API token").fill(secret);
   await setup.page.getByRole("button", { name: "Save Jira token" }).click();
   await setup.page.getByText("Jira token saved locally and cleared from this form. Check the connection to confirm it works.").waitFor();
@@ -238,7 +236,8 @@ test("AC-06: first-run readiness stays incomplete, secrets clear, and setup fail
     2: { status: 503, body: { error: "setup store unavailable" } },
     3: { body: fixture.setup }
   } } });
-  await recovering.page.getByRole("heading", { name: "Setup status is unavailable" }).waitFor();
+  await recovering.page.getByRole("main", { name: "Sarathi Mission Control" }).waitFor();
+  await recovering.page.getByRole("heading", { name: "Connection status could not be checked" }).waitFor();
   assert.ok(await recovering.page.getByRole("alert").filter({ hasText: "Could not read setup status" }).count());
   await recovering.page.getByRole("button", { name: "Retry setup read" }).click();
   await recovering.page.getByRole("main", { name: "Sarathi Mission Control" }).waitFor();

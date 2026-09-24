@@ -52,7 +52,7 @@ export function ConnectorCenter(props: {
 
   const content = <section className="mc-section mc-connector-center" role="region" aria-label="Connections and setup">
     <div className="mc-section-heading"><div><p className="mc-eyebrow">Connections</p><h2>{props.isSetup ? "Connect Sarathi" : "Connections and setup"}</h2></div>{props.onClose && <button className="mc-tool" type="button" onClick={props.onClose}>Close</button>}</div>
-    {props.isSetup && <p className="mc-connector-intro">Set up Jira for work items, GitLab for code reviews, and an agent to do the work. Saving a token does not connect Jira or GitLab by itself; Sarathi checks each connection before showing it as ready.</p>}
+    {(props.isSetup || props.overview.workSource.status === "unconfigured" || props.overview.codeHost.status === "unconfigured") && <p className="mc-connector-intro">Set up Jira for work items, GitLab for code reviews, and an agent to do the work. Saving a token does not connect Jira or GitLab by itself; Sarathi checks each connection before showing it as ready.</p>}
     {ready && <p className="mc-setup-ready" role="status">Jira, GitLab, and an agent are ready.</p>}
     <div className="mc-connector-grid">
       <article className="mc-connector-card">
@@ -61,7 +61,7 @@ export function ConnectorCenter(props: {
         <SyncEvidence label="Jira work item check" state={props.overview.jiraSync} />
         {props.isSetup && <button className="mc-tool" type="button" title="Move to the field for your Jira API token." onClick={() => document.getElementById("jira-token-value")?.focus()}>Enter Jira token</button>}
         <button className="mc-tool" type="button" title="Read work items from Jira. This does not change anything in Jira." onClick={() => void refreshJira()} disabled={jiraBusy}>{jiraBusy ? "Checking Jira…" : "Check Jira for work items"}</button>
-        <CredentialEntry kind="work source" initialReference={connectionReference(props.overview.workSource)} onSave={props.onSaveCredential} expanded={props.isSetup} />
+        <CredentialEntry kind="work source" initialReference={connectionReference(props.overview.workSource)} onSave={props.onSaveCredential} expanded={props.isSetup || props.overview.workSource.status === "unconfigured"} />
       </article>
       <article className="mc-connector-card">
         <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "2. GitLab code reviews" : "GitLab code reviews"}</h3><p>{connectionReadiness(props.overview.codeHost, "GitLab")}</p></div></div>
@@ -69,7 +69,7 @@ export function ConnectorCenter(props: {
         <SyncEvidence label="GitLab discussion check" state={props.overview.gitLabSync} />
         {props.isSetup && <button className="mc-tool" type="button" title="Move to the field for your GitLab access token." onClick={() => document.getElementById("gitlab-token-value")?.focus()}>Enter GitLab token</button>}
         <button className="mc-tool" type="button" title="Read code review discussions from GitLab. This does not change anything in GitLab." onClick={() => void refreshGitLab()} disabled={gitLabBusy}>{gitLabBusy ? "Checking GitLab…" : "Check GitLab discussions"}</button>
-        <CredentialEntry kind="code host" initialReference={connectionReference(props.overview.codeHost)} onSave={props.onSaveCredential} expanded={props.isSetup} />
+        <CredentialEntry kind="code host" initialReference={connectionReference(props.overview.codeHost)} onSave={props.onSaveCredential} expanded={props.isSetup || props.overview.codeHost.status === "unconfigured"} />
       </article>
       <article className="mc-connector-card">
         <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "3. Agents" : "Agents"}</h3><p>{agentReadiness(props.agentsStatus, healthyAgents.length)}</p></div></div>

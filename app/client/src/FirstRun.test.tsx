@@ -13,25 +13,20 @@ describe("first run", () => {
         : url === "/api/agents" || url === "/api/sarathi/agents" ? { agents: [{ id: "agent-1", displayName: "Worker", health: { ok: true } }] }
           : url === "/api/sarathi/dashboard" ? { runtime: { name: "Sarathi", state: "ready", billingMode: "fake", reason: "configured" }, discovery: { status: "ready", reason: "observed", lastCheckedAt: timestamp, mergeRequests: [] }, tickets: [] }
             : url === "/api/mission-control/board" ? { workItems: { status: "available", data: [] }, gitLabDiscussions: { observations: [], sync: { configured: true, state: "available", stale: false, lastAttemptAt: timestamp, lastSuccessAt: timestamp, lastFailureAt: null, lastError: null } } }
-              : url === "/api/work-items/connection" || url === "/api/code-host/connection" ? { connection: { siteUrl: "https://example.test", credentialReference: "LOCAL_TOKEN", daysUntilExpiry: null, expiresSoon: false } }
-                : url === "/api/work-items/sync" ? { sync: { configured: true, state: "available", lastAttemptAt: timestamp, lastSuccessAt: timestamp, lastFailureAt: null } }
-                  : url === "/api/code-host/discussions/sync" ? { sync: { configured: true, state: "available", stale: false, lastAttemptAt: timestamp, lastSuccessAt: timestamp, lastFailureAt: null, lastError: null } }
-                    : {};
+              : {};
       return { ok: true, json: async () => data };
     }));
     render(<App />);
-    expect(await screen.findByText("1. Jira work items")).toBeTruthy();
-    expect(screen.getByText("2. GitLab code reviews")).toBeTruthy();
-    expect(screen.getByText("3. Agents")).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Enter Jira token" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Enter GitLab token" })).toBeTruthy();
+    expect(await screen.findByRole("main", { name: "Sarathi Mission Control" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Work pipeline" })).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: "Set up connections" }));
+    expect(screen.getByRole("dialog", { name: "Connections and setup" })).toBeTruthy();
+    expect(screen.getByText("Jira work items")).toBeTruthy();
+    expect(screen.getByText("GitLab code reviews")).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open agent settings" })).toBeTruthy();
-    expect(await screen.findByRole("button", { name: "Continue to command center" })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Open agent settings" }));
-    expect(await screen.findByRole("button", { name: "Back to setup" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Back to setup" }));
-    expect(await screen.findByRole("heading", { name: "Connect Sarathi" })).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Continue to command center" }));
+    expect(await screen.findByRole("button", { name: "Back to Mission Control" })).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Back to Mission Control" }));
     expect(await screen.findByRole("main", { name: "Sarathi Mission Control" })).toBeTruthy();
   });
 
@@ -46,8 +41,9 @@ describe("first run", () => {
       return { ok: true, json: async () => data };
     }));
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Connect Sarathi" })).toBeTruthy();
-    expect(screen.queryByRole("button", { name: "Continue to command center" })).toBeNull();
+    expect(await screen.findByRole("main", { name: "Sarathi Mission Control" })).toBeTruthy();
+    expect(await screen.findByRole("button", { name: "Set up connections" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Work pipeline" })).toBeTruthy();
   });
 
   test("keeps the normal console for an existing installation", async () => {
