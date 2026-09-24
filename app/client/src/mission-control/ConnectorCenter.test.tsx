@@ -134,6 +134,18 @@ describe("Mission Control connector setup", () => {
     expect(localStorage.length).toBe(0);
   });
 
+  test("explains when Windows Credential Manager is unavailable to the server session", async () => {
+    vi.stubGlobal("fetch", vi.fn(async () => ({
+      ok: false,
+      json: async () => ({ error: "powershell.exe failed: Credential Manager save failed: 1312" })
+    })));
+
+    expect(await saveCredentialToKeychain("JIRA_TOKEN", "test-only-token")).toEqual({
+      ok: false,
+      message: "Windows Credential Manager is unavailable in this session. Start Sarathi from your signed-in Windows desktop and try again."
+    });
+  });
+
   test("keeps Jira refresh explicit and routes GitLab sync through read-only callbacks", () => {
     const onRefreshJira = vi.fn(async () => ({ ok: true as const, imported: 0, updated: 0, skipped: 0, missing: 0 }));
     const onRefreshGitLab = vi.fn(async () => ({ ok: true as const }));

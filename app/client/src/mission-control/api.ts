@@ -90,7 +90,12 @@ export async function saveCredentialToKeychain(reference: string, value: string)
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ reference: reference.trim(), value })
     });
-    if (!response.ok) return { ok: false, message: "Credential could not be stored. Check local keychain availability." };
+    if (!response.ok) {
+      const body: unknown = await response.json().catch(() => null);
+      const error = body && typeof body === "object" && "error" in body && typeof body.error === "string" ? body.error : "";
+      if (/Credential Manager save failed:\s*1312/.test(error)) return { ok: false, message: "Windows Credential Manager is unavailable in this session. Start Sarathi from your signed-in Windows desktop and try again." };
+      return { ok: false, message: "Credential could not be stored. Check local keychain availability." };
+    }
     return { ok: true };
   } catch {
     return { ok: false, message: "Credential could not be stored. Check local keychain availability." };
