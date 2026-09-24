@@ -29,11 +29,11 @@ export function ConnectorCenter(props: {
       const result = await props.onRefreshJira();
       setActionError(!result.ok);
       setActionMessage(result.ok
-        ? `Jira read complete: ${result.imported} added, ${result.updated} updated, ${result.skipped} unchanged, ${result.missing} not observed.`
+        ? `Jira check complete: ${result.imported} new work items, ${result.updated} updated, ${result.skipped} unchanged, ${result.missing} no longer found in the latest search.`
         : result.message);
     } catch {
       setActionError(true);
-      setActionMessage("Jira refresh is unavailable.");
+      setActionMessage("Could not check Jira right now. Try again after checking the connection.");
     } finally { setJiraBusy(false); }
   }
 
@@ -43,43 +43,43 @@ export function ConnectorCenter(props: {
     try {
       const result = await props.onRefreshGitLab();
       setActionError(!result.ok);
-      setActionMessage(result.ok ? "GitLab discussion refresh completed." : result.message);
+      setActionMessage(result.ok ? "GitLab discussion check complete." : result.message);
     } catch {
       setActionError(true);
-      setActionMessage("GitLab discussion refresh is unavailable.");
+      setActionMessage("Could not check GitLab right now. Try again after checking the connection.");
     } finally { setGitLabBusy(false); }
   }
 
   const content = <section className="mc-section mc-connector-center" role="region" aria-label="Connections and setup">
     <div className="mc-section-heading"><div><p className="mc-eyebrow">Connections</p><h2>{props.isSetup ? "Connect Sarathi" : "Connections and setup"}</h2></div>{props.onClose && <button className="mc-tool" type="button" onClick={props.onClose}>Close</button>}</div>
-    {props.isSetup && <p className="mc-connector-intro">Setup shows observed readiness for the work source, code host, and agent. A saved credential reference does not by itself mean a connector is ready.</p>}
-    {ready && <p className="mc-setup-ready" role="status">All three setup concerns have observed readiness.</p>}
+    {props.isSetup && <p className="mc-connector-intro">Set up Jira for work items, GitLab for code reviews, and an agent to do the work. Saving a token does not connect Jira or GitLab by itself; Sarathi checks each connection before showing it as ready.</p>}
+    {ready && <p className="mc-setup-ready" role="status">Jira, GitLab, and an agent are ready.</p>}
     <div className="mc-connector-grid">
       <article className="mc-connector-card">
-        <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "1. Work source" : "Work source"}</h3><p>{workSourceReadiness(props.overview.jiraSync)}</p></div></div>
-        <ConnectorEvidence label="Credential reference" state={props.overview.workSource} />
-        <SyncEvidence label="Jira read" state={props.overview.jiraSync} />
-        {props.isSetup && <button className="mc-tool" type="button" onClick={() => document.getElementById("work-source-credential-reference")?.focus()}>Connect work source</button>}
-        <button className="mc-tool" type="button" onClick={() => void refreshJira()} disabled={jiraBusy}>{jiraBusy ? "Refreshing Jira…" : "Refresh Jira work items"}</button>
+        <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "1. Jira work items" : "Jira work items"}</h3><p>{workSourceReadiness(props.overview.jiraSync)}</p></div></div>
+        <ConnectorEvidence label="Jira connection" state={props.overview.workSource} />
+        <SyncEvidence label="Jira work item check" state={props.overview.jiraSync} />
+        {props.isSetup && <button className="mc-tool" type="button" title="Move to the fields for saving your Jira token." onClick={() => document.getElementById("work-source-credential-reference")?.focus()}>Enter Jira token</button>}
+        <button className="mc-tool" type="button" title="Read work items from Jira. This does not change anything in Jira." onClick={() => void refreshJira()} disabled={jiraBusy}>{jiraBusy ? "Checking Jira…" : "Check Jira for work items"}</button>
         <CredentialEntry kind="work source" initialReference={connectionReference(props.overview.workSource)} onSave={props.onSaveCredential} expanded={props.isSetup} />
       </article>
       <article className="mc-connector-card">
-        <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "2. Code host" : "Code host"}</h3><p>{connectionReadiness(props.overview.codeHost, "Code host")}</p></div></div>
-        <ConnectorEvidence label="Code host" state={props.overview.codeHost} />
-        <SyncEvidence label="GitLab discussion read" state={props.overview.gitLabSync} />
-        {props.isSetup && <button className="mc-tool" type="button" onClick={() => document.getElementById("code-host-credential-reference")?.focus()}>Connect code host</button>}
-        <button className="mc-tool" type="button" onClick={() => void refreshGitLab()} disabled={gitLabBusy}>{gitLabBusy ? "Refreshing GitLab…" : "Refresh GitLab discussions"}</button>
+        <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "2. GitLab code reviews" : "GitLab code reviews"}</h3><p>{connectionReadiness(props.overview.codeHost, "GitLab")}</p></div></div>
+        <ConnectorEvidence label="GitLab connection" state={props.overview.codeHost} />
+        <SyncEvidence label="GitLab discussion check" state={props.overview.gitLabSync} />
+        {props.isSetup && <button className="mc-tool" type="button" title="Move to the fields for saving your GitLab access token." onClick={() => document.getElementById("code-host-credential-reference")?.focus()}>Enter GitLab token</button>}
+        <button className="mc-tool" type="button" title="Read code review discussions from GitLab. This does not change anything in GitLab." onClick={() => void refreshGitLab()} disabled={gitLabBusy}>{gitLabBusy ? "Checking GitLab…" : "Check GitLab discussions"}</button>
         <CredentialEntry kind="code host" initialReference={connectionReference(props.overview.codeHost)} onSave={props.onSaveCredential} expanded={props.isSetup} />
       </article>
       <article className="mc-connector-card">
-        <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "3. Agent" : "Agent"}</h3><p>{agentReadiness(props.agentsStatus, healthyAgents.length)}</p></div></div>
-        {props.agentsStatus === "loading" ? <p className="mc-connector-evidence">Checking agent health…</p> : props.agentsStatus === "error" ? <p className="mc-connector-unavailable">Agent health is unavailable.</p> : healthyAgents.length > 0 ? <ul className="mc-connector-agent-list">{props.agents.map((agent) => <li key={agent.displayName}>{agent.displayName}: {agent.health.ok ? "healthy" : `unavailable · ${agent.health.reason}`}</li>)}</ul> : <p className="mc-connector-evidence">No healthy agent is observed.</p>}
-        <button className="mc-tool" type="button" onClick={props.onOpenAgentSettings}>Connect agent</button>
+        <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "3. Agents" : "Agents"}</h3><p>{agentReadiness(props.agentsStatus, healthyAgents.length)}</p></div></div>
+        {props.agentsStatus === "loading" ? <p className="mc-connector-evidence">Checking which agents can run tasks…</p> : props.agentsStatus === "error" ? <p className="mc-connector-unavailable">Could not check agents right now.</p> : healthyAgents.length > 0 ? <ul className="mc-connector-agent-list">{props.agents.map((agent) => <li key={agent.displayName}>{agent.displayName}: {agent.health.ok ? "Ready to run tasks" : `Not ready · ${friendlyAgentReason(agent.health.reason)}`}</li>)}</ul> : <p className="mc-connector-evidence">No agent is ready to run tasks yet.</p>}
+        <button className="mc-tool" type="button" title="Open settings to choose or configure an agent." onClick={props.onOpenAgentSettings}>Open agent settings</button>
       </article>
     </div>
     {ready && props.isSetup && props.onContinue && <button className="mc-tool mc-setup-continue" type="button" onClick={props.onContinue}>Continue to command center</button>}
     {actionMessage && <p className={actionError ? "mc-action-message" : "mc-connector-result"} role={actionError ? "alert" : "status"}>{actionMessage}</p>}
-    <p className="mc-connector-note">Jira refresh reads assigned work and never writes to Jira. GitLab refresh reads discussions. Neither action admits a task or changes a discussion.</p>
+    <p className="mc-connector-note">The check buttons only read Jira work items and GitLab discussions. They do not edit either service or start an agent task.</p>
   </section>;
 
   return props.isSetup
@@ -94,14 +94,18 @@ function CredentialEntry(props: { kind: "work source" | "code host"; initialRefe
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const code = props.kind === "code host";
-  const title = code ? "Code host" : "Work source";
+  const service = code ? "GitLab" : "Jira";
+  const nameHelp = `This is a label for the saved token, not the token itself. It must match the token name in your ${service} connection settings (for example, ${code ? "GITLAB_TOKEN" : "JIRA_TOKEN"}).`;
+  const credentialHelp = `Your ${service} token is sent to local credential storage when you save it. Sarathi does not show it again. Saving the token alone does not verify the ${service} connection.`;
+  const helpId = code ? "gitlab-token-name-help" : "jira-token-name-help";
   useEffect(() => {
     if (!referenceEdited && props.initialReference) setReference(props.initialReference);
   }, [props.initialReference, referenceEdited]);
   const fields = <form className="mc-credential-form" onSubmit={(event) => void submit(event)}>
-    <label>{title} credential reference<input id={code ? "code-host-credential-reference" : "work-source-credential-reference"} type="text" autoComplete="off" value={reference} onChange={(event) => { setReferenceEdited(true); setReference(event.currentTarget.value); }} /></label>
-    <label>{title} credential value<input type="password" autoComplete="new-password" value={credential} onChange={(event) => setCredential(event.currentTarget.value)} /></label>
-    <button className="mc-tool" type="submit" disabled={saving || !reference.trim() || !credential}>{saving ? "Saving credential…" : `Save ${props.kind} credential`}</button>
+    <label>Name for the {service} token<input id={code ? "code-host-credential-reference" : "work-source-credential-reference"} type="text" autoComplete="off" aria-describedby={helpId} title={nameHelp} placeholder={code ? "GITLAB_TOKEN" : "JIRA_TOKEN"} value={reference} onChange={(event) => { setReferenceEdited(true); setReference(event.currentTarget.value); }} /></label>
+    <p id={helpId} className="mc-credential-help">{nameHelp}</p>
+    <label>{code ? "GitLab access token" : "Jira API token"}<input type="password" autoComplete="new-password" title={`Paste your ${service} token. It will be cleared from this form after you save it.`} value={credential} onChange={(event) => setCredential(event.currentTarget.value)} /></label>
+    <button className="mc-tool" type="submit" title={`Save the ${service} token in local credential storage. This does not connect ${service} by itself.`} disabled={saving || !reference.trim() || !credential}>{saving ? `Saving ${service} token…` : `Save ${service} token`}</button>
     {message && <p role="status" className="mc-credential-status">{message}</p>}
   </form>;
 
@@ -114,36 +118,36 @@ function CredentialEntry(props: { kind: "work source" | "code host"; initialRefe
     setMessage(null);
     try {
       const result = await props.onSave(reference, submittedCredential);
-      setMessage(result.ok ? "Credential reference saved to the local keychain. The secret was cleared." : result.message);
+      setMessage(result.ok ? `${service} token saved locally and cleared from this form. Check the connection to confirm it works.` : result.message);
     } catch {
-      setMessage("Credential could not be stored. Check local keychain availability.");
+      setMessage(`Could not save the ${service} token. Check that local credential storage is available, then try again.`);
     } finally {
       setCredential("");
       setSaving(false);
     }
   }
 
-  return props.expanded ? <div className="mc-credential-wrap">{fields}<p className="mc-credential-help">The value is sent once to the local credential service. Sarathi stores a reference; it does not read the secret back into the interface.</p></div>
-    : <details className="mc-credential-details"><summary>Update credential reference</summary>{fields}<p className="mc-credential-help">The value is sent once to the local credential service. Sarathi stores a reference; it does not read the secret back into the interface.</p></details>;
+  return props.expanded ? <div className="mc-credential-wrap">{fields}<p className="mc-credential-help">{credentialHelp}</p></div>
+    : <details className="mc-credential-details"><summary>Update {service} token</summary>{fields}<p className="mc-credential-help">{credentialHelp}</p></details>;
 }
 
 function ConnectorEvidence(props: { label: string; state: ConnectorRead<ConnectorConnection> }) {
-  return <p className={props.state.status === "error" ? "mc-connector-unavailable" : "mc-connector-evidence"}>{props.label}: {connectionReadiness(props.state, props.label)}{props.state.status === "available" ? ` · ${props.state.data.siteUrl} · ref ${props.state.data.credentialReference}` : ""}{props.state.status === "available" && props.state.data.expiresSoon ? ` · credential expires soon${props.state.data.daysUntilExpiry === null ? "" : ` (${props.state.data.daysUntilExpiry} days)`}` : ""}</p>;
+  return <p className={props.state.status === "error" ? "mc-connector-unavailable" : "mc-connector-evidence"}>{props.label}: {connectionReadiness(props.state, props.label)}{props.state.status === "available" ? ` · ${props.state.data.siteUrl} · token saved as ${props.state.data.credentialReference}` : ""}{props.state.status === "available" && props.state.data.expiresSoon ? ` · token expires soon${props.state.data.daysUntilExpiry === null ? "" : ` (${props.state.data.daysUntilExpiry} days)`}` : ""}</p>;
 }
 
 function SyncEvidence(props: { label: string; state: ConnectorOverview["jiraSync"] }) {
-  let message = "Checking sync status…";
+  let message = "Checking…";
   let failed = false;
-  if (props.state.status === "unconfigured") message = "Not configured";
+  if (props.state.status === "unconfigured") message = "Waiting for connection setup";
   else if (props.state.status === "error") { message = props.state.message; failed = true; }
   else if (props.state.status === "available") {
     const sync = props.state.data;
-    if (!sync.configured || sync.state === "unconfigured") message = "Not configured";
-    else if (sync.state === "syncing") message = "Refresh in progress";
-    else if (sync.state === "failed" || sync.failed) { message = "Latest refresh failed"; failed = true; }
-    else if (sync.lastSuccessAt) message = `Last successful read ${sync.lastSuccessAt}`;
-    else message = "No successful read observed";
-    if ("stale" in sync && sync.stale) { message = `Stale · ${message}`; failed = true; }
+    if (!sync.configured || sync.state === "unconfigured") message = "Waiting for connection setup";
+    else if (sync.state === "syncing") message = "Check in progress";
+    else if (sync.state === "failed" || sync.failed) { message = "The latest check failed"; failed = true; }
+    else if (sync.lastSuccessAt) message = `Last checked successfully ${sync.lastSuccessAt}`;
+    else message = "No successful check yet";
+    if ("stale" in sync && sync.stale) { message = `May be out of date · ${message}`; failed = true; }
   }
   return <p className={failed ? "mc-connector-unavailable" : "mc-connector-evidence"}>{props.label}: {message}</p>;
 }
@@ -151,21 +155,22 @@ function SyncEvidence(props: { label: string; state: ConnectorOverview["jiraSync
 function connectionReference(state: ConnectorRead<ConnectorConnection>): string { return state.status === "available" ? state.data.credentialReference : ""; }
 function connectionReadiness(state: ConnectorRead<ConnectorConnection>, label: string): string {
   if (state.status === "loading") return "Checking…";
-  if (state.status === "unconfigured") return "Not configured";
+  if (state.status === "unconfigured") return "Settings are missing";
   if (state.status === "error") return state.message || `${label} connection check unavailable`;
-  return "Read connection verified";
+  return "Connection checked successfully";
 }
 function workSourceReadiness(state: ConnectorOverview["jiraSync"]): string {
-  if (state.status === "loading") return "Checking Jira read readiness…";
+  if (state.status === "loading") return "Checking Jira…";
   if (state.status === "error") return state.message;
-  if (state.status === "unconfigured" || !state.data.configured || state.data.state === "unconfigured") return "Not configured";
-  if (state.data.state === "syncing") return "Jira read in progress";
-  if (state.data.state === "failed" || state.data.failed) return "Jira read failed";
-  return state.data.lastSuccessAt ? "Jira read observed" : "Waiting for first Jira read";
+  if (state.status === "unconfigured" || !state.data.configured || state.data.state === "unconfigured") return "Jira isn't connected yet.";
+  if (state.data.state === "syncing") return "Checking Jira work items…";
+  if (state.data.state === "failed" || state.data.failed) return "Could not check Jira work items";
+  return state.data.lastSuccessAt ? "Jira work items checked successfully" : "Jira has not been checked successfully yet";
 }
 function agentReadiness(status: "loading" | "available" | "error", healthyCount: number): string {
-  if (status === "loading") return "Checking agent health…";
-  if (status === "error") return "Agent health unavailable";
-  return healthyCount > 0 ? `${healthyCount} healthy agent${healthyCount === 1 ? "" : "s"} observed` : "No healthy agent observed";
+  if (status === "loading") return "Checking agents…";
+  if (status === "error") return "Could not check agents";
+  return healthyCount > 0 ? `${healthyCount} agent${healthyCount === 1 ? " is" : "s are"} ready to run tasks` : "No agent is ready to run tasks";
 }
+function friendlyAgentReason(reason: string): string { return /readiness is UNMEASURED/i.test(reason) ? "Readiness has not been checked yet" : reason.replace(/UNMEASURED/g, "not checked yet"); }
 function jiraHasSuccessfulRead(state: ConnectorOverview["jiraSync"]): boolean { return state.status === "available" && state.data.configured && state.data.state === "available" && state.data.lastSuccessAt !== null && !state.data.failed; }

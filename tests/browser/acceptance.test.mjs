@@ -205,10 +205,10 @@ test("AC-04/05: Jira and GitLab actions show observed outcomes without external 
 
   await page.getByRole("button", { name: "Connections" }).click();
   const connections = page.getByRole("dialog", { name: "Connections and setup" });
-  await connections.getByRole("button", { name: "Refresh Jira work items" }).click();
-  await connections.getByRole("status").filter({ hasText: "Jira read complete: 1 added" }).waitFor();
-  await connections.getByRole("button", { name: "Refresh GitLab discussions" }).click();
-  await connections.getByRole("status").filter({ hasText: "GitLab discussion refresh completed" }).waitFor();
+  await connections.getByRole("button", { name: "Check Jira for work items" }).click();
+  await connections.getByRole("status").filter({ hasText: "Jira check complete: 1 new work items" }).waitFor();
+  await connections.getByRole("button", { name: "Check GitLab discussions" }).click();
+  await connections.getByRole("status").filter({ hasText: "GitLab discussion check complete" }).waitFor();
   assert.ok(requests.some((request) => request.path === "/api/work-items/import" && request.method === "POST"));
   assert.ok(requests.some((request) => request.path === "/api/code-host/discussions/sync" && request.method === "POST"));
   assert.equal(requests.some((request) => /(?:jira|gitlab)\.(?:com|net)|\/api\/(?:gitlab|jira)\/(?:write|comment|merge|resolve)/i.test(request.path)), false);
@@ -220,15 +220,15 @@ test("AC-06: first-run readiness stays incomplete, secrets clear, and setup fail
   const setup = await openFixturePage({ overrides: { setup: { firstRun: true, steps: { workSource: false, codeHost: false, agent: false } } } });
   await setup.page.getByRole("main", { name: "Sarathi setup" }).waitFor();
   await setup.page.getByRole("heading", { name: "Connect Sarathi" }).waitFor();
-  assert.ok(await setup.page.getByRole("heading", { name: "1. Work source" }).count());
-  assert.ok(await setup.page.getByRole("heading", { name: "2. Code host" }).count());
-  assert.ok(await setup.page.getByRole("heading", { name: "3. Agent" }).count());
+  assert.ok(await setup.page.getByRole("heading", { name: "1. Jira work items" }).count());
+  assert.ok(await setup.page.getByRole("heading", { name: "2. GitLab code reviews" }).count());
+  assert.ok(await setup.page.getByRole("heading", { name: "3. Agents" }).count());
   assert.equal(await setup.page.getByRole("button", { name: "Continue to command center" }).count(), 0);
-  await setup.page.getByLabel("Work source credential reference").fill("fixture/keychain/work");
-  await setup.page.getByLabel("Work source credential value").fill(secret);
-  await setup.page.getByRole("button", { name: "Save work source credential" }).click();
-  await setup.page.getByText("Credential reference saved to the local keychain. The secret was cleared.").waitFor();
-  assert.equal(await setup.page.getByLabel("Work source credential value").inputValue(), "");
+  await setup.page.getByLabel("Name for the Jira token").fill("fixture/keychain/work");
+  await setup.page.getByLabel("Jira API token").fill(secret);
+  await setup.page.getByRole("button", { name: "Save Jira token" }).click();
+  await setup.page.getByText("Jira token saved locally and cleared from this form. Check the connection to confirm it works.").waitFor();
+  assert.equal(await setup.page.getByLabel("Jira API token").inputValue(), "");
   assert.doesNotMatch(await setup.page.locator("body").innerText(), new RegExp(secret));
   assert.equal(await setup.page.evaluate(() => localStorage.length), 0);
   assert.ok(setup.requests.some((request) => request.path === "/api/credentials/keychain" && JSON.parse(request.body).value === secret));

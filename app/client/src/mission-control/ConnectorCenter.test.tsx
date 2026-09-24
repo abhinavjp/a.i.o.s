@@ -34,16 +34,32 @@ function setupProps(overrides: Partial<React.ComponentProps<typeof ConnectorCent
 }
 
 describe("Mission Control connector setup", () => {
+  test("explains each sign-in field and what saving it does", () => {
+    render(<ConnectorCenter {...setupProps()} />);
+
+    expect(screen.getByRole("heading", { name: "1. Jira work items" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "2. GitLab code reviews" })).toBeTruthy();
+    expect(screen.getByRole("heading", { name: "3. Agents" })).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Name for the Jira token" })).toBeTruthy();
+    expect(screen.getByLabelText("Jira API token")).toBeTruthy();
+    expect(screen.getByRole("textbox", { name: "Name for the GitLab token" })).toBeTruthy();
+    expect(screen.getByLabelText("GitLab access token")).toBeTruthy();
+    expect(screen.getAllByText(/This is a label for the saved token, not the token itself/)).toHaveLength(2);
+    expect(screen.getByText("Jira isn't connected yet.")).toBeTruthy();
+    expect(screen.getByText(/Saving a token does not connect Jira or GitLab by itself/)).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Open agent settings" })).toBeTruthy();
+  });
+
   test("shows all three setup concerns with observed, distinct unavailable states", () => {
     render(<ConnectorCenter {...setupProps()} />);
 
     expect(screen.getByRole("heading", { name: "Connect Sarathi" })).toBeTruthy();
-    expect(screen.getByText("1. Work source")).toBeTruthy();
-    expect(screen.getByText("2. Code host")).toBeTruthy();
-    expect(screen.getByText("3. Agent")).toBeTruthy();
-    expect(screen.getByText("Not configured")).toBeTruthy();
+    expect(screen.getByText("1. Jira work items")).toBeTruthy();
+    expect(screen.getByText("2. GitLab code reviews")).toBeTruthy();
+    expect(screen.getByText("3. Agents")).toBeTruthy();
+    expect(screen.getByText("Jira isn't connected yet.")).toBeTruthy();
     expect(screen.getByText("The connection read failed.")).toBeTruthy();
-    expect(screen.getByText("No healthy agent is observed.")).toBeTruthy();
+    expect(screen.getByText("No agent is ready to run tasks yet.")).toBeTruthy();
     expect(screen.queryByText("Connected")).toBeNull();
   });
 
@@ -51,19 +67,19 @@ describe("Mission Control connector setup", () => {
     const view = render(<ConnectorCenter {...setupProps({ overview: loadingOverview })} />);
     view.rerender(<ConnectorCenter {...setupProps({ overview: readyOverview })} />);
 
-    expect((screen.getByRole("textbox", { name: "Work source credential reference" }) as HTMLInputElement).value).toBe("JIRA_TOKEN");
-    expect((screen.getByRole("textbox", { name: "Code host credential reference" }) as HTMLInputElement).value).toBe("GITLAB_TOKEN");
+    expect((screen.getByRole("textbox", { name: "Name for the Jira token" }) as HTMLInputElement).value).toBe("JIRA_TOKEN");
+    expect((screen.getByRole("textbox", { name: "Name for the GitLab token" }) as HTMLInputElement).value).toBe("GITLAB_TOKEN");
   });
 
   test("sends a credential once, then clears it without rendering the secret", async () => {
     const save = vi.fn(async () => ({ ok: true as const }));
     render(<ConnectorCenter {...setupProps({ onSaveCredential: save })} />);
-    fireEvent.change(screen.getByRole("textbox", { name: "Work source credential reference" }), { target: { value: "JIRA_TOKEN" } });
-    fireEvent.change(screen.getByLabelText("Work source credential value"), { target: { value: "token-that-must-not-return" } });
-    fireEvent.click(screen.getByRole("button", { name: "Save work source credential" }));
+    fireEvent.change(screen.getByRole("textbox", { name: "Name for the Jira token" }), { target: { value: "JIRA_TOKEN" } });
+    fireEvent.change(screen.getByLabelText("Jira API token"), { target: { value: "token-that-must-not-return" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Jira token" }));
 
     await waitFor(() => expect(save).toHaveBeenCalledWith("JIRA_TOKEN", "token-that-must-not-return"));
-    await waitFor(() => expect((screen.getByLabelText("Work source credential value") as HTMLInputElement).value).toBe(""));
+    await waitFor(() => expect((screen.getByLabelText("Jira API token") as HTMLInputElement).value).toBe(""));
     expect(document.body.textContent).not.toContain("token-that-must-not-return");
   });
 
@@ -101,8 +117,8 @@ describe("Mission Control connector setup", () => {
     const onRefreshGitLab = vi.fn(async () => ({ ok: true as const }));
     render(<ConnectorCenter {...setupProps({ onRefreshJira, onRefreshGitLab })} />);
 
-    fireEvent.click(screen.getByRole("button", { name: "Refresh Jira work items" }));
-    fireEvent.click(screen.getByRole("button", { name: "Refresh GitLab discussions" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check Jira for work items" }));
+    fireEvent.click(screen.getByRole("button", { name: "Check GitLab discussions" }));
     expect(onRefreshJira).toHaveBeenCalledOnce();
     expect(onRefreshGitLab).toHaveBeenCalledOnce();
   });
