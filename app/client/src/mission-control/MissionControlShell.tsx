@@ -155,6 +155,29 @@ export function MissionControlShell(props: {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Tab") {
+        const dialog = document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]');
+        if (dialog) {
+          const focusable = Array.from(dialog.querySelectorAll<HTMLElement>(
+            'a[href], button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])'
+          )).filter((element) => element.getClientRects().length > 0);
+          const first = focusable[0];
+          const last = focusable[focusable.length - 1];
+          if (!first || !last) {
+            event.preventDefault();
+            dialog.focus();
+          } else if (!dialog.contains(document.activeElement)) {
+            event.preventDefault();
+            first.focus();
+          } else if (event.shiftKey && document.activeElement === first) {
+            event.preventDefault();
+            last.focus();
+          } else if (!event.shiftKey && document.activeElement === last) {
+            event.preventDefault();
+            first.focus();
+          }
+        }
+      }
       if (event.key === "Escape" && connectionsOpen) { setConnectionsOpen(false); connectionsButton.current?.focus(); return; }
       if (event.key === "Escape" && catchUpOpen) { closeCatchUp(); return; }
       if (event.key === "Escape" && detail) { closeDetail(); return; }

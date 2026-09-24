@@ -108,3 +108,40 @@
 - Invocation proof: focused migration tests call phase attachment (including an older typed task ID), setup retry, discovery check, rollback, opt-in proof, pause, specialist/task/provider/routing paths, and the unchanged routing component. Existing shell tests cover asks, rules, work and agent details. No prototype-only action was added.
 - Browser proof: `screenshots/tsk011-advanced-desktop.png` (1440px) and `screenshots/tsk011-advanced-mobile.png` (390px) were captured from deterministic local API fixtures and inspected. Both page scroll widths matched viewport widths; four Advanced section links rendered and the first Tab focused the skip link. Live proof buttons and external providers were not invoked; those remain `UNMEASURED`.
 - Proof: 35 focused migration tests, 64 client tests across 10 files, client typecheck, client production build and `git diff --check` passed. Direct review found no stranded inventory control or protected-path change. The old CSS tokens still style embedded controls in Advanced; TSK-012 owns final visual and accessibility acceptance.
+
+## TSK-012 — final acceptance
+
+- TDD RED: browser focus-loop proof exposed Shift+Tab escaping modal dialogs; the scoped shell key handler now contains Tab focus in ask, work, catch-up and connection dialogs and restores trigger focus on Escape. A later REQ-025 browser check failed while the fixture pause response remounted the shell; the check now exercises read-only controls first and verifies Pause last.
+- Browser proof: `npm run test:browser` passed 10/10 after final remediation. The pinned Playwright `1.62.1` fixture intercepts every `/api/**` request. Screenshots `screenshots/tsk012-{desktop,tablet,mobile}.png` cover 1440, 900 and 390 px; `screenshots/tsk012-reference-desktop.png` captures the user-supplied reference. Direct inspection found the dark tokens, asks → pipeline → activity order, responsive agent rail and no horizontal overflow at all three widths. This is a structural and token comparison, not pixel equality. The source HTML at `D:\Downloads\Mission Control - a.i.o.s prototype.html` has SHA-256 `4AE72BA77D9173C5E9B8BE6EABEFEC9FC9E9BAC5663D81B272DCE4608876181F`; the approved plan's former path/hash differ, as recorded in TSK-007. Browser tests use committed reference image and token values, so a fresh checkout does not require the Downloads file.
+- Accessibility: named main/regions/dialogs and visible controls, skip-link focus, solid ≥2 px focus ring, first/last Tab wrapping and Escape return for four dialogs, reduced-motion transition, and ≥4.5:1 contrast for principal text tokens passed. This is a deterministic fixture check, not a comprehensive assistive-technology audit.
+- Repository gate: unique workspace `AIOS_DATA_DIR`; `npx vitest run` 52 files / 326 tests passed; `npx tsc -p {contracts,agents,connectors,app/server}/tsconfig.json --noEmit` all passed; `npm run typecheck -w app/client` passed; `npm run build -w app/client` passed; final browser suite 10/10 passed; `git diff --check` passed. Temporary gate data was removed after verifying its resolved path stayed inside this task's scratch directory.
+
+| Acceptance | Deterministic result |
+| --- | --- |
+| AC-01 | PASS: screenshots, reference tokens, hierarchy and three responsive bands. |
+| AC-02 | PASS: canonical ask decision, autopilot endpoint and floor rejection in browser; permission/floor server tests. |
+| AC-03 | PASS: counted work, current/proposed tracks and stale 409 conflict in browser; ticket-44 regression suite. |
+| AC-04 | PASS: Jira import endpoint/read status in browser and startup/interval/idempotence/failure server/connector tests. Live Jira UNMEASURED. |
+| AC-05 | PASS: GitLab discussion refresh and truthful blocked milestones in browser; sync/admission/milestone server/connector tests. Live GitLab and agent execution UNMEASURED. |
+| AC-06 | PASS: first-run setup, cleared credential input, retryable setup failure, distinct connection outcomes. Live keychain/provider state UNMEASURED. |
+| AC-07 | PASS: Advanced inventory/navigation, canonical or read-only shell action audit, earlier TSK-011 control invocation proof. Live proof buttons/providers UNMEASURED. |
+
+| Requirements | Verified packet or proof |
+| --- | --- |
+| REQ-001, REQ-002, REQ-003 | TSK-007 shell and TSK-012 visual/browser proof. |
+| REQ-004, REQ-005 | TSK-007–010 state tests and TSK-012 keyboard/accessibility browser proof. |
+| REQ-006, REQ-007, REQ-008 | TSK-009 canonical ask/rule/autopilot tests; TSK-012 AC-02 browser proof. |
+| REQ-009, REQ-010 | TSK-008 work/detail tests, TSK-009 stale-track test, TSK-012 AC-03. |
+| REQ-011, REQ-012, REQ-013 | TSK-001/002 Jira persistence, sync and failure tests; TSK-012 AC-04. |
+| REQ-014, REQ-015 | TSK-003/004 GitLab connector and durable observation tests. |
+| REQ-016, REQ-017 | TSK-005 admission/capability/floor tests; TSK-012 AC-05. |
+| REQ-018, REQ-019 | TSK-006 corroborated milestone tests; TSK-010 truthful remediation view; TSK-012 AC-05. |
+| REQ-020, REQ-021 | TSK-008 artifact/agent detail and TSK-011 advanced inventory. |
+| REQ-022 | TSK-010 setup/secret tests and TSK-012 AC-06. |
+| REQ-023, REQ-024 | TSK-011 control migration/invocation suite and TSK-012 AC-07. |
+| REQ-025 | TSK-010 false-success tests and TSK-012 negative rendered-control/request audit. |
+| INV-01–INV-03 | Canonical board/ask routes and permission/floor tests in TSK-001, 005 and 009. |
+| INV-04–INV-07 | Truthful connector/status, secret, track/route and no-silent-loss proofs in TSK-002, 004, 010–012. |
+
+- Final repository-wide semantic review count: **one**. Finding: runtime use of the local Downloads reference file would make the browser suite fail on a fresh checkout. Remediation: retain the captured reference image and pinned token values in the test, remove the external path dependency, rerun browser suite 10/10. No other blocking finding remained after reviewing the approved specification, plan, control inventory, write scope and proof matrix.
+- Dirty-scope audit: only TSK-012 browser tooling/fixture/spec, four reference/comparison screenshots, scoped modal focus correction, this evidence and PHS-06 progress changed. Protected paths and live external state were untouched. Live Jira, GitLab, agent, and authorized UAT outcomes remain **UNMEASURED**.

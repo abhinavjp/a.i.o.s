@@ -9,3 +9,10 @@ Baseline: `d0e1283b8df9809c71d20a498f4f1f5be2ad1c1e` on `main`; worktree clean b
   - browser: 1440px and 390px fixture screenshots PASS; no horizontal overflow; four section links and keyboard skip focus
   - review: direct control-inventory and protected-scope review PASS; live providers UNMEASURED
   - commit: committed
+
+- [x] TSK-012 Prove visual, accessibility and full-system acceptance
+  - changed: `.scratch/sarathi-view-replacement/evidence.md`, `.scratch/sarathi-view-replacement/phases/06-migration-and-acceptance/progress.md`, `.scratch/sarathi-view-replacement/screenshots/tsk012-desktop.png`, `.scratch/sarathi-view-replacement/screenshots/tsk012-mobile.png`, `.scratch/sarathi-view-replacement/screenshots/tsk012-reference-desktop.png`, `.scratch/sarathi-view-replacement/screenshots/tsk012-tablet.png`, `app/client/src/mission-control/MissionControlShell.tsx`, `package.json`, `package-lock.json`, `playwright.config.mjs`, `tests/browser/fixture.mjs`, `tests/browser/acceptance.test.mjs`
+  - deviation: reference HTML supplied at a new path/hash; captured screenshot and pinned tokens keep browser proof portable; no approved behavior changed
+  - proofs: browser 10/10; repository Vitest 52 files / 326 tests; contracts, agents, connectors, server and client typechecks; client build; `git diff --check`; AC-01–AC-07 deterministic PASS; live Jira/GitLab/agent UAT UNMEASURED
+  - review: one final repository semantic review; one portability finding remediated and affected browser suite rerun; protected-path audit PASS
+  - commit: committed
