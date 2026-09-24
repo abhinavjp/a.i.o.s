@@ -34,17 +34,40 @@ function setupProps(overrides: Partial<React.ComponentProps<typeof ConnectorCent
 }
 
 describe("Mission Control connector setup", () => {
+  test("saves a Jira token without asking the operator to name it", async () => {
+    const save = vi.fn(async () => ({ ok: true as const }));
+    render(<ConnectorCenter {...setupProps({ onSaveCredential: save })} />);
+
+    expect(screen.queryByRole("textbox", { name: "Name for the Jira token" })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Enter Jira token" }));
+    expect(document.activeElement).toBe(screen.getByLabelText("Jira API token"));
+    fireEvent.change(screen.getByLabelText("Jira API token"), { target: { value: "operator-token" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save Jira token" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith("JIRA_TOKEN", "operator-token"));
+  });
+
+  test("keeps a different token name available for an existing connection", async () => {
+    const save = vi.fn(async () => ({ ok: true as const }));
+    render(<ConnectorCenter {...setupProps({ onSaveCredential: save })} />);
+
+    fireEvent.click(screen.getAllByText("Use a different saved token name")[1]);
+    fireEvent.change(screen.getByLabelText("Token name used by your GitLab connection"), { target: { value: "TEAM_GITLAB" } });
+    fireEvent.change(screen.getByLabelText("GitLab access token"), { target: { value: "gitlab-secret" } });
+    fireEvent.click(screen.getByRole("button", { name: "Save GitLab token" }));
+
+    await waitFor(() => expect(save).toHaveBeenCalledWith("TEAM_GITLAB", "gitlab-secret"));
+  });
+
   test("explains each sign-in field and what saving it does", () => {
     render(<ConnectorCenter {...setupProps()} />);
 
     expect(screen.getByRole("heading", { name: "1. Jira work items" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "2. GitLab code reviews" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "3. Agents" })).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: "Name for the Jira token" })).toBeTruthy();
     expect(screen.getByLabelText("Jira API token")).toBeTruthy();
-    expect(screen.getByRole("textbox", { name: "Name for the GitLab token" })).toBeTruthy();
     expect(screen.getByLabelText("GitLab access token")).toBeTruthy();
-    expect(screen.getAllByText(/This is a label for the saved token, not the token itself/)).toHaveLength(2);
+    expect(screen.getAllByText("Use a different saved token name")).toHaveLength(2);
     expect(screen.getByText("Jira isn't connected yet.")).toBeTruthy();
     expect(screen.getByText(/Saving a token does not connect Jira or GitLab by itself/)).toBeTruthy();
     expect(screen.getByRole("button", { name: "Open agent settings" })).toBeTruthy();
@@ -67,14 +90,13 @@ describe("Mission Control connector setup", () => {
     const view = render(<ConnectorCenter {...setupProps({ overview: loadingOverview })} />);
     view.rerender(<ConnectorCenter {...setupProps({ overview: readyOverview })} />);
 
-    expect((screen.getByRole("textbox", { name: "Name for the Jira token" }) as HTMLInputElement).value).toBe("JIRA_TOKEN");
-    expect((screen.getByRole("textbox", { name: "Name for the GitLab token" }) as HTMLInputElement).value).toBe("GITLAB_TOKEN");
+    expect((screen.getByLabelText("Token name used by your Jira connection") as HTMLInputElement).value).toBe("JIRA_TOKEN");
+    expect((screen.getByLabelText("Token name used by your GitLab connection") as HTMLInputElement).value).toBe("GITLAB_TOKEN");
   });
 
   test("sends a credential once, then clears it without rendering the secret", async () => {
     const save = vi.fn(async () => ({ ok: true as const }));
     render(<ConnectorCenter {...setupProps({ onSaveCredential: save })} />);
-    fireEvent.change(screen.getByRole("textbox", { name: "Name for the Jira token" }), { target: { value: "JIRA_TOKEN" } });
     fireEvent.change(screen.getByLabelText("Jira API token"), { target: { value: "token-that-must-not-return" } });
     fireEvent.click(screen.getByRole("button", { name: "Save Jira token" }));
 

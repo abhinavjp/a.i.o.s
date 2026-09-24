@@ -224,14 +224,13 @@ test("AC-06: first-run readiness stays incomplete, secrets clear, and setup fail
   assert.ok(await setup.page.getByRole("heading", { name: "2. GitLab code reviews" }).count());
   assert.ok(await setup.page.getByRole("heading", { name: "3. Agents" }).count());
   assert.equal(await setup.page.getByRole("button", { name: "Continue to command center" }).count(), 0);
-  await setup.page.getByLabel("Name for the Jira token").fill("fixture/keychain/work");
   await setup.page.getByLabel("Jira API token").fill(secret);
   await setup.page.getByRole("button", { name: "Save Jira token" }).click();
   await setup.page.getByText("Jira token saved locally and cleared from this form. Check the connection to confirm it works.").waitFor();
   assert.equal(await setup.page.getByLabel("Jira API token").inputValue(), "");
   assert.doesNotMatch(await setup.page.locator("body").innerText(), new RegExp(secret));
   assert.equal(await setup.page.evaluate(() => localStorage.length), 0);
-  assert.ok(setup.requests.some((request) => request.path === "/api/credentials/keychain" && JSON.parse(request.body).value === secret));
+  assert.ok(setup.requests.some((request) => request.path === "/api/credentials/keychain" && JSON.parse(request.body).reference === "JIRA_TOKEN" && JSON.parse(request.body).value === secret));
   await closeFixturePage(setup.context);
 
   const recovering = await openFixturePage({ overrides: { setupResponses: {

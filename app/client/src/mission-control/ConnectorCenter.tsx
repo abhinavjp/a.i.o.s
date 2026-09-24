@@ -59,7 +59,7 @@ export function ConnectorCenter(props: {
         <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "1. Jira work items" : "Jira work items"}</h3><p>{workSourceReadiness(props.overview.jiraSync)}</p></div></div>
         <ConnectorEvidence label="Jira connection" state={props.overview.workSource} />
         <SyncEvidence label="Jira work item check" state={props.overview.jiraSync} />
-        {props.isSetup && <button className="mc-tool" type="button" title="Move to the fields for saving your Jira token." onClick={() => document.getElementById("work-source-credential-reference")?.focus()}>Enter Jira token</button>}
+        {props.isSetup && <button className="mc-tool" type="button" title="Move to the field for your Jira API token." onClick={() => document.getElementById("jira-token-value")?.focus()}>Enter Jira token</button>}
         <button className="mc-tool" type="button" title="Read work items from Jira. This does not change anything in Jira." onClick={() => void refreshJira()} disabled={jiraBusy}>{jiraBusy ? "Checking Jira…" : "Check Jira for work items"}</button>
         <CredentialEntry kind="work source" initialReference={connectionReference(props.overview.workSource)} onSave={props.onSaveCredential} expanded={props.isSetup} />
       </article>
@@ -67,7 +67,7 @@ export function ConnectorCenter(props: {
         <div className="mc-connector-card-heading"><div><h3>{props.isSetup ? "2. GitLab code reviews" : "GitLab code reviews"}</h3><p>{connectionReadiness(props.overview.codeHost, "GitLab")}</p></div></div>
         <ConnectorEvidence label="GitLab connection" state={props.overview.codeHost} />
         <SyncEvidence label="GitLab discussion check" state={props.overview.gitLabSync} />
-        {props.isSetup && <button className="mc-tool" type="button" title="Move to the fields for saving your GitLab access token." onClick={() => document.getElementById("code-host-credential-reference")?.focus()}>Enter GitLab token</button>}
+        {props.isSetup && <button className="mc-tool" type="button" title="Move to the field for your GitLab access token." onClick={() => document.getElementById("gitlab-token-value")?.focus()}>Enter GitLab token</button>}
         <button className="mc-tool" type="button" title="Read code review discussions from GitLab. This does not change anything in GitLab." onClick={() => void refreshGitLab()} disabled={gitLabBusy}>{gitLabBusy ? "Checking GitLab…" : "Check GitLab discussions"}</button>
         <CredentialEntry kind="code host" initialReference={connectionReference(props.overview.codeHost)} onSave={props.onSaveCredential} expanded={props.isSetup} />
       </article>
@@ -88,24 +88,23 @@ export function ConnectorCenter(props: {
 }
 
 function CredentialEntry(props: { kind: "work source" | "code host"; initialReference: string; expanded: boolean; onSave: (reference: string, value: string) => Promise<ActionResult> }) {
-  const [reference, setReference] = useState(props.initialReference);
+  const [reference, setReference] = useState(props.initialReference || (props.kind === "code host" ? "GITLAB_TOKEN" : "JIRA_TOKEN"));
   const [credential, setCredential] = useState("");
   const [referenceEdited, setReferenceEdited] = useState(false);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const code = props.kind === "code host";
   const service = code ? "GitLab" : "Jira";
-  const nameHelp = `This is a label for the saved token, not the token itself. It must match the token name in your ${service} connection settings (for example, ${code ? "GITLAB_TOKEN" : "JIRA_TOKEN"}).`;
-  const credentialHelp = `Your ${service} token is sent to local credential storage when you save it. Sarathi does not show it again. Saving the token alone does not verify the ${service} connection.`;
+  const nameHelp = `Only change this if your existing ${service} connection was configured to look up a different token name. This is a local lookup name, not the token itself.`;
+  const credentialHelp = `Sarathi saves this token locally as ${reference || (code ? "GITLAB_TOKEN" : "JIRA_TOKEN")}. It does not show the token again. Saving it does not verify the ${service} connection.`;
   const helpId = code ? "gitlab-token-name-help" : "jira-token-name-help";
   useEffect(() => {
     if (!referenceEdited && props.initialReference) setReference(props.initialReference);
   }, [props.initialReference, referenceEdited]);
   const fields = <form className="mc-credential-form" onSubmit={(event) => void submit(event)}>
-    <label>Name for the {service} token<input id={code ? "code-host-credential-reference" : "work-source-credential-reference"} type="text" autoComplete="off" aria-describedby={helpId} title={nameHelp} placeholder={code ? "GITLAB_TOKEN" : "JIRA_TOKEN"} value={reference} onChange={(event) => { setReferenceEdited(true); setReference(event.currentTarget.value); }} /></label>
-    <p id={helpId} className="mc-credential-help">{nameHelp}</p>
-    <label>{code ? "GitLab access token" : "Jira API token"}<input type="password" autoComplete="new-password" title={`Paste your ${service} token. It will be cleared from this form after you save it.`} value={credential} onChange={(event) => setCredential(event.currentTarget.value)} /></label>
+    <label>{code ? "GitLab access token" : "Jira API token"}<input id={code ? "gitlab-token-value" : "jira-token-value"} type="password" autoComplete="new-password" title={`Paste your ${service} token. It will be cleared from this form after you save it.`} value={credential} onChange={(event) => setCredential(event.currentTarget.value)} /></label>
     <button className="mc-tool" type="submit" title={`Save the ${service} token in local credential storage. This does not connect ${service} by itself.`} disabled={saving || !reference.trim() || !credential}>{saving ? `Saving ${service} token…` : `Save ${service} token`}</button>
+    <details className="mc-token-name-details"><summary>Use a different saved token name</summary><label>Token name used by your {service} connection<input id={code ? "code-host-credential-reference" : "work-source-credential-reference"} type="text" autoComplete="off" aria-describedby={helpId} title={nameHelp} value={reference} onChange={(event) => { setReferenceEdited(true); setReference(event.currentTarget.value); }} /></label><p id={helpId} className="mc-credential-help">{nameHelp}</p></details>
     {message && <p role="status" className="mc-credential-status">{message}</p>}
   </form>;
 
