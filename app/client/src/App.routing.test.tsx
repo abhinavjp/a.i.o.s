@@ -13,12 +13,14 @@ class EventSourceStub {
 describe("App routing controls", () => {
   test("posts a task engine override and shows the admitted plan", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/setup") return Promise.resolve({ ok: true, json: async () => ({ firstRun: false, steps: { workSource: true, codeHost: true, agent: true } }) });
       if (url === "/api/agents") return Promise.resolve({ ok: true, json: async () => ({ agents: [] }) });
       if (url === "/api/sarathi/dashboard") return Promise.resolve({ ok: true, json: async () => ({ runtime: { name: "Hermes", state: "unavailable", billingMode: "subscription-only", reason: "unavailable" }, controls: { manualPaused: false }, discovery: { status: "blocked", reason: "blocked", mergeRequests: [] }, tickets: [], specialists: [], recentTasks: [], groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 } }) });
       return Promise.resolve({ ok: true, json: async () => ({ taskId: "task-1", resolvedEnginePlan: { primary: { engine: "codex", configuration: "work", billingMode: "subscription" }, fallbacks: [], source: "task", configurationVersions: { task: null, workflow: null, agent: null, global: 1 } }, readiness: { state: "unavailable", reason: "unmeasured", checkedAt: "now" } }) });
     });
     vi.stubGlobal("fetch", fetchMock); vi.stubGlobal("EventSource", EventSourceStub);
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced controls" }));
     const taskInput = await screen.findByRole("textbox", { name: /task/i });
     const taskForm = taskInput.closest("form");
     const engineSelect = screen.getByRole("combobox", { name: "Task engine" });

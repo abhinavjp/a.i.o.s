@@ -5,8 +5,9 @@ import { App } from "./App.js";
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("automatic decisions", () => {
-  test("shows today count and sends undo through the public API", async () => {
+  test("shows the automatic decision audit and sends undo through the public API", async () => {
     const fetchMock = vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+      if (url === "/api/setup") return { firstRun: false, steps: { workSource: true, codeHost: true, agent: true } };
       if (url === "/api/agents") return { agents: [] };
       if (url === "/api/sarathi/dashboard") return {
         runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" },
@@ -17,9 +18,9 @@ describe("automatic decisions", () => {
     } }));
     vi.stubGlobal("fetch", fetchMock);
     render(<App />);
-    expect(await screen.findByRole("heading", { name: "Today (1)" })).toBeTruthy();
+    expect(await screen.findByRole("region", { name: "Automatic decision audit" })).toBeTruthy();
     expect(screen.getByText(/autopilot: low · work-1/)).toBeTruthy();
-    fireEvent.click(screen.getByRole("button", { name: "Undo" }));
+    fireEvent.click(screen.getByRole("button", { name: "Undo automatic-1" }));
     expect(fetchMock).toHaveBeenCalledWith("/api/sarathi/automatic-decisions/automatic-1/undo", { method: "POST" });
   });
 });

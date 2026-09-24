@@ -10,10 +10,11 @@ describe("advanced agent settings", () => {
       runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" }, controls: { manualPaused: false }, discovery: { status: "blocked", reason: "blocked", lastCheckedAt: null, mergeRequests: [] }, tickets: [], specialists: [{ id: "reviewer", name: "Review specialist", role: "reviewer", runtime: "fake", status: "active", scope: "project", slotLimit: 1 }], recentTasks: [], groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
     } : {} })));
     render(<App />);
-    expect(await screen.findByRole("textbox", { name: /task/i })).toBeTruthy();
     expect(screen.queryByRole("link", { name: /routing/i })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced controls" }));
+    expect(await screen.findByRole("textbox", { name: /task/i })).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Advanced settings for Review specialist" }));
     expect(await screen.findByText("Choose the engine that moves work.")).toBeTruthy();
-    expect(screen.getByText("Advanced settings · Review specialist")).toBeTruthy();
+    expect(screen.getByText("Routing controls for Review specialist. Existing tasks retain their resolved route.")).toBeTruthy();
   });
 });

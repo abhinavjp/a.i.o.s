@@ -6,7 +6,7 @@ type Phase = { phase: { number: number; name: string; demoSentence: string }; ta
 type CompletionCount = { completed: number; total: number } | null;
 type Progress = { tasks: CompletionCount; checks: CompletionCount; diff: { filesChanged: number; linesAdded: number; linesRemoved: number } | null; pipelineJobs: CompletionCount };
 
-export function WorkItemsPage() {
+export function WorkItemsPage({ availableTasks = [] }: { availableTasks?: ReadonlyArray<{ id: string; title: string }> }) {
   const [workItems, setWorkItems] = useState<WorkItem[]>([]);
   const [title, setTitle] = useState("");
   const [repositories, setRepositories] = useState("");
@@ -16,6 +16,7 @@ export function WorkItemsPage() {
   const [preview, setPreview] = useState<string | null>(null);
   const [phases, setPhases] = useState<Record<string, Phase[]>>({});
   const [progress, setProgress] = useState<Record<string, Progress>>({});
+  const [taskChoices, setTaskChoices] = useState<Record<string, string>>({});
 
   useEffect(() => { void fetch("/api/work-items").then((response) => response.json()).then((data) => setWorkItems(data.workItems ?? [])); }, []);
 
@@ -67,9 +68,24 @@ export function WorkItemsPage() {
     setProgress((current) => ({ ...current, [workItemId]: progressData.progress }));
   }
 
+  async function attachTaskToPhase(workItemId: string, phaseNumber: number, phaseName: string) {
+    const key = `${workItemId}:${phaseNumber}`;
+    const taskId = taskChoices[key];
+    if (!taskId) { setMessage("Choose an existing task to attach."); return; }
+    setMessage(null);
+    const response = await fetch(`/api/work-items/${encodeURIComponent(workItemId)}/phases/${phaseNumber}/tasks`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ taskId })
+    });
+    const data = await response.json();
+    if (!response.ok) { setMessage(data.error ?? "Task could not be attached to this phase."); return; }
+    setTaskChoices((current) => ({ ...current, [key]: "" }));
+    await openWorkItem(workItemId);
+    setMessage(`Task attached to ${phaseName}.`);
+  }
+
   async function previewArtifact(artifact: Artifact) { setPreview(null); const response = await fetch(`/api/artifacts/${artifact.id}/content`); const data = await response.json(); setPreview(!data.available ? "Artifact unavailable." : artifact.kind === "derived" ? (data.filesChanged !== undefined ? `${data.filesChanged} files changed · ${data.linesAdded} added · ${data.linesRemoved} removed` : (data.mergeRequests ?? []).map((mergeRequest: MergeRequest) => `${mergeRequest.repository}: ${mergeRequest.state}`).join("\n")) : data.content); }
 
-  return <section className="panel work-items-panel">
+  return <section className="panel work-items-panel" id="mc-advanced-work" aria-label="Work item administration">
     <div className="panel-heading"><div><span className="eyebrow">Delivery pipeline</span><h2>Work items</h2></div><button type="button" onClick={() => void importTickets()}>Import assigned tickets</button></div>
     <form className="specialist-form" onSubmit={addWorkItem}>
       <label>Title<input aria-label="Title" value={title} onChange={(event) => setTitle(event.target.value)} required /></label>
@@ -77,7 +93,7 @@ export function WorkItemsPage() {
       <button className="specialist-submit" type="submit">Add work item</button>
     </form>
     {message && <p role="alert" className="specialist-message">{message}</p>}
-    <div className="work-item-list">{workItems.length === 0 ? <p className="empty-state">No work items yet.</p> : workItems.map((workItem) => <article className="work-item-row" key={workItem.id}><strong>{workItem.title}</strong><small>{workItem.repositories.join(", ") || "No repositories"}</small><button type="button" onClick={() => void openWorkItem(workItem.id)}>Open work item</button>{progress[workItem.id] && <section><h3>Counted progress</h3><p>Tasks: {formatCount(progress[workItem.id].tasks)}</p><p>Checks: {formatCount(progress[workItem.id].checks)}</p><p>Files: {formatDiffFiles(progress[workItem.id].diff)}</p><p>Lines: {formatDiffLines(progress[workItem.id].diff)}</p><p>Pipeline jobs: {formatCount(progress[workItem.id].pipelineJobs)}</p></section>}{phases[workItem.id]?.map(({ phase, tasks }) => <section key={phase.number}><p><strong>{phase.name}</strong> — {phase.demoSentence}</p>{tasks.length === 0 ? <p className="empty-state">No tasks in this phase.</p> : <ul>{tasks.map((task) => <li key={task.taskId}>{task.name} — {task.agent} — {task.status}</li>)}</ul>}</section>)}{mergeRequests[workItem.id] && <section><h3>Merge requests</h3>{mergeRequests[workItem.id].length === 0 ? <p>No merge requests.</p> : mergeRequests[workItem.id].map((mergeRequest) => <p key={`${mergeRequest.repository}-${mergeRequest.number}`}>{mergeRequest.repository} !{mergeRequest.number} — {mergeRequest.state} — {mergeRequest.pipelineResult} — {mergeRequest.jobsCompleted}/{mergeRequest.jobsTotal}</p>)}</section>}{artifacts[workItem.id]?.map((artifact) => <button key={artifact.id} type="button" onClick={() => void previewArtifact(artifact)}>{artifact.name} v{artifact.version} · {artifact.approvalState}</button>)}{preview && <pre>{preview}</pre>}{workItem.track ? <ol className="stage-list">{workItem.stages.map((stage) => <li key={stage.kind}>{stage.kind} <select aria-label={`State for ${stage.kind}`} value={stage.state} onChange={(event) => void setStageState(workItem.id, stage.kind, event.target.value)}>{["not-started", "running", "waiting", "blocked", "done", "skipped"].map((state) => <option key={state}>{state}</option>)}</select></li>)}</ol> : <div className="track-approval"><span>Needs a track</span><select aria-label={`Starting point for ${workItem.title}`} defaultValue="standard"><option value="full">Full</option><option value="standard">Standard</option><option value="fast">Fast</option><option value="analysis-only">Analysis only</option></select><button type="button" onClick={(event) => { const select = event.currentTarget.previousElementSibling as HTMLSelectElement; void approveTrack(workItem.id, select.value); }}>Approve track</button></div>}</article>)}</div>
+    <div className="work-item-list">{workItems.length === 0 ? <p className="empty-state">No work items yet.</p> : workItems.map((workItem) => <article className="work-item-row" key={workItem.id}><strong>{workItem.title}</strong><small>{workItem.repositories.join(", ") || "No repositories"}</small><button type="button" onClick={() => void openWorkItem(workItem.id)}>Open work item</button>{progress[workItem.id] && <section><h3>Counted progress</h3><p>Tasks: {formatCount(progress[workItem.id].tasks)}</p><p>Checks: {formatCount(progress[workItem.id].checks)}</p><p>Files: {formatDiffFiles(progress[workItem.id].diff)}</p><p>Lines: {formatDiffLines(progress[workItem.id].diff)}</p><p>Pipeline jobs: {formatCount(progress[workItem.id].pipelineJobs)}</p></section>}{phases[workItem.id]?.map(({ phase, tasks }) => <section key={phase.number}><p><strong>{phase.name}</strong> — {phase.demoSentence}</p>{tasks.length === 0 ? <p className="empty-state">No tasks in this phase.</p> : <ul>{tasks.map((task) => <li key={task.taskId}>{task.name} — {task.agent} — {task.status}</li>)}</ul>}<div className="phase-task-attachment"><label>Task for {phase.name}<input aria-label={`Task ID for ${phase.name}`} list={`task-suggestions-${workItem.id}-${phase.number}`} value={taskChoices[`${workItem.id}:${phase.number}`] ?? ""} onChange={(event) => setTaskChoices((current) => ({ ...current, [`${workItem.id}:${phase.number}`]: event.target.value }))} placeholder="Enter an existing task ID" /><datalist id={`task-suggestions-${workItem.id}-${phase.number}`}>{availableTasks.filter((candidate) => !tasks.some((attached) => attached.taskId === candidate.id)).map((candidate) => <option key={candidate.id} value={candidate.id} label={candidate.title} />)}</datalist></label><button type="button" disabled={!taskChoices[`${workItem.id}:${phase.number}`]?.trim()} onClick={() => void attachTaskToPhase(workItem.id, phase.number, phase.name)}>Attach task</button><small>Recent task IDs are suggestions. The server checks any ID you enter.</small></div></section>)}{mergeRequests[workItem.id] && <section><h3>Merge requests</h3>{mergeRequests[workItem.id].length === 0 ? <p>No merge requests.</p> : mergeRequests[workItem.id].map((mergeRequest) => <p key={`${mergeRequest.repository}-${mergeRequest.number}`}>{mergeRequest.repository} !{mergeRequest.number} — {mergeRequest.state} — {mergeRequest.pipelineResult} — {mergeRequest.jobsCompleted}/{mergeRequest.jobsTotal}</p>)}</section>}{artifacts[workItem.id]?.map((artifact) => <button key={artifact.id} type="button" onClick={() => void previewArtifact(artifact)}>{artifact.name} v{artifact.version} · {artifact.approvalState}</button>)}{preview && <pre>{preview}</pre>}{workItem.track ? <ol className="stage-list">{workItem.stages.map((stage) => <li key={stage.kind}>{stage.kind} <select aria-label={`State for ${stage.kind}`} value={stage.state} onChange={(event) => void setStageState(workItem.id, stage.kind, event.target.value)}>{["not-started", "running", "waiting", "blocked", "done", "skipped"].map((state) => <option key={state}>{state}</option>)}</select></li>)}</ol> : <div className="track-approval"><span>Needs a track</span><select aria-label={`Starting point for ${workItem.title}`} defaultValue="standard"><option value="full">Full</option><option value="standard">Standard</option><option value="fast">Fast</option><option value="analysis-only">Analysis only</option></select><button type="button" onClick={(event) => { const select = event.currentTarget.previousElementSibling as HTMLSelectElement; void approveTrack(workItem.id, select.value); }}>Approve track</button></div>}</article>)}</div>
   </section>;
 }
 

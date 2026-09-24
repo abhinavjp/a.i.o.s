@@ -45,6 +45,20 @@ function stubAgentsFetch() {
   });
 }
 
+function stubAppFetch(fetchMock: ReturnType<typeof vi.fn>) {
+  vi.stubGlobal("fetch", vi.fn((input: RequestInfo | URL, init?: RequestInit) => {
+    if (String(input) === "/api/setup") return Promise.resolve({ ok: true, json: async () => ({ firstRun: false, steps: { workSource: true, codeHost: true, agent: true } }) });
+    if (String(input) === "/api/routing") return Promise.resolve({ ok: true, json: async () => ({ schemaVersion: 1, version: 1, global: { version: 1, primary: { engine: "hermes", configuration: "default", billingMode: "subscription" }, fallbacks: [], fallbackEnabled: false }, workflows: {}, agents: {}, consent: { crossEngineFallback: false, paidFallback: false, acceptedAt: null } }) });
+    if (String(input) === "/api/routing/readiness") return Promise.resolve({ ok: true, json: async () => ({ engines: {} }) });
+    return fetchMock(input, init);
+  }));
+}
+
+async function openAdvancedControls() {
+  fireEvent.click(await screen.findByRole("button", { name: "Advanced controls" }));
+  await screen.findByRole("heading", { name: "Advanced controls" });
+}
+
 describe("App", () => {
   test("shows a stale track decision failure and refreshes canonical ask state", async () => {
     let dashboardReads = 0;
@@ -67,7 +81,7 @@ describe("App", () => {
       if (url === "/api/sarathi/asks/track-change-1/decide" && init?.method === "POST") return Promise.resolve({ ok: false, status: 409, json: async () => ({ error: stale }) });
       return Promise.resolve({ ok: true, json: async () => ({}) });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
     render(<App />);
 
     const ask = await screen.findByRole("button", { name: /Review track.change/ });
@@ -83,7 +97,7 @@ describe("App", () => {
   });
 
   test("shows current and proposed tracks for a track change ask", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };
       return {
         runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" }, controls: { manualPaused: false, changedAt: null }, discovery: { status: "blocked", reason: "blocked", mergeRequests: [] }, tickets: [],
@@ -93,12 +107,13 @@ describe("App", () => {
       };
     } })));
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: /Review track.change/ }));
     expect(await screen.findByText("Current track: plan → implementation → merge")).toBeTruthy();
     expect(screen.getByText("Proposed track: technical-analysis → plan → implementation → merge")).toBeTruthy();
   });
 
   test("shows version, channel, and notes for an update ask", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };
       return {
         runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "ready" }, controls: { manualPaused: false }, discovery: { status: "blocked", reason: "blocked", mergeRequests: [] }, tickets: [],
@@ -106,22 +121,25 @@ describe("App", () => {
       };
     } })));
     render(<App />);
-    expect(await screen.findByText("0.1.0 · public · Important fixes")).toBeTruthy();
+    fireEvent.click(await screen.findByRole("button", { name: /Review apply/ }));
+    expect(await screen.findByText("Version: 0.1.0 · public")).toBeTruthy();
+    expect(screen.getByText("Notes: Important fixes")).toBeTruthy();
   });
 
   test("displays the running version reported by the server", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({
+    stubAppFetch(vi.fn().mockImplementation((url: string) => Promise.resolve({
       ok: true,
       json: async () => url === "/api/version" ? { version: "0.0.0" } : { agents: [] }
     })));
 
     render(<App />);
+    await openAdvancedControls();
 
-    expect(await screen.findByText("Adhisthana 0.0.0")).toBeTruthy();
+    expect(await screen.findByText("Sarathi 0.0.0")).toBeTruthy();
   });
 
   test("shows each agent's slot use in the specialist console", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };
       if (url === "/api/sarathi/agents") return { agents: [{ id: "sarathi", slotLimit: 2, slotsInUse: 1, full: false }] };
       if (url.startsWith("/api/sarathi/agents/suggest")) return { agent: { id: "sarathi", name: "Sarathi" }, reason: null };
@@ -134,6 +152,7 @@ describe("App", () => {
       };
     } })));
     render(<App />);
+    await openAdvancedControls();
     expect(await screen.findByText("1 / 2 slots in use")).toBeTruthy();
     expect(screen.getByText("Planning · Backend")).toBeTruthy();
     fireEvent.change(screen.getByLabelText("Required capability tag"), { target: { value: "Backend" } });
@@ -149,8 +168,9 @@ describe("App", () => {
       url === "/api/agents" ? { agents: [] } : url.endsWith("/cancel")
         ? { taskId: "task-stop", status: "cancelled", outcome: { status: "cancelled" }, chunks: ["partial evidence"] }
         : { taskId: "task-stop" } }));
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
     render(<App />);
+    await openAdvancedControls();
     fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "stop this work" } });
     fireEvent.click(screen.getByRole("button", { name: /run/i }));
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
@@ -166,17 +186,18 @@ describe("App", () => {
   test("shows the active task when its stop threshold has passed", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () =>
+    stubAppFetch(vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () =>
       url === "/api/agents/active/tasks" ? { taskId: "task-stalled" }
         : url === "/api/agents/active/tasks/task-stalled" ? { stall: { state: "stop", lastOutputAt: "2026-09-07T00:00:00.000Z" } }
           : { agents: [] } })));
     render(<App />);
+    await openAdvancedControls();
     fireEvent.click(await screen.findByRole("button", { name: /run task/i }));
     expect(await screen.findByText("Task stalled: stop threshold passed.")).toBeTruthy();
   });
 
   test("shows circuit recovery, retry and fallback counts, and reconstructs tool history on demand", async () => {
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => Promise.resolve({ ok: true, json: async () => {
       if (url === "/api/agents") return { agents: [] };
       if (url === "/api/agents/active/tasks/history-task") return { canonicalHistory: [
         { sequence: 1, type: "message", role: "user", text: "original task" },
@@ -187,6 +208,7 @@ describe("App", () => {
         routeCircuits: [{ route: { provider: "test", model: "primary" }, state: "open", failureKind: "transient", retryAt: "2026-09-07T00:01:00.000Z" }] };
     } })));
     render(<App />);
+    await openAdvancedControls();
     expect(await screen.findByText("Retries: 2 · Fallbacks: 1")).toBeTruthy();
     expect(screen.getByText(/test\/primary: open/)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "View history" }));
@@ -199,11 +221,12 @@ describe("App", () => {
     vi.stubGlobal("EventSource", FakeEventSource);
     let resolveCancellation: ((response: unknown) => void) | undefined;
     let submissions = 0;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
       if (url.endsWith("/cancel")) return new Promise((resolve) => { resolveCancellation = resolve; });
       return Promise.resolve({ ok: true, json: async () => url === "/api/agents/active/tasks" ? { taskId: `task-${++submissions}` } : { agents: [] } });
     }));
     render(<App />);
+    await openAdvancedControls();
     fireEvent.click(await screen.findByRole("button", { name: /run task/i }));
     await vi.waitFor(() => expect(FakeEventSource.instances).toHaveLength(1));
     fireEvent.click(screen.getByRole("button", { name: "Stop task" }));
@@ -217,28 +240,21 @@ describe("App", () => {
   });
 
   test("renders the agent list with name and health from the BFF", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockResolvedValue({
-        ok: true,
-        json: async () => ({
-          agents: [
-            { id: "fake", kind: "fake", displayName: "Fake Agent", health: { ok: true } }
-          ]
-        })
-      })
-    );
+    const fetchMock = vi.fn().mockImplementation((url: string) => {
+      if (url === "/api/agents") return Promise.resolve({ ok: true, json: async () => ({ agents: [{ id: "fake", kind: "fake", displayName: "Fake Agent", health: { ok: true } }] }) });
+      if (url === "/api/sarathi/dashboard") return Promise.resolve({ ok: true, json: async () => ({ runtime: { name: "Hermes", state: "unavailable", billingMode: "subscription-only", reason: "unavailable" }, controls: { manualPaused: false }, discovery: { status: "blocked", reason: "blocked", mergeRequests: [] }, tickets: [], specialists: [], recentTasks: [] }) });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    stubAppFetch(fetchMock);
 
     render(<App />);
+    fireEvent.click(await screen.findByRole("button", { name: "Agents" }));
 
-    expect(await screen.findByText("Fake Agent")).toBeTruthy();
-    expect(screen.getByText("healthy")).toBeTruthy();
+    expect(await screen.findByRole("button", { name: /Fake Agent · healthy/ })).toBeTruthy();
   });
 
-  test("renders the Sarathi command center and explicit readiness gates", async () => {
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockImplementation((url: string) => {
+  test("opens runtime diagnostics and readiness gates in advanced controls", async () => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
         if (url === "/api/agents") {
           return Promise.resolve({
             ok: true,
@@ -299,8 +315,8 @@ describe("App", () => {
 
     render(<App />);
 
-    expect(await screen.findByText("Sarathi")).toBeTruthy();
-    expect(screen.getByRole("heading", { name: "The work queue, without the reassembly." })).toBeTruthy();
+    await openAdvancedControls();
+    expect(await screen.findByRole("heading", { name: "Advanced controls" })).toBeTruthy();
     expect(screen.getByText("Readiness gates")).toBeTruthy();
     expect(screen.getByText("Discover assigned MRs")).toBeTruthy();
     expect(screen.getByText("GitLab adapter not configured")).toBeTruthy();
@@ -341,9 +357,10 @@ describe("App", () => {
       }
       return Promise.resolve({ ok: false, json: async () => ({}) });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
 
     render(<App />);
+    await openAdvancedControls();
     fireEvent.click(await screen.findByRole("button", { name: "Refresh fake-provider" }));
 
     await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith(
@@ -423,9 +440,10 @@ describe("App", () => {
         })
       });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
 
     render(<App />);
+    await openAdvancedControls();
     fireEvent.click(await screen.findByRole("button", { name: "Add specialist" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Review specialist" } });
     fireEvent.change(screen.getByLabelText("Role"), { target: { value: "reviewer" } });
@@ -456,8 +474,9 @@ describe("App", () => {
       });
       return Promise.resolve({ ok: true, json: async () => ({ policy: { version: "global-v2" } }) });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
     render(<App />);
+    await openAdvancedControls();
 
     fireEvent.change(await screen.findByLabelText("Primary model"), { target: { value: "configured-fake" } });
     fireEvent.click(screen.getByRole("button", { name: "Save route policy" }));
@@ -481,9 +500,10 @@ describe("App", () => {
         json: async () => ({ taskId: "task-123" })
       });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
 
     render(<App />);
+    await openAdvancedControls();
     await screen.findByRole("textbox", { name: /task/i });
 
     fireEvent.change(screen.getByRole("textbox", { name: /task/i }), {
@@ -516,8 +536,9 @@ describe("App", () => {
       if (url === "/api/agents") return stubAgentsFetch()();
       return Promise.resolve({ ok: true, json: async () => ({ taskId: "task-routing" }) });
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
     render(<App />);
+    await openAdvancedControls();
     fireEvent.change(await screen.findByLabelText("Specialist ID"), { target: { value: "reviewer" } });
     fireEvent.change(screen.getByLabelText("Workflow ID"), { target: { value: "review-flow" } });
     fireEvent.click(screen.getByLabelText("Override task primary"));
@@ -541,7 +562,7 @@ describe("App", () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
     let dashboardRequests = 0;
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
       if (url === "/api/agents") return stubAgentsFetch()();
       if (url === "/api/sarathi/dashboard") {
         dashboardRequests += 1;
@@ -567,6 +588,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    await openAdvancedControls();
     fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "show selected route" } });
     fireEvent.click(screen.getByRole("button", { name: /run/i }));
 
@@ -591,7 +613,7 @@ describe("App", () => {
       }],
       groups: [], reviewRounds: [], actionBatches: [], report: { merged: 0, blocked: 0, skipped: 0 }
     });
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
       if (url === "/api/agents") return stubAgentsFetch()();
       if (url === "/api/sarathi/dashboard") {
         dashboardCalls += 1;
@@ -602,6 +624,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    await openAdvancedControls();
     fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "race selection" } });
     fireEvent.click(screen.getByRole("button", { name: /run/i }));
     await vi.waitFor(() => expect(pendingDashboardResponses).toHaveLength(1));
@@ -625,7 +648,7 @@ describe("App", () => {
   test("explains a rejected route instead of opening a task stream", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal("fetch", vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
       if (url === "/api/agents") return stubAgentsFetch()();
       if (url === "/api/sarathi/dashboard") return Promise.resolve({
         ok: true,
@@ -640,6 +663,7 @@ describe("App", () => {
     }));
 
     render(<App />);
+    await openAdvancedControls();
     fireEvent.change(await screen.findByRole("textbox", { name: /task/i }), { target: { value: "route rejection" } });
     fireEvent.click(screen.getByRole("button", { name: /run/i }));
 
@@ -650,9 +674,7 @@ describe("App", () => {
   test("renders message chunks in order as they arrive", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
         if (url === "/api/agents") {
           return stubAgentsFetch()();
         }
@@ -664,6 +686,7 @@ describe("App", () => {
     );
 
     render(<App />);
+    await openAdvancedControls();
     await screen.findByRole("textbox", { name: /task/i });
 
     fireEvent.change(screen.getByRole("textbox", { name: /task/i }), {
@@ -691,9 +714,7 @@ describe("App", () => {
   test("done event closes the EventSource and shows finished indication", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
         if (url === "/api/agents") {
           return stubAgentsFetch()();
         }
@@ -705,6 +726,7 @@ describe("App", () => {
     );
 
     render(<App />);
+    await openAdvancedControls();
     await screen.findByRole("textbox", { name: /task/i });
 
     fireEvent.change(screen.getByRole("textbox", { name: /task/i }), {
@@ -728,9 +750,7 @@ describe("App", () => {
   test("renders a blocked terminal outcome from the task stream", async () => {
     FakeEventSource.instances = [];
     vi.stubGlobal("EventSource", FakeEventSource);
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
         if (url === "/api/agents") {
           return stubAgentsFetch()();
         }
@@ -742,6 +762,7 @@ describe("App", () => {
     );
 
     render(<App />);
+    await openAdvancedControls();
     await screen.findByRole("textbox", { name: /task/i });
     fireEvent.change(screen.getByRole("textbox", { name: /task/i }), {
       target: { value: "needs approval" }
@@ -768,9 +789,10 @@ describe("App", () => {
       ok: true,
       json: async () => ({ agents: [] })
     });
-    vi.stubGlobal("fetch", fetchMock);
+    stubAppFetch(fetchMock);
 
     render(<App />);
+    await openAdvancedControls();
 
     await vi.waitFor(() => {
       expect(FakeEventSource.instances).toHaveLength(1);
@@ -789,9 +811,7 @@ describe("App", () => {
     vi.stubGlobal("EventSource", FakeEventSource);
 
     let taskCounter = 0;
-    vi.stubGlobal(
-      "fetch",
-      vi.fn().mockImplementation((url: string) => {
+    stubAppFetch(vi.fn().mockImplementation((url: string) => {
         if (url === "/api/agents") {
           return stubAgentsFetch()();
         }
@@ -804,6 +824,7 @@ describe("App", () => {
     );
 
     render(<App />);
+    await openAdvancedControls();
     await screen.findByRole("textbox", { name: /task/i });
 
     const input = screen.getByRole("textbox", { name: /task/i });
@@ -842,5 +863,103 @@ describe("App", () => {
     });
     expect(await screen.findByText(/second task chunk/)).toBeTruthy();
     expect(screen.queryByText(/first task chunk/)).toBeNull();
+  });
+
+  test("opens the migrated control inventory from Mission Control without restoring the generic dashboard", async () => {
+    stubAppFetch(vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      const payload = url === "/api/setup" ? { firstRun: false, steps: { workSource: true, codeHost: true, agent: true } }
+        : url === "/api/mission-control/board" ? { workItems: { status: "available", data: [] }, gitLabDiscussions: { observations: [], sync: { configured: false, state: "unconfigured", stale: false, lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null } } }
+          : url === "/api/sarathi/dashboard" ? { runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "fixture" }, controls: { manualPaused: false, changedAt: null }, discovery: { status: "blocked", reason: "fixture", mergeRequests: [] }, tickets: [], specialists: [], recentTasks: [], proofs: [], providerCatalogs: [], routeCircuits: [], asks: [], standingRules: [], standingRuleSuggestions: [], automaticDecisions: [], activity: [] }
+            : url === "/api/agents" || url === "/api/sarathi/agents" ? { agents: [] }
+              : url === "/api/version" ? { version: "1.0.0" }
+                : {};
+      return Promise.resolve({ ok: true, json: async () => payload });
+    }));
+    render(<App />);
+
+    expect(screen.queryByRole("textbox", { name: /task/i })).toBeNull();
+    fireEvent.click(await screen.findByRole("button", { name: "Advanced controls" }));
+
+    expect(await screen.findByRole("heading", { name: "Advanced controls" })).toBeTruthy();
+    expect(screen.getByRole("region", { name: "Work item administration" })).toBeTruthy();
+    expect(screen.getByRole("link", { name: "Work items" }).getAttribute("href")).toBe("#mc-advanced-work");
+    expect(screen.getByRole("link", { name: "Agents and tasks" }).getAttribute("href")).toBe("#mc-advanced-agents");
+    expect(screen.getByRole("link", { name: "Runtime and providers" }).getAttribute("href")).toBe("#mc-advanced-runtime");
+    expect(screen.getByRole("link", { name: "Routing and consent" }).getAttribute("href")).toBe("#mc-advanced-routing");
+    const skipLink = screen.getByRole("link", { name: "Skip to advanced controls" });
+    const workLink = screen.getByRole("link", { name: "Work items" });
+    const backButton = screen.getByRole("button", { name: "Back to Mission Control" });
+    for (const control of [skipLink, workLink, backButton]) {
+      expect(control.tabIndex).toBe(0);
+      control.focus();
+      expect(document.activeElement).toBe(control);
+    }
+    expect(screen.queryByText("Operator view")).toBeNull();
+  });
+
+  test("invokes discovery, rollback, live-proof and pause controls from Advanced controls", async () => {
+    const dashboard = {
+      runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "fixture" },
+      controls: { manualPaused: false, changedAt: null },
+      discovery: { status: "blocked", reason: "fixture", mergeRequests: [] },
+      tickets: [], specialists: [], recentTasks: [], providerCatalogs: [], routeCircuits: [],
+      proofs: [{ route: "codex", status: "UNMEASURED", reason: "not measured", checkedAt: null }]
+    };
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      if (url === "/api/agents" || url === "/api/sarathi/agents") return Promise.resolve({ ok: true, json: async () => ({ agents: [] }) });
+      if (url === "/api/sarathi/dashboard") return Promise.resolve({ ok: true, json: async () => dashboard });
+      if (url === "/api/sarathi/discovery/check" && init?.method === "POST") return Promise.resolve({ ok: true, json: async () => ({ discovery: { status: "ready", reason: "checked", mergeRequests: [] } }) });
+      if (url === "/api/update/rollback" && init?.method === "POST") return Promise.resolve({ ok: true, json: async () => ({ version: "2.0.0" }) });
+      if (url === "/api/sarathi/proofs/codex" && init?.method === "POST") return Promise.resolve({ ok: true, json: async () => ({ proof: { route: "codex", status: "passed", reason: "fixture passed", checkedAt: "now" } }) });
+      if (url === "/api/sarathi/control/pause" && init?.method === "POST") return Promise.resolve({ ok: true, json: async () => ({ controls: { manualPaused: true, changedAt: "now" } }) });
+      if (url === "/api/version") return Promise.resolve({ ok: true, json: async () => ({ version: "1.0.0" }) });
+      return Promise.resolve({ ok: true, json: async () => ({}) });
+    });
+    stubAppFetch(fetchMock);
+    render(<App />);
+    await openAdvancedControls();
+
+    fireEvent.click(screen.getByRole("button", { name: /Check now/ }));
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith("/api/sarathi/discovery/check", { method: "POST" }));
+    fireEvent.click(screen.getByRole("button", { name: "Roll back update" }));
+    expect(await screen.findByText("Running 2.0.0")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Check codex proof" }));
+    expect(await screen.findByText("codex: passed")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Pause dispatch" }));
+    expect(await screen.findByRole("button", { name: "Resume dispatch" })).toBeTruthy();
+    expect(fetchMock).toHaveBeenCalledWith("/api/sarathi/proofs/codex", expect.objectContaining({ method: "POST", body: JSON.stringify({ optIn: true }) }));
+    expect(fetchMock).toHaveBeenCalledWith("/api/sarathi/control/pause", expect.objectContaining({ method: "POST", body: JSON.stringify({ paused: true }) }));
+  });
+
+  test("reports a failed setup read and recovers after an explicit retry", async () => {
+    let setupReads = 0;
+    const fetchMock = vi.fn().mockImplementation((input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url === "/api/setup") {
+        setupReads += 1;
+        if (setupReads === 1) return Promise.reject(new Error("setup service unavailable"));
+        if (setupReads === 2) return Promise.resolve({ ok: true, json: async () => ({ steps: { workSource: true, codeHost: true, agent: true } }) });
+        return Promise.resolve({ ok: true, json: async () => ({ firstRun: false, steps: { workSource: true, codeHost: true, agent: true } }) });
+      }
+      const payload = url === "/api/mission-control/board" ? { workItems: { status: "available", data: [] }, gitLabDiscussions: { observations: [], sync: { configured: false, state: "unconfigured", stale: false, lastAttemptAt: null, lastSuccessAt: null, lastFailureAt: null, lastError: null } } }
+        : url === "/api/sarathi/dashboard" ? { runtime: { name: "Fake", state: "ready", billingMode: "fake", reason: "fixture" }, controls: { manualPaused: false, changedAt: null }, discovery: { status: "blocked", reason: "fixture", mergeRequests: [] }, tickets: [], specialists: [], recentTasks: [], proofs: [], providerCatalogs: [], routeCircuits: [], asks: [], standingRules: [], standingRuleSuggestions: [], automaticDecisions: [], activity: [] }
+          : url === "/api/agents" || url === "/api/sarathi/agents" ? { agents: [] }
+            : url === "/api/version" ? { version: "1.0.0" }
+              : {};
+      return Promise.resolve({ ok: true, json: async () => payload });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<App />);
+
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not read setup status");
+    fireEvent.click(screen.getByRole("button", { name: "Retry setup read" }));
+    expect((await screen.findByRole("alert")).textContent).toContain("Could not read setup status");
+    expect(setupReads).toBe(2);
+    fireEvent.click(screen.getByRole("button", { name: "Retry setup read" }));
+
+    expect(await screen.findByRole("button", { name: "Advanced controls" })).toBeTruthy();
+    expect(setupReads).toBe(3);
   });
 });

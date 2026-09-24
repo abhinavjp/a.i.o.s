@@ -92,7 +92,8 @@ describe("Mission Control shell", () => {
 
     render(<App />);
 
-    const main = await screen.findByRole("main", { name: "Sarathi Mission Control" });
+    await screen.findByRole("region", { name: "Asks" });
+    const main = screen.getByRole("main", { name: "Sarathi Mission Control" });
     const asks = within(main).getByRole("region", { name: "Asks" });
     const pipeline = within(main).getByRole("region", { name: "Work pipeline" });
     const activity = within(main).getByRole("region", { name: "Activity" });

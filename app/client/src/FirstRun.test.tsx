@@ -53,6 +53,9 @@ describe("first run", () => {
   test("keeps the normal console for an existing installation", async () => {
     vi.stubGlobal("fetch", vi.fn(async (url: string) => ({ ok: true, json: async () => url === "/api/setup" ? { firstRun: false, steps: { workSource: true, codeHost: true, agent: true } } : url === "/api/agents" ? { agents: [] } : url === "/api/sarathi/dashboard" ? { runtime: { name: "Fake", state: "unavailable", billingMode: "fake", reason: "offline" }, discovery: { status: "blocked", reason: "offline", lastCheckedAt: null, mergeRequests: [] }, tickets: [] } : {} })));
     render(<App />);
+    expect(await screen.findByRole("button", { name: "Advanced controls" })).toBeTruthy();
+    expect(screen.queryByRole("textbox", { name: /task/i })).toBeNull();
+    fireEvent.click(screen.getByRole("button", { name: "Advanced controls" }));
     expect(await screen.findByRole("textbox", { name: /task/i })).toBeTruthy();
     expect(screen.queryByText("Connect Adhiṣṭhāna")).toBeNull();
   });

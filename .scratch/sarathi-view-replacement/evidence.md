@@ -88,3 +88,23 @@
 - Browser evidence: `screenshots/tsk010-setup.png` and `screenshots/tsk010-remediation.png` were captured with local projection-shaped API fixtures and inspected. The latter shows task admission, fix production, push and passing pipeline while thread resolution remains unobserved. These images are fixture evidence, not live GitLab/Jira evidence.
 - Proof: 23 focused client tests; 59 client tests across 10 files; 32 targeted server integration tests across Jira, GitLab, credentials and board; client/server typechecks; client production build; and `git diff --check` passed. Live Jira, GitLab, agent and external-write behavior remain `UNMEASURED`.
 - Direct PHS-05 review: corrected setup completion exit, agent-settings recovery, stale/error empty discussion wording, and test global cleanup. No blocking scoped finding remains.
+
+## TSK-011
+
+- TDD RED: Mission Control's Advanced controls button still opened the generic dashboard; an existing work item's phase had no task-attachment control. Focused follow-up tests exposed a setup-read error that could leave a permanent loading state and recent-task-only attachment suggestions that omitted older canonical task IDs.
+- GREEN: a single Advanced controls host replaces the generic route. Work item administration is embedded there; an existing task can be attached to a phase by ID through the canonical POST and refreshed read. `/api/setup` network and malformed responses show a retryable error. The unchanged `RoutingPage` remains in the secondary routing section. The former generic `Operator view` route is no longer required.
+
+| Approved existing control | Replacement location / canonical behavior |
+| --- | --- |
+| Ranked asks, decisions, catch-up, standing rules, autopilot, audit/undo | Mission Control asks and rules regions, with existing Sarathi decision endpoints (TSK-009 proof). |
+| Work items, tracks/stages, phase/task progress, artifacts/content, merge requests | Mission Control pipeline and detail drawers (TSK-008 proof); direct add, initial track approval, stage-state edit and phase-task attachment in Advanced → Work items. Jira refresh stays in Connections. |
+| Specialists, slots, capability tags, health | Mission Control agent rail/detail (TSK-008); creation, approval and agent suggestion in Advanced → Agents and tasks. |
+| Direct task submit/cancel, engine/config/model and route overrides, recent attempts/history | Advanced → Agents and tasks / Runtime and providers, retaining the existing task, cancel and history endpoints. |
+| Provider catalog/refresh, opt-in proof, discovery check, runtime/circuit details | Advanced → Runtime and providers; proof actions remain operator-triggered. |
+| Routing policies, circuits and consent | Advanced → Routing and consent, embedding `RoutingPage` without changing its source and retaining the task-route policy form. |
+| Pause, update/release decision, rollback | Mission Control header and Advanced header use the existing pause action; update/release details remain in canonical asks; rollback remains in Advanced → Runtime and providers. |
+| First-run setup and credential references | Setup and Connections from TSK-010; agent settings enter Advanced with an explicit return to setup. |
+
+- Invocation proof: focused migration tests call phase attachment (including an older typed task ID), setup retry, discovery check, rollback, opt-in proof, pause, specialist/task/provider/routing paths, and the unchanged routing component. Existing shell tests cover asks, rules, work and agent details. No prototype-only action was added.
+- Browser proof: `screenshots/tsk011-advanced-desktop.png` (1440px) and `screenshots/tsk011-advanced-mobile.png` (390px) were captured from deterministic local API fixtures and inspected. Both page scroll widths matched viewport widths; four Advanced section links rendered and the first Tab focused the skip link. Live proof buttons and external providers were not invoked; those remain `UNMEASURED`.
+- Proof: 35 focused migration tests, 64 client tests across 10 files, client typecheck, client production build and `git diff --check` passed. Direct review found no stranded inventory control or protected-path change. The old CSS tokens still style embedded controls in Advanced; TSK-012 owns final visual and accessibility acceptance.
